@@ -245,6 +245,27 @@ else
 fi
 rm -f "$MARKER_DIR"
 
+# --- (j) workspace registered through a symlink (non-git dir) → still resolves
+PLAIN="$OUTSIDE/plain-real"
+mkdir -p "$PLAIN"
+echo "CANARY_SYMLINK_WS_MARKER" > "$PLAIN/CLAUDE.md"
+ln -s "$PLAIN" "$OUTSIDE/plain-link"
+cp "$FORK/apexyard.projects.yaml" "$FORK/apexyard.projects.yaml.bak"
+cat >> "$FORK/apexyard.projects.yaml" <<YAML
+  - name: plain
+    repo: acme/plain
+    workspace: $OUTSIDE/plain-link
+    status: active
+YAML
+OUT=$(invoke "$(payload s10 "" "" "$PLAIN/x.txt")")
+mv "$FORK/apexyard.projects.yaml.bak" "$FORK/apexyard.projects.yaml"
+if printf '%s' "$OUT" | grep -q "CANARY_SYMLINK_WS_MARKER"; then
+  pass_case "(j) workspace registered via a symlink resolves for its real path"
+else
+  fail_case "(j) symlinked workspace" "out=$(printf '%s' "$OUT" | head -c 200)"
+fi
+rm -rf "$MARKER_DIR"
+
 echo "===== test_inject_project_context.sh ====="
 echo "Passed: $PASS"
 echo "Failed: $FAIL"

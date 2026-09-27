@@ -35,6 +35,7 @@ projctx_state_dir() {
   local d="$_PROJCTX_CACHE_DIR"
   [ -d "$d" ] || mkdir -p -m 700 "$d" 2>/dev/null || return 1
   [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ] || return 1
+  chmod 700 "$d" 2>/dev/null
   printf '%s' "$d"
 }
 
@@ -88,6 +89,9 @@ _projctx_registry_tsv() {
       *) ws_abs=""; [ -n "$root" ] && ws_abs="$root/$workspace" ;;
     esac
     [ -z "$ws_abs" ] && continue
+    # Canonicalize once here so the hook's string prefix match agrees with
+    # the canonical tool path (symlinked $HOME, macOS /tmp → /private/tmp).
+    ws_abs=$(_portfolio_canonicalize "$ws_abs" 2>/dev/null) || continue
     content="${content}${name}	${ws_abs}
 "
   done < <(_mrt_parse_registry 2>/dev/null)
