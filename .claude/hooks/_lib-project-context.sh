@@ -34,7 +34,7 @@ _PROJCTX_CACHE_DIR="${APEXYARD_OPS_PIN_DIR:-$HOME/.claude/apexyard}/projctx"
 # Create the state dir owner-only; refuse it if it is a symlink or not ours.
 projctx_state_dir() {
   local d="$_PROJCTX_CACHE_DIR"
-  [ -d "$d" ] || mkdir -p -m 700 "$d" 2>/dev/null || return 1
+  [ -d "$d" ] || mkdir -p "$d" 2>/dev/null || return 1  # chmod 700 below
   [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ] || return 1
   chmod 700 "$d" 2>/dev/null
   printf '%s' "$d"
@@ -79,10 +79,10 @@ _projctx_registry_tsv() {
 
   command -v _mrt_parse_registry >/dev/null 2>&1 || return 1
 
-  local root name repo workspace hostnames topics all_repos ws_abs content
+  local root name workspace ws_abs content
   root=$(_portfolio_root 2>/dev/null) || root=""
   content=""
-  while IFS='|' read -r name repo workspace hostnames topics all_repos; do
+  while IFS='|' read -r name _ workspace _; do
     [ -z "$name" ] && continue
     [ -z "$workspace" ] && continue
     case "$workspace" in

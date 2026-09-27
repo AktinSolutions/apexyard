@@ -241,7 +241,7 @@ EXIT_I=$?
 if [ "$EXIT_I" = 0 ] && [ -z "$OUT" ] && [ -z "$(ls -A "$OUTSIDE/evil")" ]; then
   pass_case "(i) symlinked state dir refused: exit 0, no output, nothing written through the link"
 else
-  fail_case "(i) symlinked state dir" "exit=$EXIT_I out_len=${#OUT} evil=$(ls -A "$OUTSIDE/evil" | tr '\n' ' ')"
+  fail_case "(i) symlinked state dir" "exit=$EXIT_I out_len=${#OUT} evil=$(find "$OUTSIDE/evil" -mindepth 1 | tr '\n' ' ')"
 fi
 rm -f "$MARKER_DIR"
 
