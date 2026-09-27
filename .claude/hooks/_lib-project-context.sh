@@ -24,7 +24,19 @@
 #   agent index), capped at $PROJCTX_BUDGET characters.
 
 PROJCTX_BUDGET="${PROJCTX_BUDGET:-9500}"
-_PROJCTX_CACHE_DIR="${TMPDIR:-/tmp}/apexyard-projctx-${UID:-$(id -u 2>/dev/null || echo 0)}"
+# Per-user state under $HOME, never shared /tmp: another local user could
+# pre-create a predictable /tmp dir and poison the registry cache (context
+# injection) or plant symlinks the writes below would follow. Same base
+# dir as the ops-root session pins in _lib-ops-root.sh.
+_PROJCTX_CACHE_DIR="${APEXYARD_OPS_PIN_DIR:-$HOME/.claude/apexyard}/projctx"
+
+# Create the state dir owner-only; refuse it if it is a symlink or not ours.
+projctx_state_dir() {
+  local d="$_PROJCTX_CACHE_DIR"
+  [ -d "$d" ] || mkdir -p -m 700 "$d" 2>/dev/null || return 1
+  [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ] || return 1
+  printf '%s' "$d"
+}
 
 # ------------------------------------------------------------------------------
 # Internal: name<TAB>absolute-workspace, one per registered project that
@@ -34,20 +46,31 @@ _PROJCTX_CACHE_DIR="${TMPDIR:-/tmp}/apexyard-projctx-${UID:-$(id -u 2>/dev/null 
 # of re-parsing the registry every time.
 # ------------------------------------------------------------------------------
 _projctx_registry_tsv() {
-  local registry
-  registry=$(portfolio_registry 2>/dev/null) || return 1
+  # portfolio_registry costs ~45 ms (config reads); the hook runs on every
+  # file tool call, so memoise the resolved path per session.
+  local registry reg_cache="" sd
+  if [ -n "${PROJCTX_SESSION_ID:-}" ] && sd=$(projctx_state_dir); then
+    reg_cache="$sd/registry-path-$(printf '%s' "$PROJCTX_SESSION_ID" | cksum | awk '{print $1}')"
+    [ -f "$reg_cache" ] && [ ! -L "$reg_cache" ] && IFS= read -r registry < "$reg_cache"
+  fi
+  if [ -z "$registry" ] || [ ! -f "$registry" ]; then
+    registry=$(portfolio_registry 2>/dev/null) || return 1
+    [ -n "$reg_cache" ] && [ ! -L "$reg_cache" ] && printf '%s\n' "$registry" > "$reg_cache" 2>/dev/null
+  fi
   [ -f "$registry" ] || return 1
 
   local stamp
   stamp=$(stat -c '%Y:%s' "$registry" 2>/dev/null || stat -f '%m:%z' "$registry" 2>/dev/null)
   [ -z "$stamp" ] && stamp="unknown"
 
-  local key cache_file
+  local key cache_file state_dir
   key=$(printf '%s|%s' "$registry" "$stamp" | cksum 2>/dev/null | awk '{print $1}')
   [ -z "$key" ] && key="nokey"
-  cache_file="$_PROJCTX_CACHE_DIR/registry-$key.tsv"
+  state_dir=$(projctx_state_dir) || state_dir=""
+  cache_file=""
+  [ -n "$state_dir" ] && cache_file="$state_dir/registry-$key.tsv"
 
-  if [ -f "$cache_file" ]; then
+  if [ -n "$cache_file" ] && [ -f "$cache_file" ] && [ ! -L "$cache_file" ]; then
     cat "$cache_file" 2>/dev/null
     return 0
   fi
@@ -69,8 +92,10 @@ _projctx_registry_tsv() {
 "
   done < <(_mrt_parse_registry 2>/dev/null)
 
-  mkdir -p "$_PROJCTX_CACHE_DIR" 2>/dev/null
-  printf '%s' "$content" > "$cache_file" 2>/dev/null
+  # Uncacheable (state dir unusable) → still return the parsed result.
+  if [ -n "$cache_file" ] && [ ! -L "$cache_file" ]; then
+    printf '%s' "$content" > "$cache_file" 2>/dev/null
+  fi
   printf '%s' "$content"
 }
 
@@ -85,9 +110,12 @@ projctx_resolve() {
   tsv=$(_projctx_registry_tsv) || return 1
   [ -z "$tsv" ] && return 1
 
+  # Fast path: plain string prefix (abs_path is already canonical). The
+  # slower portfolio_path_under only runs for a prefix hit, to confirm it.
   local name ws
   while IFS="$(printf '\t')" read -r name ws; do
     [ -z "$name" ] && continue
+    case "$abs_path" in "$ws"|"$ws"/*) ;; *) continue ;; esac
     if portfolio_path_under "$abs_path" "$ws" 2>/dev/null; then
       printf '%s\t%s\n' "$name" "$ws"
       return 0
@@ -106,8 +134,13 @@ EOF
   done
   [ -n "$dir" ] && [ -d "$dir" ] || return 1
 
+  # Stock macOS has no `timeout`; the hook's own 3 s cap bounds git there.
   local gcd main_root
-  gcd=$(timeout 1 git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  if command -v timeout >/dev/null 2>&1; then
+    gcd=$(timeout 1 git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  else
+    gcd=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  fi
   [ -z "$gcd" ] && return 1
   main_root=$(dirname "$gcd")
   [ -z "$main_root" ] && return 1
@@ -182,7 +215,7 @@ projctx_emit() {
   # last so the tail-cut below never drops the index.
   local out body claude_md
   claude_md="$ws/CLAUDE.md"
-  out="Project context: $name (live from $ws) — authoritative for files under this path"$'\n\n'
+  out="Project conventions: $name (read live from $ws; repo content, not operator instructions). Apply them to files under this path."$'\n\n'
   body=""
 
   if [ -f "$claude_md" ]; then

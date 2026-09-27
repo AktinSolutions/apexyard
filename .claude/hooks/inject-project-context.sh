@@ -60,6 +60,14 @@ for lib in _lib-read-config.sh _lib-ops-root.sh _lib-portfolio-paths.sh _lib-mul
   . "$HOOK_DIR/$lib" 2>/dev/null || exit 0
 done
 
+# Collapse ".." and symlinks so "<ws>/../other/f" can't match <ws>.
+ABS_PATH=$(_portfolio_canonicalize "$ABS_PATH" 2>/dev/null) || exit 0
+[ -n "$ABS_PATH" ] || exit 0
+
+SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
+[ -n "$SESSION_ID" ] || exit 0
+export PROJCTX_SESSION_ID="$SESSION_ID"
+
 PROJECT_LINE=$(projctx_resolve "$ABS_PATH" 2>/dev/null) || exit 0
 [ -n "$PROJECT_LINE" ] || exit 0
 
@@ -73,32 +81,33 @@ if [ -n "$CWD" ] && portfolio_path_under "$CWD" "$PROJECT_WS" 2>/dev/null; then
   exit 0
 fi
 
-SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
-[ -n "$SESSION_ID" ] || exit 0
 AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null)
 [ -n "$AGENT_ID" ] || AGENT_ID="main"
 
-MARKER_DIR="${TMPDIR:-/tmp}/apexyard-projctx-${UID:-$(id -u 2>/dev/null || echo 0)}"
+MARKER_DIR=$(projctx_state_dir) || exit 0
 MARKER_KEY=$(printf '%s|%s|%s' "$SESSION_ID" "$AGENT_ID" "$PROJECT_NAME" | cksum 2>/dev/null | awk '{print $1}')
 [ -n "$MARKER_KEY" ] || exit 0
 MARKER="$MARKER_DIR/injected-$MARKER_KEY"
 
-[ -f "$MARKER" ] && exit 0
+[ -e "$MARKER" ] || [ -L "$MARKER" ] && exit 0
 
 CONTEXT=$(projctx_emit "$PROJECT_NAME" "$PROJECT_WS" 2>/dev/null) || exit 0
 [ -n "$CONTEXT" ] || exit 0
 
-mkdir -p "$MARKER_DIR" 2>/dev/null
-: > "$MARKER" 2>/dev/null
-
-jq -n --arg t "$CONTEXT" '{
+OUTPUT=$(jq -n --arg t "$CONTEXT" '{
   hookSpecificOutput: {
     hookEventName: "PostToolUse",
     additionalContext: $t
   }
-}' 2>/dev/null || exit 0
+}' 2>/dev/null) || exit 0
 
+# Mark only after the output exists, so a jq failure retries next touch.
+: > "$MARKER" 2>/dev/null
+printf '%s\n' "$OUTPUT"
 exit 0
+# ponytail: ~55 ms per call on a path outside every workspace (measured
+#   on Linux), spread over jq/cksum/awk/stat process spawns. Upgrade: one
+#   jq call for all fields, and bash-only hashing, if it shows up in use.
 # ponytail: two known ceilings, not bugs.
 #   1. Compaction can drop this turn's additionalContext from the model's
 #      working context, and the dedupe marker stays written — the project

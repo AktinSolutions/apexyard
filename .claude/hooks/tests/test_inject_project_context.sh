@@ -95,7 +95,9 @@ description: CANARY_AGENT_DESCRIPTION
 # Releaser
 MD
 
-MARKER_DIR="${TMPDIR:-/tmp}/apexyard-projctx-${UID:-$(id -u)}"
+# State dir lives under the ops pin dir; point it into the sandbox.
+export APEXYARD_OPS_PIN_DIR="$SB/pins"
+MARKER_DIR="$APEXYARD_OPS_PIN_DIR/projctx"
 rm -rf "$MARKER_DIR"
 
 # stdin JSON builder: session_id, optional agent_id, cwd, tool + path key.
@@ -116,7 +118,7 @@ payload() {
 # anchors, exactly as test_multi_repo_registry.sh already guards against.
 invoke() {
   local stdin_json="$1"
-  ( cd "$FORK" && unset APEXYARD_OPS_PIN_DIR CLAUDE_CODE_SESSION_ID 2>/dev/null
+  ( cd "$FORK" && unset CLAUDE_CODE_SESSION_ID 2>/dev/null
     printf '%s' "$stdin_json" | "$FORK/.claude/hooks/inject-project-context.sh" )
 }
 
@@ -221,6 +223,27 @@ else
   fail_case "(g) broken input / missing registry" "exit_broken=$EXIT_BROKEN out='$OUT' exit_noreg=$EXIT_NOREG out2='$OUT2'"
 fi
 rm -rf "$MARKER_DIR"
+
+# --- (h) "<ws>/../x" escapes the workspace → no injection
+OUT=$(invoke "$(payload s8 "" "" "$WS/../../outside-file.ts")")
+if [ -z "$OUT" ]; then
+  pass_case "(h) '..' path that leaves the workspace injects nothing"
+else
+  fail_case "(h) '..' escape" "out=$(printf '%s' "$OUT" | head -c 200)"
+fi
+rm -rf "$MARKER_DIR"
+
+# --- (i) state dir pre-planted as a symlink (another user's dir) → refused, fail open
+mkdir -p "$OUTSIDE/evil" "$APEXYARD_OPS_PIN_DIR"
+ln -s "$OUTSIDE/evil" "$MARKER_DIR"
+OUT=$(invoke "$(payload s9 "" "" "$WS/src/index.ts")")
+EXIT_I=$?
+if [ "$EXIT_I" = 0 ] && [ -z "$OUT" ] && [ -z "$(ls -A "$OUTSIDE/evil")" ]; then
+  pass_case "(i) symlinked state dir refused: exit 0, no output, nothing written through the link"
+else
+  fail_case "(i) symlinked state dir" "exit=$EXIT_I out_len=${#OUT} evil=$(ls -A "$OUTSIDE/evil" | tr '\n' ' ')"
+fi
+rm -f "$MARKER_DIR"
 
 echo "===== test_inject_project_context.sh ====="
 echo "Passed: $PASS"
