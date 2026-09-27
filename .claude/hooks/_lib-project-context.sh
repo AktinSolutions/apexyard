@@ -5,6 +5,7 @@
 #
 # Source order (same libs _lib-multi-repo-trace.sh already needs):
 #   source ".../_lib-read-config.sh"
+#   source ".../_lib-ops-root.sh"
 #   source ".../_lib-portfolio-paths.sh"
 #   source ".../_lib-multi-repo-trace.sh"   # _mrt_parse_registry
 #   source ".../_lib-project-context.sh"

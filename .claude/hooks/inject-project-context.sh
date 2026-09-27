@@ -112,7 +112,7 @@ exit 0
 #   1. Compaction can drop this turn's additionalContext from the model's
 #      working context, and the dedupe marker stays written — the project
 #      never gets re-injected in that session. Upgrade: clear
-#      apexyard-projctx-$UID/injected-* markers on PreCompact / a
+#      ${APEXYARD_OPS_PIN_DIR:-$HOME/.claude/apexyard}/projctx/injected-* markers on PreCompact / a
 #      SessionStart that detects a resumed-after-compact session.
 #   2. Bash tool calls are not matched (settings.json matcher stops at
 #      Read|Glob|Grep|Edit|Write|MultiEdit), so `cat > workspace/x/f.ts`
