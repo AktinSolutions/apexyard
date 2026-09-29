@@ -24,7 +24,7 @@
 #     _lib-project-context.sh, so a stalled repo can't eat the budget.
 #
 # DEDUPE: one injection per (session_id, agent_id-or-"main", project) —
-# a marker file's mere existence, nothing to parse. A subagent has its
+# a marker directory claimed atomically with mkdir. A subagent has its
 # own agent_id (spike-confirmed) and so gets its own injection.
 #
 # SCOPE: matched on Read|Glob|Grep|Edit|Write|MultiEdit in settings.json.
@@ -89,20 +89,20 @@ MARKER_KEY=$(printf '%s|%s|%s' "$SESSION_ID" "$AGENT_ID" "$PROJECT_NAME" | cksum
 [ -n "$MARKER_KEY" ] || exit 0
 MARKER="$MARKER_DIR/injected-$MARKER_KEY"
 
-[ -e "$MARKER" ] || [ -L "$MARKER" ] && exit 0
+# Claim the marker atomically BEFORE building the text: mkdir is atomic and
+# refuses an existing path (a symlink too). Release it on any failure so the
+# next touch retries.
+mkdir "$MARKER" 2>/dev/null || exit 0
 
-CONTEXT=$(projctx_emit "$PROJECT_NAME" "$PROJECT_WS" 2>/dev/null) || exit 0
-[ -n "$CONTEXT" ] || exit 0
+CONTEXT=$(projctx_emit "$PROJECT_NAME" "$PROJECT_WS" 2>/dev/null) && [ -n "$CONTEXT" ] || { rmdir "$MARKER" 2>/dev/null; exit 0; }
 
 OUTPUT=$(jq -n --arg t "$CONTEXT" '{
   hookSpecificOutput: {
     hookEventName: "PostToolUse",
     additionalContext: $t
   }
-}' 2>/dev/null) || exit 0
+}' 2>/dev/null) || { rmdir "$MARKER" 2>/dev/null; exit 0; }
 
-# Mark only after the output exists, so a jq failure retries next touch.
-: > "$MARKER" 2>/dev/null
 printf '%s\n' "$OUTPUT"
 exit 0
 # ponytail: ~55 ms per call on a path outside every workspace (measured
