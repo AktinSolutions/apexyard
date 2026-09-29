@@ -243,6 +243,13 @@ Other deferred items from the PR body and the reviews:
 - PR: #1425
 - Reviews on #1425: Tariq 5337588001, Hakim 5337585308, Rex 5337610285
 - Maintainer summary on #1425: comment 5868670475
-- Round-1 final reviews by Rex, Hakim and Tariq on `336ba2e`, and the performance review. Review ids to be added by the coordinator (the builder was not given them). Performance numbers: tokens per injection 460 / 2,070 / 2,375; hook time on a miss 57 ms, falling to 30 ms after the single jq call and the worktree pre-check.
+- Round-1 final reviews on `336ba2e`. These ran locally and were not posted to the PR. The delta reviews of the pushed head are linked from the PR.
+  - Rex (code): request changes. H1, B1 and the missing AgDR were closed. Rex found two new blockers, frame placement and this record's stale table. Both are fixed in `6a192c1`.
+  - Hakim (security): pass, conditional on CI. H1 and M2 were closed. The L1, N1 and N2 advisories are fixed in `6a192c1`.
+  - Tariq (architecture): request changes. B1 was closed. Frame placement, the macOS failure in the test and the stale table are fixed in `6a192c1`.
+- Performance review on `336ba2e`, local.
+  - Tokens per injection: 460 (small), 2,070 (typical), 2,375 (max).
+  - The skill and agent index crowded out `CLAUDE.md`. The index is now capped.
+  - Hook time when no project matches: 57 ms, and 30 ms after the single jq call and the worktree pre-check.
 - Related records: AgDR-0160 (rule exclusion and its 2026-09-25 scope note), AgDR-0073 (`AGENTS.md` handover layout), AgDR-0111 (advisory marker-write guard)
 - Related issues: #1354 and PR #1355 (the rules exclude), #1388 (the per-clone exclude)
