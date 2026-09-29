@@ -187,7 +187,7 @@ This table is a snapshot at PR #1425 head `4fd04f5`. The PR is still open. A req
 | 8. Bounded work | Implemented. Rule reads stop at 200 files. The skill and agent loops count every entry but read at most 30 files each. Import scanning is bounded by the 64 KB `CLAUDE.md` read, and the import list is capped at 30 entries. | Tests (o), (q), (x) |
 | 9. 3-second timeout | Implemented | `settings.json`. Spike check 3b. |
 | 10. Always exit 0 | Implemented | Test (g) |
-| 11. Contained reads | Implemented, including the `..` and newline refusals. Hardlinks are not detected. | Tests (k), (p), (r) |
+| 11. Contained reads | Implemented, including the `..` and newline refusals. Hardlinks are not detected. Frontmatter values and file names are stripped of or refused for control characters; NUL is stripped from hook input fields; budget variables accept digits only; index names are cut to 60 chars and `paths:` values to 200. | Tests (k), (p), (r), (y), (z1), (z3) |
 | 12. Private state | Implemented | Test (i) |
 | 13. No double load from the project root | Implemented for `cwd` inside the workspace. No skip for a workspace under `cwd` (Known limit 5). | Test (e) |
 | 14. `AGENTS.md` layout | Not implemented. Follow-up. | Tariq S1 |
