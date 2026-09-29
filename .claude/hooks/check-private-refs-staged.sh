@@ -29,47 +29,166 @@ current_repo=""
 origin_url=$(git remote get-url origin 2>/dev/null || true)
 current_repo=$(printf '%s' "$origin_url" | sed -nE 's|.*github\.com[:/]([^/]+/[^/]+)(\.git)?$|\1|p' | sed 's/\.git$//')
 current_name=${current_repo##*/}
+current_owner=${current_repo%%/*}
+
+# #1477 — known-public slug list for origin-identity proof. Matches the
+# runtime hook: configured public_framework_repos (else the shipped
+# default). Keep newline-separated so iteration never word-splits.
+# Do NOT auto-append upstream here. Upstream is not proof that origin
+# is public (private ops repos commonly point upstream at the public
+# framework; GitHub disallows a private fork of a public repo).
+known_public_repos="me2resh/apexyard"
+origin_verified_public=""
+if [ -f "$HOOK_DIR/_lib-read-config.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$HOOK_DIR/_lib-read-config.sh"
+  configured=$(config_get '.leak_protection.public_framework_repos[]' 2>/dev/null)
+  [ -n "$configured" ] && known_public_repos="$configured"
+  # Recorded by /setup or /update via bin/record-origin-verified-public.sh
+  # after an online gh visibility check (AgDR-0190). Exact slug match only.
+  origin_verified_public=$(config_get_or '.leak_protection.origin_verified_public' '')
+  origin_verified_public=$(printf '%s' "$origin_verified_public" | tr -d '[:space:]')
+fi
+
+# #1431 — an ops fork's `origin` is the fork itself. The
+# public framework lives at the `upstream` remote. A registry commonly lists
+# the framework repo, and an adopter's login often equals a registered
+# project name, so a commit that cites an upstream issue as
+# `<upstream-owner>/<repo>#N` must not read as a leak either. Resolve
+# `upstream` the same way as `origin`. A fork with no `upstream` remote
+# leaves these empty.
+# #1477 — origin identity exemptions require offline proof that origin is
+# public (see origin_identity_exempt below). Upstream *citation* exemptions
+# still apply when upstream is set. They do not prove origin is public.
+upstream_repo=""
+upstream_url=$(git remote get-url upstream 2>/dev/null || true)
+if [ -n "$upstream_url" ]; then
+  upstream_repo=$(printf '%s' "$upstream_url" | sed -nE 's|.*github\.com[:/]([^/]+/[^/]+)(\.git)?$|\1|p' | sed 's/\.git$//')
+fi
+upstream_name=""
+upstream_owner=""
+if [ -n "$upstream_repo" ]; then
+  upstream_name=${upstream_repo##*/}
+  upstream_owner=${upstream_repo%%/*}
+fi
+
+# #1477 — fail closed: no origin slug / bare-name / owner exemption unless
+# origin is in known_public_repos, origin_verified_public equals origin
+# exactly, or a registry public:true entry names origin.
+# Keep in parity with check-private-refs-runtime.sh.
+origin_identity_exempt=0
+if [ -n "$current_repo" ]; then
+  while IFS= read -r known; do
+    [ -n "$known" ] || continue
+    if [ "$current_repo" = "$known" ]; then
+      origin_identity_exempt=1
+      break
+    fi
+  done <<EOF
+$known_public_repos
+EOF
+  if [ "$origin_identity_exempt" -eq 0 ] \
+    && [ -n "$origin_verified_public" ] \
+    && [ "$current_repo" = "$origin_verified_public" ]; then
+    origin_identity_exempt=1
+  fi
+fi
+
+if [ -f "$HOOK_DIR/_lib-registry-parser.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$HOOK_DIR/_lib-registry-parser.sh"
+fi
+
+# apexyard#1457 review round 2 (Rex B1 / Hakim HIGH-2) — the registry exists
+# (checked above), so there IS a scrub list to enforce. If the shared
+# parser failed to load, or the awk parse itself fails, silently treating
+# that as "no registered projects" would fail OPEN on every private
+# reference. Fail closed instead: block until the parser is fixed.
+if ! declare -F registry_parse_entries >/dev/null 2>&1; then
+  echo "BLOCKED: shared registry parser (_lib-registry-parser.sh) is missing or failed to load. Cannot safely scan staged content for a private portfolio reference." >&2
+  exit 2
+fi
+registry_parsed=$(registry_parse_entries "$REGISTRY")
+registry_parse_rc=$?
+if [ "$registry_parse_rc" -ne 0 ]; then
+  echo "BLOCKED: registry parse failed (exit $registry_parse_rc) while scanning staged content for a private portfolio reference." >&2
+  exit 2
+fi
 
 names=()
+names_public=()
 repos=()
+repos_public=()
 workspaces=()
+workspaces_public=()
+name_repo_pairs=()
+current_public=0
 while IFS= read -r entry; do
   case "$entry" in
-    NAME=*) names+=("${entry#NAME=}") ;;
-    REPO=*) repos+=("${entry#REPO=}") ;;
-    WORKSPACE=*) workspaces+=("${entry#WORKSPACE=}") ;;
+    PUBLIC=*) current_public=${entry#PUBLIC=} ;;
+    NAME=*)
+      names+=("${entry#NAME=}")
+      names_public+=("$current_public")
+      ;;
+    REPO=*)
+      repos+=("${entry#REPO=}")
+      repos_public+=("$current_public")
+      ;;
+    WORKSPACE=*)
+      workspaces+=("${entry#WORKSPACE=}")
+      workspaces_public+=("$current_public")
+      ;;
+    PAIR=*)
+      # apexyard#1457 round 4 — the shared parser's private/public sets
+      # are now flat, structure-independent value sets (NAME=/REPO=/
+      # WORKSPACE= adjacency no longer implies "same registry entry"), so
+      # it emits this pairing directly instead. Used only by the #1431
+      # upstream bare-name exemption below.
+      name_repo_pairs+=("${entry#PAIR=}")
+      ;;
   esac
-done < <(awk '
-  function unquote(value) { gsub(/^['\''\"]|['\''\"]$/, "", value); return value }
-  /^[[:space:]]*- name:/ {
-    print "NAME=" unquote($3); current_list = ""; next
-  }
-  /^[[:space:]]*repo:/ {
-    print "REPO=" unquote($2); current_list = ""; next
-  }
-  /^[[:space:]]*workspace:/ {
-    print "WORKSPACE=" unquote($2); current_list = ""; next
-  }
-  /^[[:space:]]*repos:[[:space:]]*\[/ {
-    value = $0; sub(/^[^\[]*\[/, "", value); sub(/\].*$/, "", value)
-    count = split(value, items, ",")
-    for (i = 1; i <= count; i++) {
-      item = items[i]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", item)
-      if (item != "") print "REPO=" unquote(item)
-    }
-    current_list = ""; next
-  }
-  /^[[:space:]]*repos:[[:space:]]*(#.*)?$/ { current_list = "repos"; next }
-  /^[[:space:]]*[A-Za-z_][A-Za-z0-9_-]*:/ { current_list = ""; next }
-  /^[[:space:]]*-[[:space:]]+/ {
-    if (current_list == "repos") {
-      value = $0; sub(/^[[:space:]]*-[[:space:]]+/, "", value)
-      gsub(/[[:space:]]+$/, "", value); print "REPO=" unquote(value)
-    }
-  }
-' "$REGISTRY")
+done <<EOF
+$registry_parsed
+EOF
 
-[ "${#names[@]}" -gt 0 ] || [ "${#repos[@]}" -gt 0 ] || [ "${#workspaces[@]}" -gt 0 ] || exit 0
+if [ "${#names[@]}" -eq 0 ] && [ "${#repos[@]}" -eq 0 ] && [ "${#workspaces[@]}" -eq 0 ]; then
+  # apexyard#1457 review round 3 (Hakim MEDIUM, elevated to blocking) — a
+  # registry that plainly looks like it registers projects (a `projects:`
+  # key AND at least one `name:` key) but produced zero tokens means the
+  # parse missed a shape, not that nothing is registered. Fail closed.
+  if registry_has_project_shape "$REGISTRY"; then
+    echo "BLOCKED: registry parse produced no tokens despite a projects: key and a name: key being present in $REGISTRY. Cannot safely scan staged content for a private portfolio reference." >&2
+    exit 2
+  fi
+  exit 0
+fi
+
+# #1477 — a registry public:true entry whose repo equals origin also proves
+# origin is public (offline, no network).
+if [ "$origin_identity_exempt" -eq 0 ] && [ -n "$current_repo" ]; then
+  for idx in "${!repos[@]}"; do
+    if [ "${repos_public[$idx]}" = "1" ] && [ "${repos[$idx]}" = "$current_repo" ]; then
+      origin_identity_exempt=1
+      break
+    fi
+  done
+fi
+
+# #1431 round 2 (Hakim MEDIUM) — a registered project's `name` can
+# coincidentally equal `upstream`'s bare repo name without that entry
+# actually BEING upstream (a different, private repo happens to share the
+# same bare name). Only exempt the name outright when the SAME registry
+# entry's own `repo` field equals `upstream_repo` — a real association, not
+# a name-string coincidence. Origin bare-name exemption is gated by
+# origin_identity_exempt (#1477).
+registry_name_repo_matches() {
+  local target_name="$1" target_repo="$2" pair
+  [ "${#name_repo_pairs[@]}" -gt 0 ] || return 1
+  for pair in "${name_repo_pairs[@]}"; do
+    [ "$pair" = "${target_name}"$'\t'"${target_repo}" ] && return 0
+  done
+  return 1
+}
 
 registry_rel=""
 case "$REGISTRY" in
@@ -82,7 +201,59 @@ escape_regex() {
 
 staged_blob_matches() {
   local path="$1" regex="$2"
-  git show ":$path" 2>/dev/null | grep -qiE "$regex"
+  # Match staged bytes even when a line is not valid UTF-8 (#1436).
+  git show ":$path" 2>/dev/null | LC_ALL=C grep -qiE "$regex"
+}
+
+# #1400's owner-login exemption, ported from
+# block-private-refs-in-public-repos.sh. A registered name can coincidentally
+# equal the owner login of `origin` or `upstream`. Writing that owner out as
+# `owner/repo` or `@owner` must not read as a leak of the unrelated project.
+# Strip only those two safe forms from a lower-cased copy of the staged blob,
+# then check whether the owner's name still appears as a bare, standalone
+# word. A bare mention still blocks, like any other registered name.
+#
+# #1431 round 2 (Hakim HIGH-1) — a staged blob can hold a raw non-UTF-8 byte
+# (a stray Latin-1 byte, say). In a UTF-8 locale, `tr` and BSD `sed` both
+# stop with "illegal byte sequence" on that byte, the pipeline's exit code
+# goes non-zero, and the old code treated ANY failure here as "no bare
+# mention remains" — exempting the file outright on a scan that never ran.
+# Two fixes: every `tr`/`sed`/`grep` call below runs under `LC_ALL=C`, so a
+# raw byte is just a byte, not an encoding error; and a failure at any step
+# (including `git show` itself) now returns 0 — "a bare mention remains" —
+# so the caller falls through to the ordinary block instead of exempting an
+# unscanned file. Fail closed, not open. `#` also joins the escaped
+# characters, because the second `sed` below uses `#` as its own delimiter;
+# an unescaped `#` in a registered name would end that pattern early.
+owner_bare_mention_remains() {
+  local path="$1" owner_name="$2"
+  local content esc_lc haystack_lc stripped_lc rc
+
+  content=$(git show ":$path" 2>/dev/null)
+  rc=$?
+  [ "$rc" -eq 0 ] || return 0
+
+  esc_lc=$(printf '%s' "$owner_name" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+  rc=$?
+  [ "$rc" -eq 0 ] || return 0
+  esc_lc=$(printf '%s' "$esc_lc" | LC_ALL=C sed -E 's/[][\\/.^$*+?(){}|#]/\\&/g')
+  rc=$?
+  [ "$rc" -eq 0 ] || return 0
+
+  haystack_lc=$(printf '%s' "$content" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+  rc=$?
+  [ "$rc" -eq 0 ] || return 0
+
+  stripped_lc=$(printf '%s' "$haystack_lc" | LC_ALL=C sed -E \
+    -e "s/@${esc_lc}([^A-Za-z0-9_-]|\$)/\\1/g" \
+    -e "s#(^|[^A-Za-z0-9_-])${esc_lc}/[a-z0-9_-]+#\\1#g")
+  rc=$?
+  [ "$rc" -eq 0 ] || return 0
+
+  printf '%s' "$stripped_lc" | LC_ALL=C grep -qE "(^|[^A-Za-z0-9_])${esc_lc}([^A-Za-z0-9_]|\$)"
+  rc=$?
+  [ "$rc" -eq 1 ] && return 1
+  return 0
 }
 
 block() {
@@ -103,22 +274,47 @@ while IFS= read -r -d '' path; do
   [ "$path" = "$registry_rel" ] && continue
   git show ":$path" >/dev/null 2>&1 || continue
 
-  for name in "${names[@]}"; do
+  for idx in "${!names[@]}"; do
+    name="${names[$idx]}"
     [ -n "$name" ] || continue
-    [ "$name" = "$current_name" ] && continue
+    [ "${names_public[$idx]}" = "1" ] && continue
+    if [ "$origin_identity_exempt" -eq 1 ] && [ "$name" = "$current_name" ]; then
+      continue
+    fi
+    if [ -n "$upstream_name" ] && [ "$name" = "$upstream_name" ] \
+      && registry_name_repo_matches "$name" "$upstream_repo"; then
+      continue
+    fi
+
+    if { [ "$origin_identity_exempt" -eq 1 ] && [ "$name" = "$current_owner" ]; } \
+      || { [ -n "$upstream_owner" ] && [ "$name" = "$upstream_owner" ]; }; then
+      owner_bare_mention_remains "$path" "$name" || continue
+    fi
+
     escaped=$(escape_regex "$name")
     staged_blob_matches "$path" "(^|[^[:alnum:]_])${escaped}([^[:alnum:]_]|$)" && block "$path"
   done
 
-  for repo in "${repos[@]}"; do
+  for idx in "${!repos[@]}"; do
+    repo="${repos[$idx]}"
     [ -n "$repo" ] || continue
-    [ "$repo" = "$current_repo" ] && continue
+    [ "${repos_public[$idx]}" = "1" ] && continue
+    if [ "$origin_identity_exempt" -eq 1 ] && [ "$repo" = "$current_repo" ]; then
+      continue
+    fi
+    [ -n "$upstream_repo" ] && [ "$repo" = "$upstream_repo" ] && continue
     escaped=$(escape_regex "$repo")
-    staged_blob_matches "$path" "(^|[^A-Za-z0-9_/-])${escaped}(#[0-9]+)?([^A-Za-z0-9_/-]|$)" && block "$path"
+    # #1477 / #1407 — a slash may precede a slug in a URL or follow it in
+    # an issue path. Treat `/` as a boundary (parity with the runtime and
+    # public-repo hooks). Keep hyphens excluded so a slug inside a longer
+    # token stays unmatched.
+    staged_blob_matches "$path" "(^|[^A-Za-z0-9_-])${escaped}(#[0-9]+)?([^A-Za-z0-9_-]|$)" && block "$path"
   done
 
-  for workspace in "${workspaces[@]}"; do
+  for idx in "${!workspaces[@]}"; do
+    workspace="${workspaces[$idx]}"
     [ -n "$workspace" ] || continue
+    [ "${workspaces_public[$idx]}" = "1" ] && continue
     escaped=$(escape_regex "$workspace")
     staged_blob_matches "$path" "(^|[^A-Za-z0-9_-])${escaped}([^A-Za-z0-9_-]|$)" && block "$path"
   done

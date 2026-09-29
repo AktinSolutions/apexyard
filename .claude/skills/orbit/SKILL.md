@@ -1,8 +1,8 @@
 ---
 name: orbit
 description: Run the opt-in ORBIT planning lifecycle for one managed project without replacing ApexYard governance.
-argument-hint: "<plan|snapshot|reconcile|slice|validate> --project <name> [--no-challenge]"
-allowed-tools: Bash, Read, Write, Grep, Glob
+argument-hint: "<plan|snapshot|reconcile|slice|validate|handoff> --project <name> [--no-challenge]"
+allowed-tools: Bash, Read, Write, Grep, Glob, AskUserQuestion
 ---
 
 # /orbit — ORBIT planning adapter
@@ -11,7 +11,7 @@ Use this skill when an operator explicitly wants ORBIT records for one managed p
 
 Use the controlled technical writing profile for prompts, record explanations, and any durable handoff text.
 
-The skill does not create issues, branches, commits, code changes, deployments, or external tracker records. Existing ApexYard planning skills remain unchanged.
+The skill does not create branches, commits, code changes, or deployments. Existing ApexYard planning skills remain unchanged. `handoff` is the one exception to "no tracker records": it creates exactly one tracker issue per validated execution slice, after a dry-run preview, a leak scrub, and operator confirmation (AgDR-0179, partly superseding AgDR-0164). Every other operation stays record-only.
 
 ## Prerequisites
 
@@ -137,6 +137,60 @@ Validate the complete ORBIT record set before handoff:
 
 Return the CLI exit status. A non-zero result blocks the handoff until the record or provenance is corrected.
 
+### `/orbit handoff --project <name> --slice <file>`
+
+Turn one validated execution slice into one tracker issue, through the existing single-issue `orbit sync github` adapter. This is the only `/orbit` operation that writes to an external tracker. No other ApexYard skill calls the ORBIT CLI (ac1-5) — keep that boundary when you extend this operation.
+
+Resolve `project_root` and `orbit_root` as in "Project resolution" above. Also resolve the project's tracker repo from the same registry entry — the handoff files the issue against this repo, and every other step below (the duplicate check, the leak scrub, the sync, the confirmation prompt) uses this same value, never a placeholder typed by hand. Use the helper, not a hand-rolled `awk` line — a project that is not the last registry entry needs the `found`-flag fix the helper carries (apexyard#1446, Hakim N1):
+
+```bash
+project_repo=$("$(git rev-parse --show-toplevel)/.claude/skills/orbit/lib/resolve-project-repo.sh" "$registry" "$project") || {
+  echo "No repo: field for project $project in the registry. /orbit handoff needs a target repo." >&2
+  exit 1
+}
+```
+
+The slice file's `basedOn` names the Plan revision and the Reconciliation it was cut from; resolve the matching records from `orbit_root` before doing anything else:
+
+- Plan: the record in `docs/orbit/plans/` whose `id` equals the slice's `planId` and whose `revision` equals `basedOn.planRevision`.
+- Reconciliation: the record in `docs/orbit/reconciliations/` whose `id` equals `basedOn.reconciliationId`.
+- Snapshot: the record in `docs/orbit/snapshots/` whose `id` equals the resolved Reconciliation's `projectSnapshotId`.
+
+Stop and report if any of the three is missing or ambiguous. Do not guess a record when more than one file matches.
+
+Run the mechanical preflight helper. It performs steps 1–5 below and prints the leak-scrubbed dry-run preview on stdout, or stops with a reason on stderr and a non-zero exit:
+
+```bash
+"$(git rev-parse --show-toplevel)/.claude/skills/orbit/lib/handoff-preflight.sh" \
+  --slice "$slice_file" \
+  --repo "$project_repo" \
+  --orbit-root "$orbit_root"
+```
+
+The helper's flow, in order:
+
+1. **CLI check.** If `$ORBIT_BIN` (default `orbit`) is not on `PATH`, stop with one install note (ac1-4): "ORBIT CLI not found. Install orbit-spec ... or set ORBIT_BIN to the CLI path." Take no further action.
+2. **Validate.** Run `orbit validate --all --root "$orbit_root"`. On a non-zero exit, stop and state the reason from the CLI's own error text (ac1-3).
+3. **Duplicate check.** Search open issues in `$project_repo` for the slice ID, but only *count* a hit when an issue's body contains the exact backtick-quoted token the adapter renders under "Orbit identifiers" (`` `<slice-id>` ``) — a shared word or a prefix is not a match. When the search itself fails (auth, network, rate limit), stop with a "cannot verify" error; never treat a failed search as "no duplicate found".
+4. **Dry-run preview.** Run `orbit sync github --dry-run --plan <plan_file> --snapshot <snapshot_file> --reconciliation <reconciliation_file> --slice <slice_file> --repo "$project_repo"`. The adapter already renders the issue body with the slice ID, the Plan ID and revision, the objective, and the included and excluded work (ac1-2) — do not fork the adapter to add fields it already carries.
+5. **Leak scrub.** Extract the plain-text title and body from the preview with `jq -r '.title'` / `jq -r '.body'` — not the raw JSON, where a name at the start of a body line is preceded by the two characters `\n` rather than a real newline, and the scrub's word-boundary rule misses it. Run `check-private-refs-runtime.sh` against `$project_repo`, the plain-text title, and the plain-text body written to a file. A non-zero exit blocks the handoff (ac1-6).
+
+After the helper exits 0 with the scrubbed preview on stdout, continue in the skill itself (these two steps ask for and act on operator input, so they stay outside the mechanical helper):
+
+6. **Operator confirmation.** Show the target repo, the preview title, and the preview body, and ask: `Create this issue in <owner/repo> for slice <slice-id>? (y/n)`. A "no", an unclear answer, or no answer stops the handoff. Only a clear "yes" continues.
+
+7. **Real sync.** Only after a "yes", run the same command without `--dry-run`:
+
+   ```bash
+   "${ORBIT_BIN:-orbit}" sync github --plan <plan_file> --snapshot <snapshot_file> --reconciliation <reconciliation_file> --slice <slice_file> --repo "$project_repo"
+   ```
+
+   Report the created issue URL.
+
+The helper's non-zero exit codes: `10` CLI absent, `11` validate failed, `12` an open issue already carries the exact slice-ID token, `13` a usage error, a record-resolution failure, or a duplicate check that could not be verified (the search failed or returned something other than a JSON array), `14` the leak scrub blocked the preview. Surface the stderr message in each case; do not paraphrase it into a different reason.
+
+Out of scope for this operation (later ORBIT slices): the sidecar mapping file and idempotent re-handoff, the leak scrub on committed ORBIT records, `/start-ticket` recording the slice ID, the `Slice:` reference check in PR bodies, and the Projects v2 board. Also out of scope: a wrapper that re-renders and hashes the preview immediately before the real sync, to guarantee the scrubbed text and the written text are identical (proposed as a follow-up ticket, not filed by this slice).
+
 ## End-to-end planning workflow
 
 When the operator asks for the full lifecycle, run these stages in order. Do not skip a stage because a later record can be written without it.
@@ -150,6 +204,11 @@ When the operator asks for the full lifecycle, run these stages in order. Do not
 If a required input is missing, stop at that stage and report the missing evidence. Do not silently create a partial Plan or treat an unverified criterion as achieved.
 
 ## Interaction script
+
+Use `AskUserQuestion` for every operator choice between options in this skill.
+Follow `.claude/rules/reporting-style.md § Operator choices`.
+Keep single yes/no and ticket confirmation prompts as written.
+The prose option prompts below are fallbacks only when the harness lacks `AskUserQuestion`.
 
 Ask one question at a time. Show the proposed record before writing it.
 
@@ -180,6 +239,9 @@ The snapshot command is read-only against the repository. Do not ask for or expo
 
 For each acceptance criterion, ask:
 
+Use `AskUserQuestion` for the status choice. Recommend `not-verified` first until evidence supports another status.
+The status list below is a prose fallback only when the harness lacks the tool.
+
 1. `What repository evidence supports this criterion?`
 2. `Which status applies: not-verified, partially-verified, achieved, or contradicted?`
 3. `What explanation should remain with the evidence?`
@@ -209,5 +271,6 @@ Report:
 - validation result
 - provenance commit and branch when a snapshot or slice was created
 - next ApexYard gate, if the operator is handing off a slice
+- for `handoff`: the resolved Plan/Snapshot/Reconciliation files, the preflight exit code, the leak scrub result, the operator's confirmation, and the created issue URL (or the refusal reason and exit code, if the handoff stopped)
 
-Do not report a slice as executed. ORBIT describes intent and bounded handoff; execution remains provider-specific.
+Do not report a slice as executed. ORBIT describes intent and bounded handoff; execution remains provider-specific. `handoff` is the exception: report the created issue as created, not as executed — filing a ticket is not running the work.

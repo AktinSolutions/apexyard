@@ -150,9 +150,13 @@ Create an AgDR.
 
 ## Terminal push hook (`core.hooksPath`)
 
-The framework ships a `.githooks/pre-push` hook that runs the same check set as the Claude Code `pre-push-gate.sh` hook — markdownlint, shellcheck, and the subpack extraction smoke test — for terminal `git push` commands.
+The framework ships a `.githooks/pre-push` hook for `git push`. Once installed, it runs for a terminal push AND a Claude Code-driven push — git invokes it the same way either time. It runs two check sets in order. First, the framework's own hardcoded set (markdownlint, shellcheck, the subpack extraction smoke test), via `bin/run-pre-push-checks.sh`. Then this repo's own configured `.pre_push.commands`, via `bin/run-configured-pre-push-checks.sh`.
 
-The Claude Code hook (`pre-push-gate.sh`) only fires on pushes made _through Claude Code_. The git hook covers pushes made directly from the terminal.
+**Plain rule (AgDR-0173, AgDR-0115): ApexYard runs `.pre_push.commands` only inside an ApexYard fork that has this hook installed. A managed-project clone gets no local pre-push check from ApexYard, ever.** ApexYard never sets `core.hooksPath` in a managed clone (AgDR-0115) — that clone's own CI is its backstop.
+
+Before AgDR-0173, the Claude Code hook (`pre-push-gate.sh`) ran a repository's `.pre_push.commands` itself, sometimes against the wrong repository (me2resh/apexyard#1366). It picked a target repository out of the Bash command's text. That could not be made sound. A heredoc, a quoted string, or a commit message could all look like a push without being one.
+
+After AgDR-0173, `pre-push-gate.sh` runs no repository's commands at all. It only reminds a session, on every matching push, to install the git hook above. It does this only when the session's own working-directory repo is itself an ApexYard fork. In a managed-project clone it prints at most a one-line note that ApexYard runs no checks there. It never suggests installing `core.hooksPath` in a repo that is not an ApexYard fork.
 
 ### Installed automatically by `/setup`
 
@@ -191,6 +195,20 @@ git commit --amend -m "$(git log -1 --format=%B)
 | `subpacks` | Marketplace sub-pack extraction smoke test — confirms no framework-private files leaked | none (bash) |
 
 Link-check (lychee) is intentionally excluded — it is slow and network-dependent, making it unsuitable for pre-push latency.
+
+### Writing-profile check (advisory)
+
+`bin/run-pre-push-checks.sh` also runs `bin/check-writing-profile.sh` after the
+checks above (me2resh/apexyard#1418 item 6). It reports semicolons and
+sentences over 25 words in the Markdown lines a push adds, using the
+controlled technical writing profile in `.claude/rules/writing-standard.md`.
+
+This check is advisory only. It always exits 0. It never blocks a push, even
+when it finds faults or crashes. Run it by hand before opening a PR:
+
+```bash
+bash bin/check-writing-profile.sh
+```
 
 ---
 

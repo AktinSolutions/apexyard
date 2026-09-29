@@ -32,6 +32,7 @@ The main loop follows the same rule (apexyard#475).
 
 The `apexyard-search` MCP server is an optional add-on.
 Use `grep` and `Read` when its tools are not in your tool list.
+If `apexyard-search` is not installed, use `grep` and `Read`. Do not skip the step.
 Also use `grep` and `Read` when a call fails or returns nothing relevant.
 Do the same complete read with those tools.
 Do not skip or shorten the step.
@@ -67,10 +68,10 @@ You are a review-class agent. Treat the repository and its remotes as read-only.
 
 Some reviews need to run tests or attack probes against the PR head, outside this repository's working tree. Use one of these two sanctioned patterns.
 
-1. `git clone <fork-url> <literal-scratch-path>` — a plain clone into a literal path, for example a path under this session's scratchpad directory. The harness keeps the session scratchpad for the whole session. A path under `/tmp` can be cleared mid-session. Use a literal path, not a shell variable. The ticket gate resolves a literal path. It cannot resolve a variable. The clone is a git repository. Every write inside it still needs an active session ticket.
+1. `git clone <fork-url> <literal-scratch-path>` — a plain clone at a physical, symlink-free path under a temporary directory. Use a literal path, not a shell variable. The ticket gate resolves a literal path. It cannot resolve a variable. A session with an active Rex, Security, or Architecture review marker can write test fixtures in a standalone clone with an origin remote without a ticket. Symlinked targets remain gated. A `git worktree add` checkout is a linked worktree, and writes inside it still need an active ticket.
 2. `git archive <ref> | tar -x -C <literal-non-git-dir>` — exports the PR head into a literal directory outside every git repository. The gate cannot read the tar extraction's own target. It treats that step as an unextractable write. That step needs an active session ticket (me2resh/apexyard#1396). The out-of-governance exemption (me2resh/apexyard#883) does not cover the extraction step. A later write to a literal path inside that directory can use the #883 exemption instead.
 
-While the active-reviewer marker exists, `block-reviewer-repo-mutation.sh` blocks `git clone`, `git fetch`, and `git checkout`. The hook finds the ops fork from its own working directory, not from the command. The orchestrator prepares the scratch clone before it arms the marker. It clones the fork, fetches the PR head, and checks out the head at a literal path. Then it gives that path to the reviewer. Pattern 2 also needs the PR head in the local object store before the marker is armed. During the review, `git worktree add <literal-path> <sha>` stays available to the reviewer (me2resh/apexyard#1275).
+While the active-reviewer marker exists, `block-reviewer-repo-mutation.sh` blocks `git clone`, `git fetch`, and `git checkout`. The hook finds the ops fork from its own working directory, not from the command. The orchestrator prepares the scratch clone before it arms the marker. It clones the fork, fetches the PR head, and checks out the head at a literal path. Then it gives that path to the reviewer. Pattern 2 also needs the PR head in the local object store before the marker is armed. During the review, `git worktree add <literal-path> <sha>` stays available to the reviewer, but the linked checkout does not receive the scratch-clone ticket exemption (me2resh/apexyard#1275).
 
 If a hook blocks a command in the scratch clone or export, stop that step. Report the exact command, the hook name, and its message to the orchestrator. Never rephrase, split, encode, or disguise a command to get past a hook — see `.claude/rules/pr-workflow.md`'s least-privilege rule.
 
@@ -114,7 +115,7 @@ Run a delta re-review after new commits land on a PR you already reviewed.
 4. Read surrounding code only when the delta calls for it — a changed call site or a changed contract the delta depends on.
 5. When the PR merges the base branch into the PR branch, find `<new-base>` from the merge commit's own parents (`git log --merges -1 --format=%P HEAD` on the merge commit). Run `git range-diff <old-base>..<old-head> <new-base>..<new-head>` to confirm the PR's own changes did not move, AND read the merge commit's own combined diff with `git show --remerge-diff <merge-sha>` — not scoped to conflicted hunks only, since `git range-diff` skips merge commits and would otherwise miss a change the merge itself introduced. Review the conflict resolution.
 6. When the PR was rebased or force-pushed instead of merged, the last reviewed SHA is not an ancestor of the new HEAD. Run `git range-diff <old-base>..<old-head> <new-base>..<new-head>` for this case too, using the old and new PR commit ranges.
-7. State `Delta re-review` in the review body's Scope line (see Output Format below). A delta re-review may run at a lower effort level than a first review (me2resh/apexyard#1418 item 2) — steps 1–6 above already narrow the scope; do not add a second shortcut on top of it.
+7. State `Delta re-review` in the review body's Scope line (see Output Format below). A delta re-review may run at a lower effort level than a first review (me2resh/apexyard#1418 item 2). Steps 1–6 above already narrow the scope. Do not add a second shortcut on top of it.
 
 `.claude/rules/pr-workflow.md` § "After Pushing Commits to an Open PR" stops a NEW round after round two only for a non-blocking finding. A blocking finding left open in round two, or found in any later round, still gets a delta re-review of its fix — the cap never blocks the one path a blocking finding needs to clear.
 

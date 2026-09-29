@@ -16,6 +16,7 @@ reviewer_entries=$(jq '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hook
 mkdir -p "$TMP/hooks"
 cp "$ROOT/dispatch-bash.sh" "$TMP/hooks/dispatch-bash.sh"
 cp "$ROOT/_lib-extract-pr.sh" "$TMP/hooks/_lib-extract-pr.sh"
+cp "$ROOT/_lib-command-scrub.sh" "$TMP/hooks/_lib-command-scrub.sh"
 chmod +x "$TMP/hooks/dispatch-bash.sh"
 
 scripts='block-ambient-tracker-repo.sh block-privileged-escalation.sh require-skill-for-issue-create.sh require-migration-ticket.sh require-active-ticket.sh suggest-mcp-search.sh warn-review-marker-write.sh warn-isolated-build-risk.sh block-reviewer-repo-mutation.sh block-git-add-all.sh block-main-push.sh validate-branch-name.sh pre-push-gate.sh block-agent-routing-drift.sh check-secrets.sh block-onboarding-in-git.sh verify-commit-refs.sh validate-commit-format.sh require-agdr-for-arch-changes.sh warn-bootstrap-scope.sh suggest-ticket-template.sh validate-issue-structure.sh block-private-refs-in-public-repos.sh validate-pr-create.sh require-agdr-for-arch-pr.sh nudge-control-adversarial-test.sh block-unreviewed-merge.sh require-design-review-for-ui.sh block-merge-on-red-ci.sh require-architecture-review.sh detect-role-trigger.sh'
@@ -48,6 +49,18 @@ grep -qx 'block-reviewer-repo-mutation.sh' "$TMP/log"
 if grep -q 'block-unreviewed-merge.sh' "$TMP/log"; then
   exit 1
 fi
+
+# PR-create text in data must not route any PR-create hook.
+for command in "printf '%s' 'gh pr create --title x'" \
+  "$(printf "cat <<'TEXT'\ngh pr create --title x\nTEXT")"; do
+  : > "$TMP/log"
+  jq -nc --arg c "$command" '{tool_name:"Bash",tool_input:{command:$c}}' \
+    | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh"
+  if grep -q '^validate-pr-create.sh$' "$TMP/log"; then
+    echo "FAIL: dispatcher routed quoted PR-create data" >&2
+    exit 1
+  fi
+done
 
 : > "$TMP/log"
 run 'gh pr merge 42'
@@ -282,9 +295,12 @@ if ! grep -q '_lib-extract-pr.sh' "$TMP/stderr"; then
   exit 1
 fi
 
-# Control: a MISSING (not unreadable) library must stay a tolerated
-# partial-install case, not a new block — this test would also catch an
-# overly broad fix that blocks on absence too.
+# Control: a MISSING (not unreadable) library must not make the dispatcher
+# itself invent a new absence block on top of the merge-gate path. This
+# sandbox uses stub merge gates that always exit 0, so the dispatcher's
+# fail-closed "run the merge gates" path still returns 0 here. In a real
+# install the same missing file makes each gate's `_require_lib` block
+# every Bash command (AgDR-0169 Consequences). That is not a no-op.
 cp -r "$TMP/hooks" "$missing_lib_dir/hooks"
 rm -f "$missing_lib_dir/hooks/_lib-extract-pr.sh"
 
@@ -294,7 +310,7 @@ printf '{"tool_name":"Bash","tool_input":{"command":"echo hello"}}' \
 rc=$?
 set -e
 if [ "$rc" -eq 2 ]; then
-  echo "FAIL: a MISSING (not unreadable) _lib-extract-pr.sh should not itself block a non-merge command" >&2
+  echo "FAIL: with stub merge gates, a MISSING _lib-extract-pr.sh must not make the dispatcher invent its own absence block" >&2
   cat "$TMP/stderr" >&2
   exit 1
 fi

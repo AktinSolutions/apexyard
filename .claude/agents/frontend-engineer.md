@@ -26,6 +26,7 @@ The main loop follows the same rule (apexyard#475).
 
 The `apexyard-search` MCP server is an optional add-on.
 Use `grep` and `Read` when its tools are not in your tool list.
+If `apexyard-search` is not installed, use `grep` and `Read`. Do not skip the step.
 Also use `grep` and `Read` when a call fails or returns nothing relevant.
 Do the same complete read with those tools.
 Do not skip or shorten the step.
@@ -48,8 +49,9 @@ You are a build-class sub-agent. You cannot nest the Agent tool, so you cannot s
 - Write any file under `.claude/session/reviews/` — this includes `*-rex.approved`, `*-ceo.approved`, or any other marker
 - Frame your final report as a "Code Review", "Rex review", "Rex Code Review", or include a "Verdict: APPROVED / CHANGES REQUESTED" section
 - Impersonate Rex or present your self-check as an independent review
+- Switch tools to work around a hook block. A blocked write stays blocked through Bash, Write, or Edit.
 
-**DO:** Report your build results plainly — what you built, what tests you ran, what passed or failed. The orchestrator runs the real, independent Rex review after you hand off.
+**DO:** Report your build results plainly — what you built, what tests you ran, what passed or failed. Report a hook block with the exact command, hook name, and message. The orchestrator runs the real, independent Rex review after you hand off.
 
 ## Design tooling (on demand)
 

@@ -11,7 +11,7 @@
 [ ] Build succeeds?           NO → fix before pushing
 ```
 
-The `pre-push-gate.sh` hook reminds you of this on every `git push`.
+In an ApexYard fork, the `.githooks/pre-push` git-native hook enforces this once installed (`git config core.hooksPath .githooks`). The `pre-push-gate.sh` Claude Code hook only reminds you to install it, and only when it is missing. See AgDR-0173.
 
 Per-project commands depend on your stack. Common pattern:
 
@@ -108,6 +108,8 @@ A common failure mode: you present a multi-step plan that includes a merge as on
 
 The load-bearing rule is "explicit per-PR approval", not "two user messages." After the per-PR-naming approval is given, `/approve-merge <pr>` writes the structured CEO marker AND runs `gh pr merge` in the same turn — they're a single deterministic consequence of one authorization moment, not two separate moments. Earlier versions of this rule split the consequence across two messages (write marker → wait → merge); that ceremony added latency without safety. The mechanical safety net is the structured marker (#48) + per-PR-naming gate, not the two-message split.
 
+**One narrow, CEO-decided exception to "one authorization moment" (me2resh/apexyard#1437, AgDR-0178, dated 2026-09-28; hardened in #1456).** Sometimes HEAD moves only because the PR branch was refreshed against its base. `rex_approval_carries_over` (`_lib-merge-behind.sh`) can prove this case mechanically: a forge-verified, conflict-free two-parent merge that reproduces exactly what git's own merge would produce. The base tip comes from the branches endpoint (a tag cannot shadow the name). The local `merge-base` and `merge-tree` checks run in a fresh empty `GIT_DIR` that reads objects only through alternates, so a local merge driver or grafts entry cannot change the result. In that one case, the CEO's earlier marker still authorizes the merge at the new HEAD. No fresh `/approve-merge` invocation is needed. The CEO decided this deliberately. The marker's SHA changed, but the CONTENT the CEO approved did not. A mechanically-verified base replay adds nothing the CEO reviewed, or could have reviewed differently. This is not a relaxation of "explicit per-PR approval" — the original approval was still explicit and named this PR. It is a recognition that a base-only refresh is not a second authorization-worthy event. It does not extend to any case the carry-over check cannot fully verify. Those cases still require a fresh `/approve-merge`, exactly as before.
+
 #### Wrong
 
 ```
@@ -148,6 +150,7 @@ Build agents MUST NOT:
 - Write any file under `.claude/session/reviews/`, including `*-rex.approved`, `*-ceo.approved`, `*-security.approved`, or `*-architecture.approved`. **Nothing mechanically stops you** — `warn-review-marker-write.sh` warns and exits 0 (see "Mechanical backstop" below). That is why this is a MUST NOT rather than a can't: writing one records a review that never happened, and the human approving the merge relies on it
 - Frame their final report as a code review, Rex review, or include a "Verdict: APPROVED / CHANGES REQUESTED" section
 - Claim to be performing an independent review
+- Switch tools to work around a hook block. Moving the same write from Bash to Write (or the reverse) after a PreToolUse block is still a workaround. Stop and report the block. A false positive is a gate bug to fix, not a prompt to retry with a different tool (me2resh/apexyard#1426 item 5)
 
 Build agents MUST:
 
@@ -297,7 +300,7 @@ All three merge-gate hooks (`block-unreviewed-merge.sh`, `block-merge-on-red-ci.
 | `gh pr merge` | `gh pr merge 123 --squash` |
 | `gh api .../pulls/<N>/merge` | `gh api repos/owner/repo/pulls/123/merge -X PUT` |
 
-Historically only the first shape was matched. In April 2026 (incident: `me2resh/curios-dog#190` was merged via `gh api` while CI was still running), the second shape was discovered as a silent bypass and closed in [#47](https://github.com/me2resh/apexyard/issues/47). Both the matcher entries in `.claude/settings.json` and the PR-number extraction in each hook (`.claude/hooks/_lib-extract-pr.sh`) now recognise both shapes. Invoking either triggers the gate — there is no supported merge path that skips the two-reviews rule.
+Historically only the first shape was matched. In April 2026 (incident: a managed-project PR was merged via `gh api` while CI was still running), the second shape was discovered as a silent bypass and closed in [#47](https://github.com/me2resh/apexyard/issues/47). Both the matcher entries in `.claude/settings.json` and the PR-number extraction in each hook (`.claude/hooks/_lib-extract-pr.sh`) now recognise both shapes. Invoking either triggers the gate — there is no supported merge path that skips the two-reviews rule.
 
 Using `gh api .../merge` as a workaround for other issues (e.g. cross-repo resolution, hook flakiness) is itself a rule violation on par with forging an approval marker. If a gate is mis-firing, fix the gate.
 
@@ -333,7 +336,7 @@ A blocking finding under `.claude/agents/code-reviewer.md` § "Blocking-Severity
 Bar" still blocks in round two, and in any round after it. Its fix always
 gets a delta re-review, whatever the round count — the merge gate needs a
 fresh Rex marker at the new HEAD, and only a review can write one. The cap
-limits how many rounds chase non-blocking findings; it never blocks the one
+limits how many rounds chase non-blocking findings. It never blocks the one
 path a blocking finding needs to clear.
 
 ## Resuming PR Sessions

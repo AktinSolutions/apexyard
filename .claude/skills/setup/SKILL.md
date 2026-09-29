@@ -34,6 +34,11 @@ Re-running `/setup` on an already-configured fork shows the current config and a
 
 ## Process
 
+Use `AskUserQuestion` for every operator option menu in this skill. Follow `.claude/rules/reporting-style.md § Operator choices`.
+Preserve multiple selections where the menu permits them. Split menus with more than four options into sequential wizard questions.
+Keep single yes/no and ticket confirmation prompts as written.
+The prose menus below are fallbacks only when the harness lacks `AskUserQuestion`.
+
 > **Tip for the agent driving setup**: `docs/multi-project.md` is the canonical reference for portfolio modes, v1→v2 migration, custom-templates path-mirroring, the FAQ, and trade-offs. As of #372 it is **not** auto-imported into the session context (the 70k-char file was loading ~18k tokens into every session, even for adopters who never re-run setup). The steps below are self-contained for the mechanical setup. If a first-timer asks a question mid-setup that this SKILL doesn't answer directly, `Read docs/multi-project.md` on demand rather than guessing.
 
 ### Step −1: Pre-flight — refuse if `jq` is missing (REQUIRED)
@@ -77,7 +82,7 @@ See AgDR-0011 + me2resh/apexyard#150 for the design rationale.
 
 ### Step 0.5: Install the tracked git hooks (REQUIRED)
 
-`core.hooksPath` is a **per-clone** git config value — it lives in `.git/config`, never committed, so every fresh clone of the ops fork starts unset regardless of how many sibling clones already have it configured. Left unset, `.githooks/pre-push` (tracked, but inert without this) never runs on a terminal `git push` — only Claude-Code-driven pushes go through the equivalent `pre-push-gate.sh` PreToolUse hook. Run the installer once per fork, here, so a fresh `/setup` always leaves the clone protected on both paths:
+`core.hooksPath` is a **per-clone** git config value — it lives in `.git/config`, never committed, so every fresh clone of the ops fork starts unset regardless of how many sibling clones already have it configured. Left unset, `.githooks/pre-push` (tracked, but inert without this) never runs — not on a terminal `git push`, and not on a Claude Code-driven one either, since git invokes the same hook the same way regardless of which process ran the push. There is no equivalent Claude Code path anymore: `pre-push-gate.sh` only reminds a session to install this hook when a clone hasn't (#1366, AgDR-0173); it does not run this repo's configured `.pre_push.commands` itself. Run the installer once per fork, here, so a fresh `/setup` always leaves the clone actually protected:
 
 ```bash
 bash bin/install-git-hooks.sh
@@ -471,6 +476,10 @@ Pick the line that matches the actual outcome. Don't claim "enabled" if any of (
 
 ### Step 2d: Harness selection (skippable)
 
+Use `AskUserQuestion` for harness selection. Recommend Claude Code first.
+Preserve multiple selections and split the six options across wizard questions.
+Use the numbered prompt below only when the harness lacks the tool.
+
 Background. As of 2026-07-09 the framework's mechanical gates (merge gate, ticket-first, secrets scanning, red-CI block) reach beyond Claude Code through thin per-harness adapters — see `docs/harnesses/README.md`, the single source of truth for the support matrix. This step surfaces that matrix at onboarding time so a non-Claude-Code adopter doesn't have to discover `docs/harnesses/` on their own. It is deliberately light: Claude Code adopters (the default) answer one question and move on.
 
 Ask:
@@ -698,6 +707,26 @@ Enable it now? (needs admin on the repo)
 
 On **y**, run `gh repo edit <FORK_REPO> --enable-issues` and confirm. On **n**, print the one-liner and move on. Never enable silently — it's an externally-visible repo-settings change requiring admin scope, and the adopter may intend to track elsewhere. (In split-portfolio mode, the issue-hosting repo is the **public fork**, not the private portfolio — probe the fork, which is what `gh repo view` returns here.)
 
+### Step 7c: Record origin public proof for leak-hook exemption (#1477)
+
+The staged and runtime leak hooks stay offline. They exempt origin identity only when local proof names origin itself (AgDR-0190). One proof path is `leak_protection.origin_verified_public` in `.claude/project-config.json`.
+
+Run the helper once while network access is available:
+
+```bash
+bash bin/record-origin-verified-public.sh
+```
+
+The helper:
+
+1. Parses the `origin` remote into an `owner/repo` slug.
+2. Runs `gh repo view <slug> --json visibility,isFork`.
+3. Writes `leak_protection.origin_verified_public` only when visibility is `PUBLIC`.
+4. Removes an earlier key when GitHub reports the repo is not `PUBLIC`, for example after the repo was made private. Prints why the origin exemption is off.
+5. Keeps an earlier matching key when the check itself fails (no `gh`, no network, no auth), and says so. Writes no new key in that case.
+
+Show the helper's stdout to the operator. Do not invent a key by hand. Do not stage `.claude/project-config.json` (gitignored; see #1031). A private ops origin is expected and fine; the exemption simply stays off.
+
 ### Step 8: Clear the bootstrap marker (REQUIRED)
 
 ```bash
@@ -713,7 +742,7 @@ Always remove the marker on a clean exit so subsequent edits in the same session
 3. **Stage, don't commit.** The user should see the diff before it's committed. `/setup` stages; the user commits.
 4. **Preserve structure.** `onboarding.yaml` has comments that explain each section. Don't blow them away — edit in place.
 5. **Idempotent.** Running `/setup` again shows current config and asks what to update. Running with `--reset` clears and re-asks. Running with `--enable-lsp` retrofits the LSP step on an already-configured fork; if LSP is already enabled it's a no-op.
-6. **No project-config.json.** `/setup` configures the FRAMEWORK (onboarding.yaml). Per-project config is handled by `/handover` and `/idea` when projects enter the portfolio.
+6. **Project-config is narrow.** `/setup` configures the FRAMEWORK (`onboarding.yaml`). Do not invent broad `.claude/project-config.json` policy by hand. Allowed writes: the split-portfolio `portfolio:` block (Step 2b) and `leak_protection.origin_verified_public` via `bin/record-origin-verified-public.sh` (Step 7c). Per-project config otherwise stays with `/handover` and `/idea`.
 7. **Never auto-install language runtimes.** Step 2c installs LSP servers (e.g. `typescript-language-server`, `pyright`, `gopls`, `rust-analyzer`) but never the underlying runtime (`node`, `python`, `go`, `rustup`). If a runtime is missing, refuse the LSP install gracefully and tell the operator what to install.
 8. **Print plugin-install commands; never invoke them.** The Claude Code plugin marketplace command shape (`/plugin marketplace add`, `/plugin install`, `/reload-plugins`) is empirically stable — Step 2c.5(d) prints a copy-paste block for the operator. But `/plugin` is a Claude Code UI built-in, not a shell command, so the skill never runs the commands itself — it prints them. Always emit the `marketplace add` line; it's idempotent and recovers the case where the docs' auto-load claim doesn't fire on a fresh install.
 9. **`docs/harnesses/README.md` is the single source of truth for harness support.** Step 2d summarises and links it — it never copies the capability matrix inline as a maintained duplicate. When printing a harness's install command / precondition / tier, read the doc fresh rather than trusting a stale table baked into this skill; the matrix changes as adapters move through live-verification. Never round a harness's tier up. Do not restore the retired failClosed-only claim for Cursor.

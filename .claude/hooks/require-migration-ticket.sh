@@ -213,8 +213,31 @@ fi
 # Defaults cover the common tool / convention set. Patterns use shell
 # glob semantics (`*` crosses `/` inside case). Add to this list sparingly
 # — false positives on non-migration files block productive edits.
+#
+# _rmt_path_for_migration_match PATH (#1483)
+# Match-only form of a write target. Default patterns are `*/`-anchored
+# (`*/migrations/*`), so a relative `migrations/001.sql` misses every arm
+# while `./migrations/001.sql` matches. Prefix a bare relative path with
+# `./` so both spellings hit the same arms. Absolute and `~/` paths stay
+# unchanged. Do NOT collapse `.` / `..` here: collapsing would drop the
+# `migrations` segment from spellings like `migrations/../1.sql` and
+# loosen a write that blocks today (AgDR-0193).
+_rmt_path_for_migration_match() {
+  case "$1" in
+    /*|~*|./*) printf '%s' "$1" ;;
+    *) printf './%s' "$1" ;;
+  esac
+}
+
 is_migration_path() {
   local path="$1"
+  local match bare
+
+  match=$(_rmt_path_for_migration_match "$path")
+  bare="$path"
+  case "$bare" in
+    ./*) bare="${bare#./}" ;;
+  esac
 
   # Project-configured patterns take precedence if any
   if [ -n "$CUSTOM_PATHS" ]; then
@@ -226,16 +249,22 @@ is_migration_path() {
       case "$path" in
         $pat) return 0 ;;
       esac
+      # Also try the ./ -stripped relative form so an adopter pattern like
+      # `src/db/**` still matches a harness that supplies `./src/db/...`.
+      # shellcheck disable=SC2254
+      case "$bare" in
+        $pat) return 0 ;;
+      esac
     done <<< "$CUSTOM_PATHS"
     # When custom patterns are set, don't fall through to defaults —
     # projects that override are saying "only these paths"
     return 1
   fi
 
-  # Default patterns.
+  # Default patterns — compare the match form (#1483).
   # Note: shell case `*` crosses `/`, so `*/migrations/*.sql` already covers
   # nested paths like `*/migrations/<sub>/file.sql` — no separate arm needed.
-  case "$path" in
+  case "$match" in
     # SQL migrations anywhere under a `migrations/` directory
     */migrations/*.sql) return 0 ;;
     # `migrate-*.ts` / `.js` / `.py` / `.sql` anywhere
@@ -583,13 +612,30 @@ if [ "$TICKET_KIND" = "none" ]; then
   exit 0
 fi
 
+# Capture the tracker CLI's own stderr instead of discarding it, so the
+# fail-closed block below can name the real cause (#1336). This gate performs a
+# single lookup with no upstream fallback, so the captured text always belongs
+# to the lookup that failed. The gh fallback branch captures the same way — it
+# reaches the identical block path, so discarding its stderr would leave
+# exactly the gap this fix closes.
+# Redirect to /dev/null when mktemp fails, rather than to an empty path, which
+# bash reports as an ambiguous redirect on the lookup. The trap is set ONLY
+# when mktemp succeeded: an unconditional trap would run `rm -f /dev/null`,
+# which under root removes the device node and turns every later redirect to
+# /dev/null on that host into a regular file.
+if TRACKER_ERR=$(mktemp); then
+  trap 'rm -f "$TRACKER_ERR"' EXIT
+else
+  TRACKER_ERR=/dev/null
+fi
+
 if command -v tracker_view >/dev/null 2>&1; then
-  ISSUE_JSON=$(tracker_view "$TICKET_NUM" "$TICKET_REPO" 2>/dev/null)
+  ISSUE_JSON=$(tracker_view "$TICKET_NUM" "$TICKET_REPO" 2>"$TRACKER_ERR")
 else
   # Library missing (should not happen in a real fork) — fall back to gh so the
   # gate still functions on a GitHub tracker rather than bricking, normalising
   # to the same shape tracker_view emits (labels as a flat string array).
-  ISSUE_JSON=$(gh issue view "$TICKET_NUM" --repo "$TICKET_REPO" --json state,title,url,labels,body 2>/dev/null \
+  ISSUE_JSON=$(gh issue view "$TICKET_NUM" --repo "$TICKET_REPO" --json state,title,url,labels,body 2>"$TRACKER_ERR" \
     | jq -c '{state,title,url,labels:((.labels // []) | map(.name)),body}' 2>/dev/null)
 fi
 
@@ -608,6 +654,10 @@ warrants a hard stop.) If your tracker is untracked, set tracker.kind=none.
 Check your tracker auth (e.g. gh auth status / glab auth status), or run
 /migration to create a new ticket.
 MSG
+  if [ -s "$TRACKER_ERR" ]; then
+    echo "Tracker CLI said:" >&2
+    sed 's/^/  /' "$TRACKER_ERR" >&2
+  fi
   exit 2
 fi
 
