@@ -26,7 +26,7 @@ projects: [apexyard]
 
 **The native load does not reach the project.**
 
-- Claude Code loads the `CLAUDE.md` of the session working directory. A checkout outside that directory is not loaded.
+- Claude Code loads the `CLAUDE.md` of the session working directory and its parent directories. A checkout outside that directory is not loaded.
 - In split-portfolio mode, and in other layouts, the managed clone is outside that directory. Its `CLAUDE.md` does not load.
 - AgDR-0160 sets `"claudeMdExcludes": ["**/.claude/rules/**"]`. Its scope note of 2026-09-25 states two effects. Effect 2 says that a managed project's `.claude/rules/*.md` does not load. It also says: "No exclude-side workaround exists yet."
 - #1388 narrows the exclude to each clone. That fix helps only checkouts inside the ops fork. It does not help a checkout outside the ops fork.
@@ -78,13 +78,13 @@ The hook must meet each constraint below. A later change must not remove one wit
 5. **A 9,500-character budget.** The total `additionalContext` stays at 9,500 characters or less. The measured limit is 10,000 characters. Above that limit, Claude Code replaces the text with a 2 KB preview, which is worse than a controlled cut.
 6. **Budget order.** The index comes first and is capped. The hook fills the budget in this order:
    1. The header and the opening frame marker. The hook reserves the closing frame marker first and never cuts it.
-   2. The indexes: imports, path-scoped rules, then skills, then agents. Each index has at most 30 entries and the indexes together have about 2,000 characters (`PROJCTX_INDEX_BUDGET`, default 2000). Index paths are relative to the workspace, and each description is cut to 100 characters. An index that hits a cap ends with "and N more in `<dir>`".
+   2. The indexes: imports, path-scoped rules, then skills, then agents. Each index has at most 30 entries and the indexes together have about 2,000 characters (`PROJCTX_INDEX_BUDGET`, default 2000). Index paths are relative to the workspace, and each description is cut to 100 characters. An index that hits a cap ends with "…and N more …", for example "…and N more imports in CLAUDE.md" or "…and N more in `<dir>`".
    3. The body gets the rest of the budget: the `CLAUDE.md` text, then the body of each rule that has no `paths:` frontmatter.
 7. **A truncation pointer.** When the hook cuts or drops a section, it adds one pointer line. The line names the absolute path, or a path relative to the workspace named in the header, of each file or directory that the hook cut or dropped. The pointer counts toward the budget.
 8. **Bounded work.** The hook reads each file with a byte limit, for example `head -c`. Rule reads stop at 200 files. The skill and agent loops count every entry, but they read at most 30 files each. Import scanning is bounded by the 64 KB `CLAUDE.md` read, and the import list is capped at 30 entries.
 9. **A 3-second timeout.** The `settings.json` entry has `"timeout": 3`. The git worktree lookup uses `timeout 1` when that command exists. On a timeout, Claude Code discards the output and the tool call continues.
 10. **Always exit 0.** The hook exits 0 on every path. It never exits 2. It gives no output when `jq`, the registry, or a file is missing. The hook cannot block or allow a tool call.
-11. **Contained reads.** The hook resolves `..` and symlinks in the tool path before it matches a workspace. It also resolves the real path of each file that it reads. This includes `CLAUDE.md`, `AGENTS.md`, each rule, each `SKILL.md`, and each agent file. It also includes the `.claude`, `.claude/rules`, `.claude/skills`, and `.claude/agents` directories. The hook skips a file unless its real path is inside the canonical workspace. The import list names only relative imports without `..`; the hook does not resolve their targets.
+11. **Contained reads.** The hook resolves `..` and symlinks in the tool path before it matches a workspace. It also resolves the real path of each file that it reads. This includes `CLAUDE.md`, `AGENTS.md` (when implemented; row 14), each rule, each `SKILL.md`, and each agent file. It also includes the `.claude`, `.claude/rules`, `.claude/skills`, and `.claude/agents` directories. The hook skips a file unless its real path is inside the canonical workspace. The import list names only relative imports without `..`; the hook does not resolve their targets.
 12. **Private state.** The registry cache and the markers live in `${APEXYARD_OPS_PIN_DIR:-$HOME/.claude/apexyard}/projctx`. The directory has mode 0700 and an owner check. The hook refuses a symlinked state directory. The hook writes nothing outside this directory.
 13. **No double load from the project root.** The hook injects nothing when the session `cwd` is inside the workspace. Claude Code loads that `CLAUDE.md` natively.
 14. **`AGENTS.md` layout.** When `CLAUDE.md` is absent, or holds only an `@AGENTS.md` import, the hook injects the workspace-root `AGENTS.md` in the `CLAUDE.md` slot. The same budget and containment apply. The hook expands no other import. AgDR-0073 makes `AGENTS.md` the canonical file for projects that `/handover` adopts.
@@ -173,9 +173,9 @@ When #1388 ships, the exclude matches only the ops clone's own rules. In the sin
 
 ## Implementation state
 
-This table is a snapshot at PR #1425 head `4fd04f5`. The PR is still open. A requirement marked "Not implemented" is part of this decision, and the PR or a follow-up must deliver it.
+This table is a snapshot at PR #1425 code head `1255551`. The PR is still open. A requirement marked "Not implemented" is part of this decision, and the PR or a follow-up must deliver it.
 
-| Constraint | State at `4fd04f5` | Source |
+| Constraint | State at `1255551` | Source |
 |---|---|---|
 | 1. Live read | Implemented | PR body |
 | 2. Nothing at session start | Implemented | Test (b). No SessionStart entry. |
@@ -187,7 +187,7 @@ This table is a snapshot at PR #1425 head `4fd04f5`. The PR is still open. A req
 | 8. Bounded work | Implemented. Rule reads stop at 200 files. The skill and agent loops count every entry but read at most 30 files each. Import scanning is bounded by the 64 KB `CLAUDE.md` read, and the import list is capped at 30 entries. | Tests (o), (q), (x) |
 | 9. 3-second timeout | Implemented | `settings.json`. Spike check 3b. |
 | 10. Always exit 0 | Implemented | Test (g) |
-| 11. Contained reads | Implemented, including the `..` and newline refusals. Hardlinks are not detected. Frontmatter values and file names are stripped of or refused for control characters; NUL is stripped from hook input fields; budget variables accept digits only; index names are cut to 60 chars and `paths:` values to 200. | Tests (k), (p), (r), (y), (z1), (z3) |
+| 11. Contained reads | Implemented, including the `..` and newline refusals. Hardlinks are not detected. Frontmatter values and file names are stripped of or refused for control characters; NUL is stripped from hook input fields; budget variables accept 1 to 6 digits with no leading zero; index names are cut to 60 chars and `paths:` values to 200; import entries are cut to 200 chars; paths with C1 controls or U+2028/U+2029 are refused. | Tests (k), (p), (p2), (r), (x2), (y), (z1), (z1b), (z3), (z3b), (z3c) |
 | 12. Private state | Implemented | Test (i) |
 | 13. No double load from the project root | Implemented for `cwd` inside the workspace. No skip for a workspace under `cwd` (Known limit 5). | Test (e) |
 | 14. `AGENTS.md` layout | Not implemented. Follow-up. | Tariq S1 |
@@ -212,7 +212,7 @@ These limits are accepted for now. Each one is a follow-up, not yet filed.
 2. **Rule subdirectories.** The hook reads only `.claude/rules/*.md`. Claude Code also finds rules in subdirectories. A rule at `.claude/rules/backend/x.md` is not injected and not indexed.
 3. **`.claude/CLAUDE.md`.** The hook reads only the workspace-root `CLAUDE.md`. A project that keeps its memory file at `.claude/CLAUDE.md` gets no `CLAUDE.md` text.
 4. **SIGKILL.** A TERM, INT or HUP signal releases the claim. A SIGKILL cannot be trapped and leaves the marker, so the project is not injected again for that session and agent. Bash runs the TERM/INT/HUP trap only after the `$(projctx_emit)` child exits, so a signal during the build releases the claim late, not at once; a SIGKILL never releases it.
-5. **Double load in the single-fork layout.** In the single-fork layout, a nested `workspace/<name>/CLAUDE.md` may also be loaded natively by Claude Code; the hook injects it regardless (up to ~2,300 duplicate tokens). A headless check (2026-09-30) found no native load on a Glob or Read first touch, but that check had no control and is not conclusive. Upgrade: add the skip back once native loading is verified.
+5. **Double load in the single-fork layout.** In the single-fork layout, a nested `workspace/<name>/CLAUDE.md` may also be loaded natively by Claude Code; the hook injects it regardless (up to ~2,300 duplicate tokens). A headless check (2026-09-30) found no native load on a Glob or Read first touch, but that check had no control and is not conclusive. After #1388, its always-on rule bodies may double-load the same way. Upgrade: add the skip back once native loading is verified.
 
 Other deferred items from the PR body and the reviews:
 
@@ -252,9 +252,14 @@ Other deferred items from the PR body and the reviews:
   - Rex: APPROVE, advisories only.
   - Hakim: PASS, 1 medium and 7 low findings.
   - Tariq: REQUEST CHANGES for the import cap and the AgDR sentences.
+- Round-3 local delta reviews on `a12a8b5..29d4011`, not posted to the PR. All findings are addressed in round 4.
+  - Rex: APPROVE.
+  - Hakim: PASS, with N1-N4.
+  - Tariq: REQUEST CHANGES for F1-F3 and the AgDR SHA.
 - Performance review on `336ba2e`, local.
   - Tokens per injection: 460 (small), 2,070 (typical), 2,375 (max).
   - The skill and agent index crowded out `CLAUDE.md`. The index is now capped.
-  - Hook time on a miss, measured on Linux before → after round 2: path outside any git repo 57 → 56 ms; path inside a git repo that matches no project 84 → 59 ms (the worktree pre-check skips git). macOS was about 85-90 ms before round 2 (Rex); not re-measured.
+- Round-2 latency re-measure (Linux).
+  - Hook time on a miss, before → after round 2: path outside any git repo 57 → 56 ms; path inside a git repo that matches no project 84 → 59 ms (the worktree pre-check skips git). macOS was about 85-90 ms before round 2 (Rex); not re-measured.
 - Related records: AgDR-0160 (rule exclusion and its 2026-09-25 scope note), AgDR-0073 (`AGENTS.md` handover layout), AgDR-0111 (advisory marker-write guard)
 - Related issues: #1354 and PR #1355 (the rules exclude), #1388 (the per-clone exclude)
