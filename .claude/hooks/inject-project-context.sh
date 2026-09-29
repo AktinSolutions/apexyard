@@ -6,10 +6,10 @@
 #
 # WHY: a managed project checkout can live outside the ops fork (split
 # portfolio, or any layout where workspace/<project> isn't nested under
-# this repo). Claude Code only auto-loads a nested CLAUDE.md — a project
-# checked out elsewhere never gets its own conventions in context, so
-# build agents write code Rex then has to catch, and Rex reviews against
-# framework rules only. This hook reads the project's context LIVE from
+# this repo). Claude Code loads the session cwd's CLAUDE.md (and its
+# parents); a project checked out elsewhere never gets its conventions
+# loaded, so build agents write code Rex then has to catch, and Rex
+# reviews against framework rules only. This hook reads the project's context LIVE from
 # its own repo on every injection; nothing is copied or snapshotted, so
 # it can't go stale the way projects/<name>/ docs can.
 #

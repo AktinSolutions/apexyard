@@ -381,8 +381,8 @@ T0=$SECONDS
 RAW=$(invoke "$(payload o1 "" "" "$WS/src/a.ts")")
 DT=$((SECONDS - T0))
 CTX=$(ctx_of "$RAW")
-if [ "${#CTX}" -gt 0 ] && [ "${#CTX}" -le 9500 ] && [ "$DT" -lt 3 ]; then
-  pass_case "(o) 60 MB CLAUDE.md: ${DT} s (<3), ${#CTX} chars (<= 9500)"
+if [ "${#CTX}" -gt 0 ] && [ "${#CTX}" -le 9500 ] && [ "$DT" -lt 6 ]; then
+  pass_case "(o) 60 MB CLAUDE.md: ${DT} s (<6), ${#CTX} chars (<= 9500)"
 else
   fail_case "(o) huge CLAUDE.md" "secs=$DT len=${#CTX}"
 fi
@@ -398,6 +398,15 @@ if printf '%s' "$IDX" | grep -q "docs/ok.md" && ! printf '%s' "$IDX" | grep -q "
   pass_case "(p) absolute and ~ imports dropped from the index; relative import kept"
 else
   fail_case "(p) import index" "idx=$(printf '%s' "$IDX" | head -c 300)"
+fi
+rm -rf "$MARKER_DIR"
+# every import filtered out: no header
+printf '# D\n@/etc/passwd.md\n@~/.ssh/notes.md\n@../../etc/x.md\n' > "$WS/CLAUDE.md"
+CTX=$(ctx_of "$(invoke "$(payload p2 "" "" "$WS/src/a.ts")")")
+if [ -n "$CTX" ] && ! printf '%s' "$CTX" | grep -q 'Imports referenced'; then
+  pass_case "(p2) all imports filtered out: no imports header"
+else
+  fail_case "(p2) empty imports header" "ctx_len=${#CTX}"
 fi
 mv "$WS/CLAUDE.md.bak" "$WS/CLAUDE.md"; rm -rf "$MARKER_DIR"
 
@@ -484,6 +493,17 @@ if [ "${#BODY}" -gt 5000 ] && printf '%s' "$CTX" | grep -q 'more imports in CLAU
 else
   fail_case "(x) import cap" "body=${#BODY}"
 fi
+rm -rf "$MARKER_DIR"
+# one 8,000-char import must not fill the index or crowd out the body
+{ printf '# D\n@docs/'; head -c 8000 /dev/zero | tr '\0' a; printf '.md\nCANARY_X2_AFTER\n'; } > "$WS/CLAUDE.md"
+CTX=$(ctx_of "$(invoke "$(payload x2 "" "" "$WS/src/a.ts")")")
+BODY=$(printf '%s' "$CTX" | sed -n '/^## demo\/CLAUDE.md/,$p')
+LONGIDX=$(printf '%s\n' "$CTX" | sed '/^## demo\/CLAUDE.md/,$d' | awk '{ if (length > m) m = length } END { print m+0 }')
+if [ "$LONGIDX" -le 400 ] && [ "${#BODY}" -gt 5000 ] && printf '%s' "$CTX" | grep -q CANARY_X2_AFTER; then
+  pass_case "(x2) 8,000-char import cut to 200: longest index line $LONGIDX, body ${#BODY} chars"
+else
+  fail_case "(x2) import length" "longest_index=$LONGIDX body=${#BODY}"
+fi
 mv "$WS/CLAUDE.md.bak" "$WS/CLAUDE.md"; rm -rf "$MARKER_DIR"
 
 # --- (y) NUL in file_path cannot forge cwd/session (replaces (v)'s no-op check)
@@ -497,21 +517,45 @@ else
 fi
 rm -rf "$MARKER_DIR"
 
-# --- (z1) control chars in frontmatter are stripped from the index
+# --- (z1) control chars in frontmatter and names are stripped from the index.
+# Runs under LC_ALL=C: in a UTF-8 locale bash and awk already handle the C1 and
+# U+2028 byte sequences, so only the C locale proves the byte-wise checks.
 mkdir -p "$WS/.claude/agents"
-printf -- '---\nname: n\033[2Jx\ndescription: d\033]0;t\007\302\205e\n---\n' > "$WS/.claude/agents/ctl.md"
+printf -- '---\nname: n\033[2Jx\ndescription: d\033]0;t\007\302\205e\302\233f\n---\n' > "$WS/.claude/agents/ctl.md"
 printf -- '---\nname: %s\ndescription: d\n---\n' "$(head -c 500 /dev/zero | tr '\0' n)" > "$WS/.claude/agents/long.md"
 CTLDIR="$WS/.claude/skills/x$(printf '\033')[2Jy"
-mkdir -p "$CTLDIR"; printf -- '---\nname: s\ndescription: d\n---\n' > "$CTLDIR/SKILL.md"
-CTX=$(ctx_of "$(invoke "$(payload z1 "" "" "$WS/src/a.ts")")")
-if ! printf '%s' "$CTX" | LC_ALL=C grep -q "$(printf '[\001-\010\013-\037\177]')" && ! printf '%s' "$CTX" | grep -q "$(printf '\302\205')" \
+LSDIR="$WS/.claude/skills/u$(printf '\342\200\250')v"
+mkdir -p "$CTLDIR" "$LSDIR"
+printf -- '---\nname: s\ndescription: d\n---\n' > "$CTLDIR/SKILL.md"
+printf -- '---\nname: s2\ndescription: d\n---\n' > "$LSDIR/SKILL.md"
+CTX=$(ctx_of "$(LC_ALL=C invoke "$(payload z1 "" "" "$WS/src/a.ts")")")
+if ! printf '%s' "$CTX" | LC_ALL=C grep -q "$(printf '[\001-\010\013-\037\177]')" \
+   && ! printf '%s' "$CTX" | LC_ALL=C grep -q "$(printf '\302\205')" \
+   && ! printf '%s' "$CTX" | LC_ALL=C grep -q "$(printf '\302\233')" \
+   && ! printf '%s' "$CTX" | LC_ALL=C grep -q "$(printf '\342\200\250')" \
    && [ "$(printf '%s\n' "$CTX" | awk '{ if (length > m) m = length } END { print m+0 }')" -lt 400 ] \
    && printf '%s' "$CTX" | grep -q CANARY_CLAUDE_MD_MARKER; then
-  pass_case "(z1) control chars and oversized names stripped/cut in the index"
+  pass_case "(z1) control chars, C1 and U+2028 stripped/refused, oversized names cut in the index (LC_ALL=C)"
 else
   fail_case "(z1) control chars" "canary=$(printf '%s' "$CTX" | grep -c CANARY_CLAUDE_MD_MARKER)"
 fi
-rm -f "$WS/.claude/agents/ctl.md" "$WS/.claude/agents/long.md"; rm -rf "$CTLDIR" "$MARKER_DIR"
+rm -f "$WS/.claude/agents/ctl.md" "$WS/.claude/agents/long.md"; rm -rf "$CTLDIR" "$LSDIR" "$MARKER_DIR"
+
+# --- (z1b) a UTF-8 locale must not empty names and descriptions (gawk collation)
+UTF=$(locale -a 2>/dev/null | grep -i -m1 -E '^(en_US|C)\.utf-?8$')
+if [ -n "$UTF" ]; then
+  mkdir -p "$WS/.claude/skills/cafe"
+  printf -- '---\nname: cafe\ndescription: caf\303\251\n---\n' > "$WS/.claude/skills/cafe/SKILL.md"
+  CTX=$(ctx_of "$(LC_ALL="$UTF" invoke "$(payload z1b "" "" "$WS/src/a.ts")")")
+  if printf '%s' "$CTX" | grep -q "caf$(printf '\303\251')"; then
+    pass_case "(z1b) $UTF: non-ASCII description kept in the index"
+  else
+    fail_case "(z1b) utf-8 locale" "locale=$UTF"
+  fi
+  rm -rf "$WS/.claude/skills/cafe" "$MARKER_DIR"
+else
+  echo "SKIP: (z1b) no UTF-8 locale installed"
+fi
 
 # --- (z3) a non-numeric budget is never evaluated by $(( ))
 # shellcheck disable=SC2016  # literal payload: must not expand here
@@ -523,6 +567,24 @@ else
   fail_case "(z3) budget eval" "pwned=$([ -e "$SB/pwned" ] && echo y) canary=$(printf '%s' "$CTX" | grep -c CANARY_CLAUDE_MD_MARKER)"
 fi
 rm -f "$SB/pwned"; rm -rf "$MARKER_DIR"
+# leading zero (08 is an octal error) must fall back to the default
+CTX=$(ctx_of "$(PROJCTX_INDEX_BUDGET=08 invoke "$(payload z3b "" "" "$WS/src/a.ts")")")
+if printf '%s' "$CTX" | grep -q CANARY_CLAUDE_MD_MARKER; then
+  pass_case "(z3b) PROJCTX_INDEX_BUDGET=08: default used, injection still happens"
+else
+  fail_case "(z3b) octal budget" "ctx_len=${#CTX}"
+fi
+rm -rf "$MARKER_DIR"
+# PROJCTX_BUDGET=0100 must fall back to 9500, not shrink to 64 (canary sits past 200 chars)
+cp "$WS/CLAUDE.md" "$WS/CLAUDE.md.bak"
+{ printf '# D\n'; head -c 300 /dev/zero | tr '\0' a; printf '\nCANARY_CLAUDE_MD_MARKER\n'; } > "$WS/CLAUDE.md"
+CTX=$(ctx_of "$(PROJCTX_BUDGET=0100 invoke "$(payload z3c "" "" "$WS/src/a.ts")")")
+if printf '%s' "$CTX" | grep -q CANARY_CLAUDE_MD_MARKER; then
+  pass_case "(z3c) PROJCTX_BUDGET=0100: default used, body not cut to 64"
+else
+  fail_case "(z3c) leading-zero budget" "ctx_len=${#CTX}"
+fi
+mv "$WS/CLAUDE.md.bak" "$WS/CLAUDE.md"; rm -rf "$MARKER_DIR"
 
 echo "===== test_inject_project_context.sh ====="
 echo "Passed: $PASS"

@@ -25,9 +25,10 @@
 #   agent index), capped at $PROJCTX_BUDGET characters.
 
 PROJCTX_BUDGET="${PROJCTX_BUDGET:-9500}"
-# Digits only: both values reach $(( )), which would run $(...) in them.
-case "$PROJCTX_BUDGET" in ''|*[!0-9]*) PROJCTX_BUDGET=9500 ;; esac
-case "${PROJCTX_INDEX_BUDGET:-}" in ''|*[!0-9]*) PROJCTX_INDEX_BUDGET=2000 ;; esac
+# 1 to 6 decimal digits, no leading zero: both values reach $(( )), which would
+# run $(...) in them, read 08 as an octal error, and wrap on 20+ digits.
+case "$PROJCTX_BUDGET" in ''|0*|???????*|*[!0-9]*) PROJCTX_BUDGET=9500 ;; esac
+case "${PROJCTX_INDEX_BUDGET:-}" in ''|0*|???????*|*[!0-9]*) PROJCTX_INDEX_BUDGET=2000 ;; esac
 # Per-user state under $HOME, never shared /tmp: another local user could
 # pre-create a predictable /tmp dir and poison the registry cache (context
 # injection) or plant symlinks the writes below would follow. Same base
@@ -174,13 +175,13 @@ EOF
 # agent .md frontmatter already uses for name: / description:.
 _projctx_frontmatter_field() {
   local file="$1" key="$2"
-  head -c 8192 "$file" 2>/dev/null | awk -v key="$key" '
+  head -c 8192 "$file" 2>/dev/null | LC_ALL=C awk -v key="$key" '
     NR==1 && $0=="---" { infm=1; next }
     infm && $0=="---" { exit }
     infm && $0 ~ ("^" key ":") {
       sub("^" key ":[[:space:]]*", "")
       gsub(/^"|"$/, "")
-      gsub(/[[:cntrl:]]|\302\205|\342\200\250|\342\200\251/, " ")
+      gsub(/[[:cntrl:]]|\302[\200-\237]|\342\200[\250\251]/, " ")
       print
       exit
     }
@@ -192,14 +193,14 @@ _projctx_frontmatter_field() {
 # Empty output = no paths: field (rule loads in full, per #1423 AC1).
 _projctx_rule_paths() {
   local file="$1"
-  head -c 8192 "$file" 2>/dev/null | awk '
+  head -c 8192 "$file" 2>/dev/null | LC_ALL=C awk '
     NR==1 && $0=="---" { infm=1; next }
     infm && $0=="---" { exit }
     infm && $0 ~ /^paths:[[:space:]]*\[/ {
       line=$0
       sub(/^[^\[]*\[/, "", line); sub(/\].*$/, "", line)
       gsub(/[[:space:]]/, "", line)
-      gsub(/[[:cntrl:]]|\302\205|\342\200\250|\342\200\251/, " ", line)
+      gsub(/[[:cntrl:]]|\302[\200-\237]|\342\200[\250\251]/, " ", line)
       print line
       exit
     }
@@ -212,7 +213,7 @@ _projctx_rule_paths() {
       next
     }
     infm && list && $0 ~ /^[a-zA-Z_]/ { list=0 }
-    END { if (out != "") { gsub(/[[:cntrl:]]|\302\205|\342\200\250|\342\200\251/, " ", out); print out } }
+    END { if (out != "") { gsub(/[[:cntrl:]]|\302[\200-\237]|\342\200[\250\251]/, " ", out); print out } }
   '
 }
 
@@ -221,7 +222,8 @@ _projctx_rule_paths() {
 # ------------------------------------------------------------------------------
 # ponytail: refuses any symlinked file; hardlinks are not detected (same-fs only, needs attacker write to $HOME's fs).
 _projctx_safe_file() {  # $1=file $2=real workspace
-  case "$1" in *[[:cntrl:]]*) return 1 ;; esac
+  local LC_ALL=C  # byte-wise brackets in every locale; restored on return
+  case "$1" in *[[:cntrl:]]*|*$'\302'[$'\200'-$'\237']*|*$'\342\200'[$'\250\251']*) return 1 ;; esac
   [ -f "$1" ] && [ ! -L "$1" ] || return 1
   local d; d=$(cd "$(dirname "$1")" 2>/dev/null && pwd -P) || return 1
   case "$d/" in "$2"/*) return 0 ;; esac; return 1
@@ -257,18 +259,20 @@ projctx_emit() {
       | grep -oE '(^|[[:space:]])@[A-Za-z0-9._~/-]+' | sed 's/^[[:space:]]*//' \
       | grep -E '/[A-Za-z0-9._-]|\.md$' | sort -u)
     if [ -n "$imports" ]; then
-      out="${out}Imports referenced by CLAUDE.md (paths only, not expanded):"$'\n'
+      local imp_hdr=1
       while IFS= read -r imp; do
         [ -z "$imp" ] && continue
         case "${imp#@}" in
           /*|~*|*..*) ;;  # outside the workspace: not listed (L1)
-          *) if [ "$nimp" -ge 30 ] || [ "${#out}" -gt "$idx_max" ]; then more=$((more+1)); else nimp=$((nimp+1)); out="${out}  - ${imp#@}"$'\n'; fi ;;
+          *) [ -n "$imp_hdr" ] && { out="${out}Imports referenced by CLAUDE.md (paths only, not expanded):"$'\n'; imp_hdr=; }
+             if [ "$nimp" -ge 30 ] || [ "${#out}" -gt "$idx_max" ]; then more=$((more+1)); else nimp=$((nimp+1)); out="${out}  - ${imp:1:200}"$'\n'; fi ;;
         esac
       done <<PROJCTX_IMPORTS
 $imports
 PROJCTX_IMPORTS
       [ "$more" -gt 0 ] && out="${out}  …and $more more imports in CLAUDE.md"$'\n'
-      out="${out}"$'\n'
+      # Blank line only when the header or an entry was printed.
+      [ -z "$imp_hdr" ] && out="${out}"$'\n'
     fi
   else
     out="${out}(no CLAUDE.md at $ws)"$'\n\n'
