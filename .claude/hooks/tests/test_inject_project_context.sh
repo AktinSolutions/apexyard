@@ -590,8 +590,9 @@ else
 fi
 mv "$WS/CLAUDE.md.bak" "$WS/CLAUDE.md"; rm -rf "$MARKER_DIR"
 # non-ASCII digit under a UTF-8 locale must not pass the digit check.
-# Prefer en_US: C.utf8 rejects the digit even with the old [!0-9] pattern.
-UTF=$(locale -a 2>/dev/null | grep -i -E '^(en_US|C)\.utf-?8$' | sort -r | head -1)
+# en_US only: C.utf8 rejects the digit even with the old [!0-9] pattern,
+# so it would pass without the fix. No en_US locale means SKIP.
+UTF=$(locale -a 2>/dev/null | grep -i -E '^en_US\.utf-?8$' | head -1)
 if [ -n "$UTF" ]; then
   CTX=$(ctx_of "$(LC_ALL="$UTF" PROJCTX_INDEX_BUDGET=$(printf '\340\245\253') invoke "$(payload z3d "" "" "$WS/src/a.ts")")")
   if printf '%s' "$CTX" | grep -q CANARY_CLAUDE_MD_MARKER; then
