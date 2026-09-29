@@ -72,15 +72,14 @@ The hook is `.claude/hooks/inject-project-context.sh`. Its library is `.claude/h
 The hook must meet each constraint below. A later change must not remove one without a new AgDR.
 
 1. **Live read.** The hook reads every file from the workspace at injection time. It copies no project file into the ops fork or the portfolio.
-2. **Nothing at session start.** The hook runs on PostToolUse only. It has no SessionStart entry. A session that touches no workspace gets no project context.
+2. **Nothing at session start.** Nothing is injected at session start; a SessionStart(compact) hook may clear markers (pending follow-up). The injecting hook runs on PostToolUse only. A session that touches no workspace gets no project context.
 3. **One injection per session, agent, and project.** The dedupe key is `session_id` + `agent_id` (or `main` when absent) + project name. A subagent has its own `agent_id`, so it gets its own injection.
 4. **An atomic claim.** The hook claims the dedupe marker before it reads any project file. It uses an atomic create, for example `mkdir "$marker"` or a `noclobber` redirect. A hook that loses the claim exits 0 with no output. When the build of the text fails, the hook removes the claim so that the next touch retries.
 5. **A 9,500-character budget.** The total `additionalContext` stays at 9,500 characters or less. The measured limit is 10,000 characters. Above that limit, Claude Code replaces the text with a 2 KB preview, which is worse than a controlled cut.
-6. **Budget order.** The hook fills the budget in this order:
-   1. The header and the opening and closing frame markers. The hook reserves this space first and never cuts it.
-   2. The `CLAUDE.md` body.
-   3. The body of each rule that has no `paths:` frontmatter.
-   4. The indexes: path-scoped rules, then skills, then agents. Index paths are relative to the workspace. Each index has an entry cap and ends with "and N more in `<dir>`".
+6. **Budget order.** The index comes first and is capped. The hook fills the budget in this order:
+   1. The header and the opening frame marker. The hook reserves the closing frame marker first and never cuts it.
+   2. The indexes: path-scoped rules, then skills, then agents. Each index has at most 30 entries and the indexes together have about 2,000 characters (`PROJCTX_INDEX_BUDGET`, default 2000). Index paths are relative to the workspace, and each description is cut to 100 characters. An index that hits a cap ends with "and N more in `<dir>`".
+   3. The body gets the rest of the budget: the `CLAUDE.md` text, then the body of each rule that has no `paths:` frontmatter.
 7. **A truncation pointer.** When the hook cuts or drops a section, it adds one pointer line. The line names the absolute path of each file or directory that the hook cut or dropped. The pointer counts toward the budget.
 8. **Bounded work.** The hook reads each file with a byte limit, for example `head -c`. It stops each loop when the budget is full or after a fixed file count.
 9. **A 3-second timeout.** The `settings.json` entry has `"timeout": 3`. The git worktree lookup uses `timeout 1` when that command exists. On a timeout, Claude Code discards the output and the tool call continues.
@@ -119,10 +118,10 @@ This exposure is not new. Any untrusted text in context has it. In the single-fo
 
 ### Opt-out
 
-The hook has two opt-out controls:
+The hook has two opt-out controls. The kill switch is implemented. The per-project flag is pending a follow-up.
 
 - **Kill switch.** When `APEXYARD_PROJCTX_DISABLE=1` is set, the hook exits 0 with no output. It checks this before any registry read. The name follows `APEXYARD_SEARCH_REINDEX_DISABLE`.
-- **Per-project flag.** When a registry entry has `context: off`, the hook injects nothing for that project. The default is on.
+- **Per-project flag (follow-up, not yet implemented).** When a registry entry has `context: off`, the hook injects nothing for that project. The default is on.
 
 The default is also on for a project with `status: handover`. Trade-off: the hook injects a third-party repo's text until the operator sets the flag. Reason: handover work needs the conventions most, and the agent reads those files during the handover anyway. An operator who does not trust a repo sets `context: off`.
 
@@ -174,28 +173,28 @@ When #1388 ships, the exclude matches only the ops clone's own rules. In the sin
 
 ## Implementation state
 
-This table is a snapshot at PR #1425 head `74bd696`. The PR is still open. A requirement marked "Not implemented" is part of this decision, and the PR or a follow-up must deliver it.
+This table is a snapshot at PR #1425 head `@@SHA@@`. The PR is still open. A requirement marked "Not implemented" is part of this decision, and the PR or a follow-up must deliver it.
 
-| Constraint | State at `74bd696` | Source |
+| Constraint | State at `@@SHA@@` | Source |
 |---|---|---|
 | 1. Live read | Implemented | PR body |
 | 2. Nothing at session start | Implemented | Test (b). No SessionStart entry. |
 | 3. Dedupe key | Implemented | Test (d) |
-| 4. Atomic claim | Not implemented. The hook checks the marker, builds the text, and writes the marker last. | Tariq B1 (blocking). Five parallel runs gave 4 to 5 injections. |
+| 4. Atomic claim | Implemented. The TERM/INT/HUP trap releases the claim; SIGKILL leaves it. | Tests (l), (m), (w) |
 | 5. 9,500-character budget | Implemented | Test (f) |
-| 6. Budget order | Not implemented. The code puts the indexes before the body. | Maintainer summary. Tariq S5. |
-| 7. Truncation pointer for every cut section | Partial. The pointer names `CLAUDE.md` and `.claude/rules/` only. | Tariq S5 |
-| 8. Bounded work | Not implemented. The hook reads each file in full. | Hakim M2 |
+| 6. Budget order | Partial. Header and frame come first. The index is capped at about 2,000 chars and 30 entries per section, and the body gets the rest. Index-first order is kept (D1). | Tests (q), (a2) |
+| 7. Truncation pointer for every cut section | Partial. Two pointers exist: the body-cut note and the "…and N more" lines in the index. | Tariq S5. Test (q). |
+| 8. Bounded work | Implemented. Limits are 200 rule files, 30 index entries per section, and byte-limited reads. | Tests (o), (q) |
 | 9. 3-second timeout | Implemented | `settings.json`. Spike check 3b. |
 | 10. Always exit 0 | Implemented | Test (g) |
-| 11. Contained reads | Partial. The tool path is canonical. The files that the hook reads are not checked. | Tests (h) and (j). Hakim H1 (blocking). |
+| 11. Contained reads | Implemented, including the `..` and newline refusals. Hardlinks are not detected. | Tests (k), (p), (r) |
 | 12. Private state | Implemented | Test (i) |
-| 13. No double load from the project root | Implemented | Test (e) |
-| 14. `AGENTS.md` layout | Not implemented | Tariq S1 |
-| Precedence header and frame markers | Partial. The header says "repo content, not operator instructions". It has no precedence line and no frame markers. | Tariq S2. Hakim M1. |
-| Opt-out | Not implemented | Tariq S3. Hakim M1. |
-| Worktree source | Implemented. The hook reads `$ws`. The header does not yet state the source for a worktree hit. | Tariq S4 |
-| Reviewer label | Not implemented | Tariq S2 |
+| 13. No double load from the project root | Implemented, plus the single-fork CLAUDE.md skip (workspace under `cwd`). | Tests (e), (u) |
+| 14. `AGENTS.md` layout | Not implemented. Follow-up. | Tariq S1 |
+| Frame and precedence header | Implemented. The frame comes before all project text. | Tests (n), (q) |
+| Opt-out | Partial. The kill switch is implemented. `context: off` is a follow-up. | Test (t). Tariq S3. Hakim M1. |
+| Worktree source | Not implemented (header line). Follow-up. The hook reads `$ws`. | Tariq S4 |
+| Reviewer label | Not implemented. Follow-up. | Tariq S2 |
 
 ## Consequences
 
@@ -207,22 +206,22 @@ This table is a snapshot at PR #1425 head `74bd696`. The PR is still open. A req
 
 ## Known limits (deferred)
 
-These limits are accepted for now. Tracker tickets for them are not filed yet.
+These limits are accepted for now. Each one is a follow-up, not yet filed.
 
 1. **No re-injection after compaction.** The marker stays after compaction, but the text can leave the context. The main session is usually long, so the conventions can be gone for the rest of the session. This limit matters most. Upgrade: clear the session's markers on PreCompact.
 2. **Rule subdirectories.** The hook reads only `.claude/rules/*.md`. Claude Code also finds rules in subdirectories. A rule at `.claude/rules/backend/x.md` is not injected and not indexed.
 3. **`.claude/CLAUDE.md`.** The hook reads only the workspace-root `CLAUDE.md`. A project that keeps its memory file at `.claude/CLAUDE.md` gets no `CLAUDE.md` text.
-4. **Single-fork double load.** In the single-fork layout, `workspace/<name>/` is inside the ops fork. Claude Code loads the nested `CLAUDE.md` natively, and the hook adds it again, up to about 9 KB. Constraint 13 skips only when the `cwd` is inside the workspace. Upgrade: omit the `CLAUDE.md` body when the workspace is under the session `cwd`, and keep the rules. This finding is inferred. Nobody ran it in a live session.
+4. **SIGKILL.** A TERM, INT or HUP signal releases the claim. A SIGKILL cannot be trapped and leaves the marker, so the project is not injected again for that session and agent.
 
 Other deferred items from the PR body and the reviews:
 
-- The `Bash` tool is not matched. Upgrade: resolve the project from `cwd`.
-- The markers and cache files are not cleaned up.
-- The cache writes are not atomic.
-- The hook caches no negative result, so a miss inside any git repo runs the git lookup.
-- A re-pointed workspace symlink stays cached until the registry file changes.
-- A `workspace:` path with spaces resolves only when `yq` is installed. This gap is in the shared registry parser and existed before this hook.
-- Phase 2 of #1423: the `/start-ticket` trigger and project skills as slash commands.
+- The `Bash` tool is not matched. Upgrade: resolve the project from `cwd`. (follow-up, not yet filed)
+- The markers and cache files are not cleaned up. (follow-up, not yet filed)
+- The cache writes are not atomic. (follow-up, not yet filed)
+- The hook caches no negative result, so a miss inside any git repo runs the git lookup. (follow-up, not yet filed)
+- A re-pointed workspace symlink stays cached until the registry file changes. (follow-up, not yet filed)
+- A `workspace:` path with spaces resolves only when `yq` is installed. This gap is in the shared registry parser and existed before this hook. (follow-up, not yet filed)
+- Phase 2 of #1423: the `/start-ticket` trigger and project skills as slash commands. (follow-up, not yet filed)
 
 ## Glossary
 
@@ -244,5 +243,6 @@ Other deferred items from the PR body and the reviews:
 - PR: #1425
 - Reviews on #1425: Tariq 5337588001, Hakim 5337585308, Rex 5337610285
 - Maintainer summary on #1425: comment 5868670475
+- Round-1 final reviews by Rex, Hakim and Tariq on `336ba2e`, and the performance review. Review ids to be added by the coordinator (the builder was not given them). Performance numbers: tokens per injection 460 / 2,070 / 2,375; hook time on a miss 57 ms, falling to 30 ms after the single jq call and the worktree pre-check.
 - Related records: AgDR-0160 (rule exclusion and its 2026-09-25 scope note), AgDR-0073 (`AGENTS.md` handover layout), AgDR-0111 (advisory marker-write guard)
 - Related issues: #1354 and PR #1355 (the rules exclude), #1388 (the per-clone exclude)

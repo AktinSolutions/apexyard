@@ -31,6 +31,8 @@
 # Bash writes (`cat > workspace/x/foo.ts`) are NOT covered — see the
 # ponytail note at the bottom.
 
+[ "${APEXYARD_PROJCTX_DISABLE:-}" = 1 ] && exit 0
+
 trap 'exit 0' ERR
 
 command -v jq >/dev/null 2>&1 || exit 0
@@ -38,10 +40,9 @@ command -v jq >/dev/null 2>&1 || exit 0
 INPUT=$(cat 2>/dev/null) || exit 0
 [ -n "$INPUT" ] || exit 0
 
-FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // empty' 2>/dev/null)
+# One jq call, NUL-separated so a newline inside a field cannot shift the rest.
+{ IFS= read -r -d '' FILE_PATH; IFS= read -r -d '' CWD; IFS= read -r -d '' SESSION_ID; IFS= read -r -d '' AGENT_ID; } < <(printf '%s' "$INPUT" | jq -j '(.tool_input.file_path // .tool_input.path // ""),"\u0000",(.cwd // ""),"\u0000",(.session_id // ""),"\u0000",(.agent_id // ""),"\u0000"' 2>/dev/null)
 [ -n "$FILE_PATH" ] || exit 0
-
-CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 
 case "$FILE_PATH" in
   /*) ABS_PATH="$FILE_PATH" ;;
@@ -64,7 +65,6 @@ done
 ABS_PATH=$(_portfolio_canonicalize "$ABS_PATH" 2>/dev/null) || exit 0
 [ -n "$ABS_PATH" ] || exit 0
 
-SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 [ -n "$SESSION_ID" ] || exit 0
 export PROJCTX_SESSION_ID="$SESSION_ID"
 
@@ -80,21 +80,25 @@ PROJECT_WS="${PROJECT_LINE#*$'\t'}"
 if [ -n "$CWD" ] && portfolio_path_under "$CWD" "$PROJECT_WS" 2>/dev/null; then
   exit 0
 fi
+# Workspace under the session cwd: Claude Code already loaded its CLAUDE.md.
+[ -n "$CWD" ] && portfolio_path_under "$PROJECT_WS" "$CWD" 2>/dev/null && export PROJCTX_SKIP_CLAUDE_MD=1
 
-AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null)
 [ -n "$AGENT_ID" ] || AGENT_ID="main"
 
 MARKER_DIR=$(projctx_state_dir) || exit 0
-MARKER_KEY=$(printf '%s|%s|%s' "$SESSION_ID" "$AGENT_ID" "$PROJECT_NAME" | cksum 2>/dev/null | awk '{print $1}')
-[ -n "$MARKER_KEY" ] || exit 0
-MARKER="$MARKER_DIR/injected-$MARKER_KEY"
+SESS_KEY=$(printf '%s' "$SESSION_ID" | cksum 2>/dev/null | awk '{print $1}')
+MARKER_KEY=$(printf '%s|%s' "$AGENT_ID" "$PROJECT_NAME" | cksum 2>/dev/null | awk '{print $1}')
+[ -n "$SESS_KEY" ] && [ -n "$MARKER_KEY" ] || exit 0
+MARKER="$MARKER_DIR/injected-$SESS_KEY-$MARKER_KEY"
 
 # Claim the marker atomically BEFORE building the text: mkdir is atomic and
 # refuses an existing path (a symlink too). Release it on any failure so the
 # next touch retries.
 mkdir "$MARKER" 2>/dev/null || exit 0
+# Release the claim if we are killed mid-build (SIGKILL cannot be trapped).
+trap 'rmdir "$MARKER" 2>/dev/null; exit 0' TERM INT HUP
 
-CONTEXT=$(projctx_emit "$PROJECT_NAME" "$PROJECT_WS" 2>/dev/null) && [ -n "$CONTEXT" ] || { rmdir "$MARKER" 2>/dev/null; exit 0; }
+if ! CONTEXT=$(projctx_emit "$PROJECT_NAME" "$PROJECT_WS" 2>/dev/null) || [ -z "$CONTEXT" ]; then rmdir "$MARKER" 2>/dev/null; exit 0; fi
 
 OUTPUT=$(jq -n --arg t "$CONTEXT" '{
   hookSpecificOutput: {
