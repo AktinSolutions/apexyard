@@ -173,9 +173,9 @@ When #1388 ships, the exclude matches only the ops clone's own rules. In the sin
 
 ## Implementation state
 
-This table is a snapshot at PR #1425 code head `1255551`. The PR is still open. A requirement marked "Not implemented" is part of this decision, and the PR or a follow-up must deliver it.
+This table is a snapshot at PR #1425 code head `8ae145e`. The PR is still open. A requirement marked "Not implemented" is part of this decision, and the PR or a follow-up must deliver it.
 
-| Constraint | State at `1255551` | Source |
+| Constraint | State at `8ae145e` | Source |
 |---|---|---|
 | 1. Live read | Implemented | PR body |
 | 2. Nothing at session start | Implemented | Test (b). No SessionStart entry. |
@@ -187,7 +187,7 @@ This table is a snapshot at PR #1425 code head `1255551`. The PR is still open. 
 | 8. Bounded work | Implemented. Rule reads stop at 200 files. The skill and agent loops count every entry but read at most 30 files each. Import scanning is bounded by the 64 KB `CLAUDE.md` read, and the import list is capped at 30 entries. | Tests (o), (q), (x) |
 | 9. 3-second timeout | Implemented | `settings.json`. Spike check 3b. |
 | 10. Always exit 0 | Implemented | Test (g) |
-| 11. Contained reads | Implemented, including the `..` and newline refusals. Hardlinks are not detected. Frontmatter values and file names are stripped of or refused for control characters; NUL is stripped from hook input fields; budget variables accept 1 to 6 digits with no leading zero; index names are cut to 60 chars and `paths:` values to 200; import entries are cut to 200 chars; paths with C1 controls or U+2028/U+2029 are refused. | Tests (k), (p), (p2), (r), (x2), (y), (z1), (z1b), (z3), (z3b), (z3c) |
+| 11. Contained reads | Implemented, including the `..` and newline refusals. Hardlinks are not detected. Frontmatter values and file names are stripped of or refused for control characters; NUL is stripped from hook input fields; budget variables accept 1 to 6 ASCII digits with no leading zero; index names are cut to 60 chars and `paths:` values to 200; import entries are cut to 200 chars; paths with C1 controls or U+2028/U+2029 are refused. | Tests (k), (p), (p2), (r), (x2), (y), (z1), (z1b), (z3), (z3b), (z3c), (z3d) |
 | 12. Private state | Implemented | Test (i) |
 | 13. No double load from the project root | Implemented for `cwd` inside the workspace. No skip for a workspace under `cwd` (Known limit 5). | Test (e) |
 | 14. `AGENTS.md` layout | Not implemented. Follow-up. | Tariq S1 |
@@ -255,7 +255,8 @@ Other deferred items from the PR body and the reviews:
 - Round-3 local delta reviews on `a12a8b5..29d4011`, not posted to the PR. All findings are addressed in round 4.
   - Rex: APPROVE.
   - Hakim: PASS, with N1-N4.
-  - Tariq: REQUEST CHANGES for F1-F3 and the AgDR SHA.
+  - Tariq: REQUEST CHANGES for F1-F3 (plus advisories F4-F6; F4 deferred to follow-up #13) and the AgDR SHA.
+- Round-4 local delta reviews on `9d8011a`: Hisham, Rex, Tariq APPROVE; Hakim PASS; advisories addressed in the next commit; macOS bash 3.2 / BSD awk check pending before merge (D2).
 - Performance review on `336ba2e`, local.
   - Tokens per injection: 460 (small), 2,070 (typical), 2,375 (max).
   - The skill and agent index crowded out `CLAUDE.md`. The index is now capped.
