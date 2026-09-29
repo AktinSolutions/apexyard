@@ -499,10 +499,11 @@ rm -rf "$MARKER_DIR"
 CTX=$(ctx_of "$(invoke "$(payload x2 "" "" "$WS/src/a.ts")")")
 BODY=$(printf '%s' "$CTX" | sed -n '/^## demo\/CLAUDE.md/,$p')
 LONGIDX=$(printf '%s\n' "$CTX" | sed '/^## demo\/CLAUDE.md/,$d' | awk '{ if (length > m) m = length } END { print m+0 }')
-if [ "$LONGIDX" -le 400 ] && [ "${#BODY}" -gt 5000 ] && printf '%s' "$CTX" | grep -q CANARY_X2_AFTER; then
+IMPLINE=$(printf '%s\n' "$CTX" | grep -m1 '^  - docs/a' | awk '{ print length }')
+if [ "$LONGIDX" -le 400 ] && [ "${IMPLINE:-9999}" -le 204 ] && [ "${#BODY}" -gt 5000 ] && printf '%s' "$CTX" | grep -q CANARY_X2_AFTER; then
   pass_case "(x2) 8,000-char import cut to 200: longest index line $LONGIDX, body ${#BODY} chars"
 else
-  fail_case "(x2) import length" "longest_index=$LONGIDX body=${#BODY}"
+  fail_case "(x2) import length" "longest_index=$LONGIDX import_line=${IMPLINE:-none} body=${#BODY}"
 fi
 mv "$WS/CLAUDE.md.bak" "$WS/CLAUDE.md"; rm -rf "$MARKER_DIR"
 
@@ -525,21 +526,24 @@ printf -- '---\nname: n\033[2Jx\ndescription: d\033]0;t\007\302\205e\302\233f\n-
 printf -- '---\nname: %s\ndescription: d\n---\n' "$(head -c 500 /dev/zero | tr '\0' n)" > "$WS/.claude/agents/long.md"
 CTLDIR="$WS/.claude/skills/x$(printf '\033')[2Jy"
 LSDIR="$WS/.claude/skills/u$(printf '\342\200\250')v"
-mkdir -p "$CTLDIR" "$LSDIR"
+PSDIR="$WS/.claude/skills/p$(printf '\342\200\251')q"
+mkdir -p "$CTLDIR" "$LSDIR" "$PSDIR"
 printf -- '---\nname: s\ndescription: d\n---\n' > "$CTLDIR/SKILL.md"
 printf -- '---\nname: s2\ndescription: d\n---\n' > "$LSDIR/SKILL.md"
+printf -- '---\nname: s3\ndescription: d\n---\n' > "$PSDIR/SKILL.md"
 CTX=$(ctx_of "$(LC_ALL=C invoke "$(payload z1 "" "" "$WS/src/a.ts")")")
 if ! printf '%s' "$CTX" | LC_ALL=C grep -q "$(printf '[\001-\010\013-\037\177]')" \
    && ! printf '%s' "$CTX" | LC_ALL=C grep -q "$(printf '\302\205')" \
    && ! printf '%s' "$CTX" | LC_ALL=C grep -q "$(printf '\302\233')" \
    && ! printf '%s' "$CTX" | LC_ALL=C grep -q "$(printf '\342\200\250')" \
+   && ! printf '%s' "$CTX" | LC_ALL=C grep -q "$(printf '\342\200\251')" \
    && [ "$(printf '%s\n' "$CTX" | awk '{ if (length > m) m = length } END { print m+0 }')" -lt 400 ] \
    && printf '%s' "$CTX" | grep -q CANARY_CLAUDE_MD_MARKER; then
-  pass_case "(z1) control chars, C1 and U+2028 stripped/refused, oversized names cut in the index (LC_ALL=C)"
+  pass_case "(z1) control chars, C1, U+2028 and U+2029 stripped/refused, oversized names cut in the index (LC_ALL=C)"
 else
   fail_case "(z1) control chars" "canary=$(printf '%s' "$CTX" | grep -c CANARY_CLAUDE_MD_MARKER)"
 fi
-rm -f "$WS/.claude/agents/ctl.md" "$WS/.claude/agents/long.md"; rm -rf "$CTLDIR" "$LSDIR" "$MARKER_DIR"
+rm -f "$WS/.claude/agents/ctl.md" "$WS/.claude/agents/long.md"; rm -rf "$CTLDIR" "$LSDIR" "$PSDIR" "$MARKER_DIR"
 
 # --- (z1b) a UTF-8 locale must not empty names and descriptions (gawk collation)
 UTF=$(locale -a 2>/dev/null | grep -i -m1 -E '^(en_US|C)\.utf-?8$')
@@ -585,6 +589,20 @@ else
   fail_case "(z3c) leading-zero budget" "ctx_len=${#CTX}"
 fi
 mv "$WS/CLAUDE.md.bak" "$WS/CLAUDE.md"; rm -rf "$MARKER_DIR"
+# non-ASCII digit under a UTF-8 locale must not pass the digit check.
+# Prefer en_US: C.utf8 rejects the digit even with the old [!0-9] pattern.
+UTF=$(locale -a 2>/dev/null | grep -i -E '^(en_US|C)\.utf-?8$' | sort -r | head -1)
+if [ -n "$UTF" ]; then
+  CTX=$(ctx_of "$(LC_ALL="$UTF" PROJCTX_INDEX_BUDGET=$(printf '\340\245\253') invoke "$(payload z3d "" "" "$WS/src/a.ts")")")
+  if printf '%s' "$CTX" | grep -q CANARY_CLAUDE_MD_MARKER; then
+    pass_case "(z3d) $UTF: non-ASCII digit budget rejected, default used"
+  else
+    fail_case "(z3d) non-ASCII digit budget" "locale=$UTF ctx_len=${#CTX}"
+  fi
+  rm -rf "$MARKER_DIR"
+else
+  echo "SKIP: (z3d) no UTF-8 locale installed"
+fi
 
 echo "===== test_inject_project_context.sh ====="
 echo "Passed: $PASS"

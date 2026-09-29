@@ -27,8 +27,8 @@
 PROJCTX_BUDGET="${PROJCTX_BUDGET:-9500}"
 # 1 to 6 decimal digits, no leading zero: both values reach $(( )), which would
 # run $(...) in them, read 08 as an octal error, and wrap on 20+ digits.
-case "$PROJCTX_BUDGET" in ''|0*|???????*|*[!0-9]*) PROJCTX_BUDGET=9500 ;; esac
-case "${PROJCTX_INDEX_BUDGET:-}" in ''|0*|???????*|*[!0-9]*) PROJCTX_INDEX_BUDGET=2000 ;; esac
+case "$PROJCTX_BUDGET" in ''|0*|???????*|*[!0123456789]*) PROJCTX_BUDGET=9500 ;; esac
+case "${PROJCTX_INDEX_BUDGET:-}" in ''|0*|???????*|*[!0123456789]*) PROJCTX_INDEX_BUDGET=2000 ;; esac
 # Per-user state under $HOME, never shared /tmp: another local user could
 # pre-create a predictable /tmp dir and poison the registry cache (context
 # injection) or plant symlinks the writes below would follow. Same base

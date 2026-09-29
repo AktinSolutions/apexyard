@@ -9,8 +9,9 @@
 # this repo). Claude Code loads the session cwd's CLAUDE.md (and its
 # parents); a project checked out elsewhere never gets its conventions
 # loaded, so build agents write code Rex then has to catch, and Rex
-# reviews against framework rules only. This hook reads the project's context LIVE from
-# its own repo on every injection; nothing is copied or snapshotted, so
+# reviews against framework rules only.
+# This hook reads the project's context LIVE from its own repo on every
+# injection; nothing is copied or snapshotted, so
 # it can't go stale the way projects/<name>/ docs can.
 #
 # FAIL-OPEN CONTRACT (mandatory — this is a PostToolUse hook, not a gate):
