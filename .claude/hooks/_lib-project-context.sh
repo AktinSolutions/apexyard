@@ -221,7 +221,7 @@ _projctx_rule_paths() {
 # ------------------------------------------------------------------------------
 # ponytail: refuses any symlinked file; hardlinks are not detected (same-fs only, needs attacker write to $HOME's fs).
 _projctx_safe_file() {  # $1=file $2=real workspace
-  case "$1" in *$'\n'*|*$'\r'*) return 1 ;; esac
+  case "$1" in *[[:cntrl:]]*) return 1 ;; esac
   [ -f "$1" ] && [ ! -L "$1" ] || return 1
   local d; d=$(cd "$(dirname "$1")" 2>/dev/null && pwd -P) || return 1
   case "$d/" in "$2"/*) return 0 ;; esac; return 1

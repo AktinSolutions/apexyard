@@ -500,14 +500,18 @@ rm -rf "$MARKER_DIR"
 # --- (z1) control chars in frontmatter are stripped from the index
 mkdir -p "$WS/.claude/agents"
 printf -- '---\nname: n\033[2Jx\ndescription: d\033]0;t\007\302\205e\n---\n' > "$WS/.claude/agents/ctl.md"
+printf -- '---\nname: %s\ndescription: d\n---\n' "$(head -c 500 /dev/zero | tr '\0' n)" > "$WS/.claude/agents/long.md"
+CTLDIR="$WS/.claude/skills/x$(printf '\033')[2Jy"
+mkdir -p "$CTLDIR"; printf -- '---\nname: s\ndescription: d\n---\n' > "$CTLDIR/SKILL.md"
 CTX=$(ctx_of "$(invoke "$(payload z1 "" "" "$WS/src/a.ts")")")
 if ! printf '%s' "$CTX" | LC_ALL=C grep -q "$(printf '[\001-\010\013-\037\177]')" && ! printf '%s' "$CTX" | grep -q "$(printf '\302\205')" \
+   && [ "$(printf '%s\n' "$CTX" | awk '{ if (length > m) m = length } END { print m+0 }')" -lt 400 ] \
    && printf '%s' "$CTX" | grep -q CANARY_CLAUDE_MD_MARKER; then
-  pass_case "(z1) control chars stripped from skill/agent/rule index fields"
+  pass_case "(z1) control chars and oversized names stripped/cut in the index"
 else
   fail_case "(z1) control chars" "canary=$(printf '%s' "$CTX" | grep -c CANARY_CLAUDE_MD_MARKER)"
 fi
-rm -f "$WS/.claude/agents/ctl.md"; rm -rf "$MARKER_DIR"
+rm -f "$WS/.claude/agents/ctl.md" "$WS/.claude/agents/long.md"; rm -rf "$CTLDIR" "$MARKER_DIR"
 
 # --- (z3) a non-numeric budget is never evaluated by $(( ))
 # shellcheck disable=SC2016  # literal payload: must not expand here
