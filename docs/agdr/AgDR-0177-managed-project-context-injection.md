@@ -173,9 +173,9 @@ When #1388 ships, the exclude matches only the ops clone's own rules. In the sin
 
 ## Implementation state
 
-This table is a snapshot at PR #1425 head `@@SHA@@`. The PR is still open. A requirement marked "Not implemented" is part of this decision, and the PR or a follow-up must deliver it.
+This table is a snapshot at PR #1425 head `6a192c1`. The PR is still open. A requirement marked "Not implemented" is part of this decision, and the PR or a follow-up must deliver it.
 
-| Constraint | State at `@@SHA@@` | Source |
+| Constraint | State at `6a192c1` | Source |
 |---|---|---|
 | 1. Live read | Implemented | PR body |
 | 2. Nothing at session start | Implemented | Test (b). No SessionStart entry. |
