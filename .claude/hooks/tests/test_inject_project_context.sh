@@ -458,29 +458,6 @@ else
 fi
 rm -rf "$MARKER_DIR"
 
-# --- (u) R2-7: workspace under cwd -> CLAUDE.md not repeated, rules kept
-OUT=$(invoke "$(payload u1 "" "$(dirname "$WS")" "$WS/src/a.ts")")
-CTX=$(ctx_of "$OUT")
-if printf '%s' "$CTX" | grep -q 'already loaded natively' && ! printf '%s' "$CTX" | grep -q 'CANARY_CLAUDE_MD_MARKER' \
-   && printf '%s' "$CTX" | grep -q 'CANARY_RULE_FULL_TEXT'; then
-  pass_case "(u) workspace under cwd: CLAUDE.md skipped (native), rule body kept"
-else
-  fail_case "(u) single-fork skip" "ctx=$(printf '%s' "$CTX" | head -c 200)"
-fi
-rm -rf "$MARKER_DIR"
-
-# --- (v) R2-12: newline inside file_path does not shift the other fields
-NLP="$WS/src/we
-ird.ts"
-OUT=$(invoke "$(payload v1 "" "" "$NLP")")
-EXIT_V=$?
-if [ "$EXIT_V" = 0 ] && printf '%s' "$OUT" | grep -q CANARY_CLAUDE_MD_MARKER; then
-  pass_case "(v) newline in file_path: exit 0, session_id and agent fields intact (injected)"
-else
-  fail_case "(v) NUL-separated fields" "exit=$EXIT_V out_len=${#OUT}"
-fi
-rm -rf "$MARKER_DIR"
-
 # --- (w) R2-11: SIGTERM mid-build releases the claim
 echo 'projctx_emit() { sleep 5; }' >> "$FORK/.claude/hooks/_lib-project-context.sh"
 ( invoke "$(payload w1 "" "" "$WS/src/a.ts")" >/dev/null ) &
@@ -496,6 +473,52 @@ else
   fail_case "(w) signal release" "markers_left=$LEFT"
 fi
 rm -rf "$MARKER_DIR"
+
+# --- (x) imports capped; body survives 400 imports
+cp "$WS/CLAUDE.md" "$WS/CLAUDE.md.bak"
+{ cat "$WS/CLAUDE.md.bak"; for i in $(seq 1 400); do printf '@docs/very/long/import/path/number/%s.md\n' "$i"; done; head -c 6000 /dev/zero | tr '\0' b; echo; } > "$WS/CLAUDE.md"
+CTX=$(ctx_of "$(invoke "$(payload x1 "" "" "$WS/src/a.ts")")")
+BODY=$(printf '%s' "$CTX" | sed -n '/^## demo\/CLAUDE.md/,$p')
+if [ "${#BODY}" -gt 5000 ] && printf '%s' "$CTX" | grep -q 'more imports in CLAUDE.md' && ! printf '%s' "$CTX" | grep -q "  - $WS/docs"; then
+  pass_case "(x) 400 imports: index capped, relative, body ${#BODY} chars"
+else
+  fail_case "(x) import cap" "body=${#BODY}"
+fi
+mv "$WS/CLAUDE.md.bak" "$WS/CLAUDE.md"; rm -rf "$MARKER_DIR"
+
+# --- (y) NUL in file_path cannot forge cwd/session (replaces (v)'s no-op check)
+P=$(jq -n --arg p "$WS/src/a.ts" '{session_id:"y1", cwd:"", tool_name:"Read", tool_input:{file_path:($p + "\u0000" + "'"$WS"'" + "\u0000" + "forged")}}')
+OUT=$(invoke "$P")
+# Forged cwd == $WS would suppress injection (test (e) path); intact fields inject.
+if printf '%s' "$OUT" | grep -q CANARY_CLAUDE_MD_MARKER || [ -n "$(find "$MARKER_DIR" -name "injected-$(printf %s y1 | cksum | awk '{print $1}')-*")" ]; then
+  pass_case "(y) NUL in file_path: fields not shifted"
+else
+  fail_case "(y) NUL shift" "out_len=${#OUT}"
+fi
+rm -rf "$MARKER_DIR"
+
+# --- (z1) control chars in frontmatter are stripped from the index
+mkdir -p "$WS/.claude/agents"
+printf -- '---\nname: n\033[2Jx\ndescription: d\033]0;t\007\302\205e\n---\n' > "$WS/.claude/agents/ctl.md"
+CTX=$(ctx_of "$(invoke "$(payload z1 "" "" "$WS/src/a.ts")")")
+if ! printf '%s' "$CTX" | LC_ALL=C grep -q "$(printf '[\001-\010\013-\037\177]')" && ! printf '%s' "$CTX" | grep -q "$(printf '\302\205')" \
+   && printf '%s' "$CTX" | grep -q CANARY_CLAUDE_MD_MARKER; then
+  pass_case "(z1) control chars stripped from skill/agent/rule index fields"
+else
+  fail_case "(z1) control chars" "canary=$(printf '%s' "$CTX" | grep -c CANARY_CLAUDE_MD_MARKER)"
+fi
+rm -f "$WS/.claude/agents/ctl.md"; rm -rf "$MARKER_DIR"
+
+# --- (z3) a non-numeric budget is never evaluated by $(( ))
+# shellcheck disable=SC2016  # literal payload: must not expand here
+CTX=$(PROJCTX_INDEX_BUDGET='a[$(touch '"$SB"'/pwned)]' invoke "$(payload z3 "" "" "$WS/src/a.ts")")
+CTX=$(ctx_of "$CTX")
+if [ ! -e "$SB/pwned" ] && printf '%s' "$CTX" | grep -q CANARY_CLAUDE_MD_MARKER; then
+  pass_case "(z3) non-numeric PROJCTX_INDEX_BUDGET: not evaluated, injection still happens"
+else
+  fail_case "(z3) budget eval" "pwned=$([ -e "$SB/pwned" ] && echo y) canary=$(printf '%s' "$CTX" | grep -c CANARY_CLAUDE_MD_MARKER)"
+fi
+rm -f "$SB/pwned"; rm -rf "$MARKER_DIR"
 
 echo "===== test_inject_project_context.sh ====="
 echo "Passed: $PASS"

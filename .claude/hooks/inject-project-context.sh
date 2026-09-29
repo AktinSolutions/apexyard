@@ -41,7 +41,7 @@ INPUT=$(cat 2>/dev/null) || exit 0
 [ -n "$INPUT" ] || exit 0
 
 # One jq call, NUL-separated so a newline inside a field cannot shift the rest.
-{ IFS= read -r -d '' FILE_PATH; IFS= read -r -d '' CWD; IFS= read -r -d '' SESSION_ID; IFS= read -r -d '' AGENT_ID; } < <(printf '%s' "$INPUT" | jq -j '(.tool_input.file_path // .tool_input.path // ""),"\u0000",(.cwd // ""),"\u0000",(.session_id // ""),"\u0000",(.agent_id // ""),"\u0000"' 2>/dev/null)
+{ IFS= read -r -d '' FILE_PATH; IFS= read -r -d '' CWD; IFS= read -r -d '' SESSION_ID; IFS= read -r -d '' AGENT_ID; } < <(printf '%s' "$INPUT" | jq -j '((.tool_input.file_path // .tool_input.path // ""), (.cwd // ""), (.session_id // ""), (.agent_id // "")) | tostring | gsub("\u0000"; "") + "\u0000"' 2>/dev/null)
 [ -n "$FILE_PATH" ] || exit 0
 
 case "$FILE_PATH" in
@@ -80,9 +80,6 @@ PROJECT_WS="${PROJECT_LINE#*$'\t'}"
 if [ -n "$CWD" ] && portfolio_path_under "$CWD" "$PROJECT_WS" 2>/dev/null; then
   exit 0
 fi
-# Workspace under the session cwd: Claude Code already loaded its CLAUDE.md.
-[ -n "$CWD" ] && portfolio_path_under "$PROJECT_WS" "$CWD" 2>/dev/null && export PROJCTX_SKIP_CLAUDE_MD=1
-
 [ -n "$AGENT_ID" ] || AGENT_ID="main"
 
 MARKER_DIR=$(projctx_state_dir) || exit 0
@@ -109,15 +106,12 @@ OUTPUT=$(jq -n --arg t "$CONTEXT" '{
 
 printf '%s\n' "$OUTPUT"
 exit 0
-# ponytail: ~55 ms per call on a path outside every workspace (measured
-#   on Linux), spread over jq/cksum/awk/stat process spawns. Upgrade: one
-#   jq call for all fields, and bash-only hashing, if it shows up in use.
 # ponytail: two known ceilings, not bugs.
 #   1. Compaction can drop this turn's additionalContext from the model's
 #      working context, and the dedupe marker stays written — the project
 #      never gets re-injected in that session. Upgrade: clear
-#      ${APEXYARD_OPS_PIN_DIR:-$HOME/.claude/apexyard}/projctx/injected-* markers on PreCompact / a
-#      SessionStart that detects a resumed-after-compact session.
+#      ${APEXYARD_OPS_PIN_DIR:-$HOME/.claude/apexyard}/projctx/injected-* markers from a
+#      SessionStart(compact) hook.
 #   2. Bash tool calls are not matched (settings.json matcher stops at
 #      Read|Glob|Grep|Edit|Write|MultiEdit), so `cat > workspace/x/f.ts`
 #      injects nothing. Upgrade: key resolution on `.cwd` alone (no
