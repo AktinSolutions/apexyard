@@ -211,6 +211,116 @@ run "git add foo && tracker_pr_merge acme/app 42 squash true"
 run "git commit -m fix tracker_pr_merge wrapper"
 [ "$(grep -c '^block-unreviewed-merge.sh$' "$TMP/log")" -eq 1 ]
 
+# me2resh/apexyard#1527: the case arms match only a command that STARTS with
+# `git push` / `git commit`. A push or commit later in the command must still
+# route its gates, and each gate group must run exactly once.
+run_json() {
+  jq -nc --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}' \
+    | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh"
+}
+for command in \
+  'git push origin main' \
+  'cd /some/repo && git push origin main' \
+  'cd /some/repo; git push origin main' \
+  'cd /some/repo&&git push origin main' \
+  'git fetch && git push' \
+  'git push; echo done' \
+  'git push&& echo done' \
+  '(git push origin main)' \
+  'git -C /some/repo push origin main' \
+  'git -C "/some dir/repo" push origin main' \
+  "git -C '/some dir/repo' push origin main" \
+  'git -c push.default=current push' \
+  'git --no-pager push origin main' \
+  'git --git-dir=/some/repo/.git push origin main' \
+  'git --git-dir /some/repo/.git push origin main' \
+  'git --work-tree /some/repo push origin main' \
+  'git --namespace ns push origin main' \
+  "$(printf 'git \\\n  push origin main')" \
+  '/usr/bin/git push origin main'; do
+  : > "$TMP/log"
+  run_json "$command"
+  for gate in block-main-push.sh validate-branch-name.sh pre-push-gate.sh; do
+    if [ "$(grep -c "^${gate}\$" "$TMP/log")" -ne 1 ]; then
+      echo "FAIL: '$command' did not run $gate exactly once" >&2
+      cat "$TMP/log" >&2
+      exit 1
+    fi
+  done
+  if grep -q '^check-secrets.sh$' "$TMP/log"; then
+    echo "FAIL: '$command' routed the commit gates" >&2
+    exit 1
+  fi
+done
+
+for command in \
+  'git commit -m "fix: x"' \
+  'cd /some/repo && git commit -m "fix: x"' \
+  'git add foo; git commit -m "fix: x"' \
+  'git -C /some/repo commit -m "fix: x"' \
+  'git -c user.name=x commit -m "fix: x"' \
+  'git --work-tree /some/repo commit -m "fix: x"' \
+  'git --git-dir /some/repo/.git commit -m "fix: x"'; do
+  : > "$TMP/log"
+  run_json "$command"
+  for gate in check-secrets.sh validate-commit-format.sh warn-bootstrap-scope.sh; do
+    if [ "$(grep -c "^${gate}\$" "$TMP/log")" -ne 1 ]; then
+      echo "FAIL: '$command' did not run $gate exactly once" >&2
+      cat "$TMP/log" >&2
+      exit 1
+    fi
+  done
+  if grep -q '^block-main-push.sh$' "$TMP/log"; then
+    echo "FAIL: '$command' routed the push gates" >&2
+    exit 1
+  fi
+done
+
+# A commit then a push in one command routes both groups, each once.
+: > "$TMP/log"
+run_json 'cd /some/repo && git commit -m "fix: x" && git push origin main'
+[ "$(grep -c '^block-main-push.sh$' "$TMP/log")" -eq 1 ]
+[ "$(grep -c '^check-secrets.sh$' "$TMP/log")" -eq 1 ]
+# block-agent-routing-drift.sh sits in both groups, so it runs once per group.
+[ "$(grep -c '^block-agent-routing-drift.sh$' "$TMP/log")" -eq 2 ]
+
+# The scan matches the git subcommand, not any word that contains it.
+for command in \
+  'git stash push -m wip' \
+  'git log --oneline push' \
+  'git push-helper origin' \
+  'echo gitpush' \
+  'mygit push origin main' \
+  'git commitment' \
+  'git show --stat HEAD'; do
+  : > "$TMP/log"
+  run_json "$command"
+  if grep -qE '^(block-main-push|check-secrets)\.sh$' "$TMP/log"; then
+    echo "FAIL: '$command' routed push or commit gates" >&2
+    cat "$TMP/log" >&2
+    exit 1
+  fi
+done
+
+# The scan does not scrub quoted data. Text that only mentions a push still
+# routes the push gates. Pin that over-match so a later change does not
+# scrub the input and lose `sh -c '...'` routing with it.
+: > "$TMP/log"
+run_json "echo 'run git push later' > notes.txt"
+[ "$(grep -c '^block-main-push.sh$' "$TMP/log")" -eq 1 ]
+: > "$TMP/log"
+run_json "sh -c 'git push origin main'"
+[ "$(grep -c '^block-main-push.sh$' "$TMP/log")" -eq 1 ]
+
+# A blocking push gate still blocks when only the scan reaches it.
+: > "$TMP/log"
+set +e
+printf '%s' "$(jq -nc --arg c 'cd /some/repo && git push origin main' '{tool_name:"Bash",tool_input:{command:$c}}')" \
+  | DISPATCH_LOG="$TMP/log" DISPATCH_FAIL_SCRIPT=block-main-push.sh DISPATCH_FAIL_EXIT=2 "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1
+rc=$?
+set -e
+[ "$rc" -eq 2 ]
+
 : > "$TMP/log"
 set +e
 run 'git add -A'

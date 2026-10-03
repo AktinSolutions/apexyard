@@ -171,23 +171,39 @@ run_merge_gates() {
   run_merge_gate_hook require-architecture-review.sh
 }
 
+# The push and commit arms are run-once functions. The prefix case below and
+# the whole-command scan after it can both reach them (me2resh/apexyard#1527).
+_push_gates_ran=0
+run_push_gates() {
+  if [ "${_push_gates_ran}" -eq 1 ]; then
+    return 0
+  fi
+  _push_gates_ran=1
+  run_hook block-main-push.sh
+  run_hook validate-branch-name.sh
+  run_hook pre-push-gate.sh
+  run_hook block-agent-routing-drift.sh
+}
+
+_commit_gates_ran=0
+run_commit_gates() {
+  if [ "${_commit_gates_ran}" -eq 1 ]; then
+    return 0
+  fi
+  _commit_gates_ran=1
+  run_hook check-secrets.sh
+  run_hook block-onboarding-in-git.sh
+  run_hook verify-commit-refs.sh
+  run_hook validate-commit-format.sh
+  run_hook require-agdr-for-arch-changes.sh
+  run_hook block-agent-routing-drift.sh
+  run_hook warn-bootstrap-scope.sh
+}
+
 case "$COMMAND" in
   "git add "*) run_hook block-git-add-all.sh ;;
-  "git push "*)
-    run_hook block-main-push.sh
-    run_hook validate-branch-name.sh
-    run_hook pre-push-gate.sh
-    run_hook block-agent-routing-drift.sh
-    ;;
-  "git commit "*)
-    run_hook check-secrets.sh
-    run_hook block-onboarding-in-git.sh
-    run_hook verify-commit-refs.sh
-    run_hook validate-commit-format.sh
-    run_hook require-agdr-for-arch-changes.sh
-    run_hook block-agent-routing-drift.sh
-    run_hook warn-bootstrap-scope.sh
-    ;;
+  "git push "*) run_push_gates ;;
+  "git commit "*) run_commit_gates ;;
   "gh issue create "*)
     run_hook suggest-ticket-template.sh
     run_hook validate-issue-structure.sh
@@ -221,6 +237,33 @@ case "$COMMAND" in
     run_merge_gates
     ;;
 esac
+
+# A case glob matches only the start of the command. A push or commit that
+# follows `cd <dir> &&`, a `;`, or a git global option such as `-C <dir>`
+# missed every push and commit gate (me2resh/apexyard#1527). Scan the whole
+# command, as the merge gates do (AgDR-0162). Any non-word character ends
+# the subcommand, so `git push;`, `git push&&` and `(git push)` also route.
+#
+# The scan only adds routing, so it cannot skip a gate. It does not scrub
+# quoted data, so text that only mentions a push or commit (a heredoc body,
+# an echo, a commit message) also routes. That over-match can cause a false
+# block from a gate that refuses compound commands. A real compound commit
+# such as `git add a && git commit ...` reaches validate-commit-format.sh,
+# which refuses it, as it did before the dispatcher existed.
+#
+# Line continuations are joined first, because grep reads one line at a
+# time and `git \<newline> push` would otherwise put git and push on
+# different lines. The option list accepts `-C`, `-c` and the long options
+# that take a separate-word value, plus any `-x`, `--opt` or `--opt=value`.
+_scan_cmd=${COMMAND//$'\\\n'/ }
+_git_opt_val='("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|]+)'
+_git_sub_re='(^|[^[:alnum:]_.-])git([[:space:]]+((-[Cc]|--(git-dir|work-tree|namespace|super-prefix|config-env))[[:space:]]+'"${_git_opt_val}"'|--?[A-Za-z][A-Za-z-]*(=[^[:space:];&|]+)?))*[[:space:]]+'
+if grep -qE "${_git_sub_re}push([^[:alnum:]_.-]|\$)" <<<"$_scan_cmd"; then
+  run_push_gates
+fi
+if grep -qE "${_git_sub_re}commit([^[:alnum:]_.-]|\$)" <<<"$_scan_cmd"; then
+  run_commit_gates
+fi
 
 # A wrapper such as `bash -c '… tracker_pr_merge …'` misses the prefix case.
 # Route those payloads with the same parser the merge-gate bodies use.
