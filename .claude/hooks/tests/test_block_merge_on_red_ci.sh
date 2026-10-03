@@ -59,8 +59,19 @@ TEST_REPO="me2resh/apexyard"
 # off (#793 fail-open fix). The new failure-shape modes below deliberately
 # omit `.iid` (or aren't a JSON object at all), the way a broken/hostile
 # response would be.
+# The third argument only matters when $gh_mode is `none`. `gh pr checks`
+# prints the same "no checks reported" line for several different states,
+# which is the defect #1519 reports, so this selects what the follow-up API
+# calls see:
+#
+#   no_ci    zero active workflows — the genuine no-CI repo, allow
+#   gated    workflows plus an action_required run for the head — a fork PR
+#            waiting at "Approve and run workflows", must BLOCK
+#   filtered workflows but no run for this head — path/branch filters, allow
+#            but do not claim the repo has no CI
+#   unknown  the API calls fail — fall through to the pre-#1519 allow
 make_sandbox() {
-  local gh_mode="$1" glab_mode="$2"
+  local gh_mode="$1" glab_mode="$2" nocheck_mode="${3:-unknown}"
   local sb
   sb=$(mktemp -d)
   mkdir -p "$sb/.claude/hooks" "$sb/bin"
@@ -103,6 +114,25 @@ case "\$*" in
         exit 1
         ;;
       *)     exit 0 ;;
+    esac
+    ;;
+  *"actions/workflows"*)
+    case "$nocheck_mode" in
+      no_ci)          echo "0" ;;
+      gated|filtered) echo "5" ;;
+      *)              exit 1 ;;
+    esac
+    ;;
+  *"actions/runs"*)
+    case "$nocheck_mode" in
+      gated) echo "1" ;;
+      *)     echo "0" ;;
+    esac
+    ;;
+  *"pr view"*)
+    case "$nocheck_mode" in
+      unknown) exit 1 ;;
+      *)       echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" ;;
     esac
     ;;
   *) exit 0 ;;
@@ -186,6 +216,37 @@ sb=$(make_sandbox none "")
 run_case "gh: no checks configured -> allows (no-op note)" 0 "" "$sb" \
   "gh pr merge 302 --repo $TEST_REPO --squash"
 
+# --- #1519: "no checks reported" covers several states, only one safe ------
+# gh prints the identical line whether the repo has no CI or a fork PR's
+# workflow is waiting at the approval gate. The gate used to allow both and
+# tell the operator the repo had no CI, which was false for the second.
+
+# THE REGRESSION: CI is configured and gated. Must block.
+sb=$(make_sandbox none "" gated)
+run_case "#1519: gated fork-PR workflow -> BLOCKS" 2 "workflow run is waiting" "$sb" \
+  "gh pr merge 310 --repo $TEST_REPO --squash"
+sb=$(make_sandbox none "" gated)
+run_case "#1519: gated -> names the approval gate" 2 "Approve and run" "$sb" \
+  "gh pr merge 310 --repo $TEST_REPO --squash"
+sb=$(make_sandbox none "" gated)
+run_case "#1519: gated -> does not claim the repo has no CI" 2 "active workflow" "$sb" \
+  "gh pr merge 310 --repo $TEST_REPO --squash"
+
+# A repo with genuinely no CI keeps the original allow, unchanged.
+sb=$(make_sandbox none "" no_ci)
+run_case "#1519: zero workflows -> still allows" 0 "has no CI checks configured" "$sb" \
+  "gh pr merge 311 --repo $TEST_REPO --squash"
+
+# Workflows exist but none ran for this head — path or branch filters make
+# that legitimate, so it allows; the note must not claim there is no CI.
+sb=$(make_sandbox none "" filtered)
+run_case "#1519: workflows exist, none matched -> allows" 0 "no run matched this head" "$sb" \
+  "gh pr merge 312 --repo $TEST_REPO --squash"
+
+# The API calls failing must not invent a refusal: fall back to the old allow.
+sb=$(make_sandbox none "" unknown)
+run_case "#1519: API unresolvable -> allows (no new block)" 0 "could not be resolved" "$sb" \
+  "gh pr merge 313 --repo $TEST_REPO --squash"
 # ----------------------------------------------------------------------
 # #1523: "no checks reported" must match the whole CLI message + non-zero
 # exit — a substring in a check NAME must not open the no-checks allow arm.

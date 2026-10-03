@@ -425,10 +425,30 @@ fi
 CHECKS_OUTPUT=$(gh pr checks "$PR_NUMBER" $REPO_FLAG 2>&1)
 CHECKS_RC=$?
 
-# "no checks reported on the 'X' branch" — legitimate no-CI state. Allow
-# only when BOTH: checks exited non-zero, AND the entire trimmed output
-# matches that exact CLI message. Projects without CI hit this path.
-# Log a single-line note so the user knows the gate was a no-op.
+# "no checks reported on the 'X' branch" — allow only when BOTH: checks
+# exited non-zero, AND the entire trimmed output matches that exact CLI
+# message. A substring match is not enough, because a contributor controls
+# check names and a `pull_request` run uses the PR's own workflow files
+# (#1523).
+#
+# Reaching here means gh reported no checks. That still covers TWO states,
+# and only one is safe to allow (#1519):
+#
+#   1. The repo genuinely has no CI. Allowing is correct and is this arm's
+#      original intent.
+#   2. A fork PR whose workflow run waits at GitHub's "Approve and run
+#      workflows" gate. CI IS configured and has never run for this head, so
+#      allowing defeats the gate — and the note below used to claim the
+#      opposite of the truth.
+#
+# Observed in the wild: a PR with five active workflows, a run at
+# `action_required` for its head, and `gh pr checks` reporting nothing. A
+# force-push re-arms that gate even after a maintainer approved an earlier
+# head, so this is not only a first-contribution state.
+#
+# Every unresolvable value below falls through to the pre-#1519 allow. A hook
+# that cannot identify the repo or the head must not invent a refusal, so a
+# 403, a rate limit or a network fault cannot turn this into a new block.
 _checks_trimmed="${CHECKS_OUTPUT#"${CHECKS_OUTPUT%%[![:space:]]*}"}"
 _checks_trimmed="${_checks_trimmed%"${_checks_trimmed##*[![:space:]]}"}"
 # [^[:cntrl:]] and not .: in bash =~, . also matches a newline, so a
@@ -436,6 +456,62 @@ _checks_trimmed="${_checks_trimmed%"${_checks_trimmed##*[![:space:]]}"}"
 # match. Branch names cannot contain control characters.
 _no_checks_re="^no checks reported on the '[^[:cntrl:]]*' branch$"
 if [ "$CHECKS_RC" -ne 0 ] && [[ "$_checks_trimmed" =~ $_no_checks_re ]]; then
+  # Workflow runs live in the BASE repo, which is what `--repo` names on a
+  # merge command and what the cwd repo is when the flag is absent.
+  GATE_OWNER_REPO="$CMD_REPO"
+  if [ -z "$GATE_OWNER_REPO" ]; then
+    GATE_OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)
+  fi
+  GATE_HEAD_SHA=$(gh pr view "$PR_NUMBER" $REPO_FLAG --json headRefOid --jq '.headRefOid' 2>/dev/null)
+
+  if [ -z "$GATE_OWNER_REPO" ] || [ -z "$GATE_HEAD_SHA" ]; then
+    echo "NOTE: PR #${PR_NUMBER} reports no CI checks, and the repo or head SHA could not be resolved to check for a gated workflow run. Merge-on-red-CI gate is a no-op for this PR." >&2
+    exit 0
+  fi
+
+  WORKFLOW_COUNT=$(gh api "repos/${GATE_OWNER_REPO}/actions/workflows" \
+    --jq '[.workflows[]? | select(.state == "active")] | length' 2>/dev/null)
+
+  if [ -n "$WORKFLOW_COUNT" ] && [ "$WORKFLOW_COUNT" -gt 0 ] 2>/dev/null; then
+    # `status=action_required` filters server-side and `.total_count` is the
+    # unpaginated total, so a head with more than one page of runs cannot
+    # push the gated ones out of view (#1520 review, A4).
+    GATED=$(gh api "repos/${GATE_OWNER_REPO}/actions/runs?head_sha=${GATE_HEAD_SHA}&status=action_required" \
+      --jq '.total_count' 2>/dev/null)
+
+    if [ -n "$GATED" ] && [ "$GATED" -gt 0 ] 2>/dev/null; then
+      cat >&2 <<MSG
+BLOCKED: PR #${PR_NUMBER} reports no CI checks, but its workflow run is waiting
+for approval.
+
+The repo has ${WORKFLOW_COUNT} active workflow(s), and ${GATED} run(s) for
+${GATE_HEAD_SHA} are at \`action_required\` — GitHub's "Approve and run
+workflows" gate for a pull request from a fork. CI is configured and has NOT
+validated this head, so there is no green result to merge on.
+
+To unblock:
+  1. Approve the workflow run on the PR's Checks tab, or via
+     gh api -X POST repos/${GATE_OWNER_REPO}/actions/runs/<run-id>/approve
+  2. Wait for the checks to finish
+  3. Retry the merge
+
+A force-push re-arms this gate even after an earlier head was approved.
+MSG
+      # exit 2, not 1: Claude Code blocks a PreToolUse call only on exit 2.
+      # The dispatcher maps 1 to 2 today, but a direct hook wiring would read
+      # exit 1 as a warning and let the merge run — so a "block" that exits 1
+      # is not reliably a block. Every other refusal in this hook exits 2
+      # (#1520 review, A6).
+      exit 2
+    fi
+
+    # Workflows exist but none ran for this head. Path or branch filters make
+    # that legitimate, so this stays an allow — but it must not claim the repo
+    # has no CI, which is the misleading half of #1519.
+    echo "NOTE: PR #${PR_NUMBER} reports no CI checks, though the repo has ${WORKFLOW_COUNT} active workflow(s) — no run matched this head (path or branch filters, most likely). Merge-on-red-CI gate is a no-op for this PR; no CI result validated this head." >&2
+    exit 0
+  fi
+
   echo "NOTE: PR #${PR_NUMBER} has no CI checks configured. Merge-on-red-CI gate is a no-op for this PR." >&2
   exit 0
 fi
