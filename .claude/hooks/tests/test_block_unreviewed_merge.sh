@@ -1126,6 +1126,67 @@ done
 unset _cli _merge_verb _cont_cmd _plain_cmd
 unset _merge_line _comment _comment_cmd
 
+# --- #1568: continued merge targets the literal PR, not the branch PR -----
+# Branch PR 1546 is fully approved. A continued merge of PR 7 must still
+# require PR 7's markers (pre-fix fell back to 1546 and would have allowed).
+_cli=gh
+_merge_verb=mer
+_merge_verb+=ge
+sb=$(make_sandbox)
+write_rex_marker "$sb" 1546
+write_ceo_marker_structured "$sb" 1546
+_cont_cmd=$(printf '%s \\\npr %s 7 --repo %s --squash' "$_cli" "$_merge_verb" "$TEST_REPO")
+run_case_custom_cmd "#1568: continued cli/pr checks PR 7 markers (not branch 1546)" 2 \
+  "no recorded code-reviewer|no CEO approval marker" "$sb" "$_cont_cmd"
+sb=$(make_sandbox)
+write_rex_marker "$sb" 1546
+write_ceo_marker_structured "$sb" 1546
+_cont_cmd=$(printf '%s pr \\\n%s 7 --repo %s --squash' "$_cli" "$_merge_verb" "$TEST_REPO")
+run_case_custom_cmd "#1568: continued pr/verb checks PR 7 markers (not branch 1546)" 2 \
+  "no recorded code-reviewer|no CEO approval marker" "$sb" "$_cont_cmd"
+sb=$(make_sandbox)
+write_rex_marker "$sb" 7
+write_ceo_marker_structured "$sb" 7
+write_rex_marker "$sb" 1546
+write_ceo_marker_structured "$sb" 1546
+_cont_cmd=$(printf '%s \\\npr %s 7 --repo %s --squash' "$_cli" "$_merge_verb" "$TEST_REPO")
+run_case_custom_cmd "#1568: continued merge allows when PR 7 has markers" 0 \
+  "" "$sb" "$_cont_cmd"
+# Argv-list split by continuation inside a quoted python -c arg is opaque.
+sb=$(make_sandbox)
+write_rex_marker "$sb" 1546
+write_ceo_marker_structured "$sb" 1546
+_argv_cont=$(printf 'python3 -c "import subprocess as s; s.run(['\''%s'\'',\\\n'\''%s'\'','\''%s'\'','\''5'\''])"' \
+  "$_cli" pr "$_merge_verb")
+run_case_custom_cmd "#1568: continued argv-list merge is opaque" 2 \
+  "cannot resolve" "$sb" "$_argv_cont"
+# Comment-ending `\` must not join a later merge's --repo onto the first PR.
+# PR 5 has markers for a/a; PR 7 does not. Blind join would check 5 against b/b.
+sb=$(make_sandbox)
+write_rex_marker "$sb" 5
+write_ceo_marker_structured "$sb" 5
+_comment_mid=$(printf '%s %s %s 5 --repo %s # \\\n%s %s %s 7 --repo other/nope --squash' \
+  "$_cli" pr "$_merge_verb" "$TEST_REPO" "$_cli" pr "$_merge_verb")
+run_case_custom_cmd "#1568: first merge's --repo is not retargeted by later merge" 0 \
+  "" "$sb" "$_comment_mid"
+
+# Escaped quotes do not open shell quotes. The comment ends line 1, so the
+# later --repo cannot supply approval for PR 5 in the ambient repo.
+for _quote in '"' "'"; do
+  sb=$(make_sandbox)
+  write_rex_marker "$sb" 5 "$FIXED_SHA" other/approved
+  write_ceo_marker_structured "$sb" 5 "$FIXED_SHA" other/approved
+  _escaped_quote=$(printf '\\%s' "$_quote")
+  _comment_text=note
+  [ "$_quote" = "'" ] && _comment_text="note '"
+  _comment_cmd=$(printf '%s pr %s 5 --subject %s # %s \\\n--repo other/approved' \
+    "$_cli" "$_merge_verb" "$_escaped_quote" "$_comment_text")
+  run_case_custom_cmd "#1568: escaped $_quote before comment cannot borrow decoy approval" 2 \
+    "no recorded code-reviewer|no CEO approval marker" "$sb" "$_comment_cmd"
+done
+unset _cli _merge_verb _cont_cmd _argv_cont _comment_mid
+unset _quote _escaped_quote _comment_text _comment_cmd
+
 # --- #1091: forge HEAD unresolvable -> the gate must FAIL CLOSED -------
 #
 # The gate's integrity property is that marker SHAs are compared against the

@@ -330,32 +330,74 @@ _normalize_json_escapes_legacy() {
 # jq-failure path (decode turns payload `\\\n` into a real backslash-newline
 # without joining).
 #
-# Outside single quotes only. Joining inside double quotes is broader than
-# bash for some shapes and only makes merge detection more eager (fail
-# closed). Linear awk over stdin — no ENVIRON/-v (Linux 128 KB cap), no
+# Outside single quotes only. A `#` comment (unquoted, at a word boundary)
+# eats the rest of the line: a trailing backslash there is NOT a continuation
+# (#1568 security: joining across `# … \` rewrote `--repo` onto a later merge).
+# Inside double quotes, `#` is literal and `\`+newline still joins (bash).
+# Linear awk over stdin — no ENVIRON/-v (Linux 128 KB cap), no
 # bash `${var//…}` on large input. On awk failure, crush backslashes and
 # newlines to spaces. This fallback only broadens detection because the
 # original text is also scanned.
 _join_shell_continuations() {
   local joined
   if joined=$(printf '%s\n.' "$1" | LC_ALL=C awk '
-    BEGIN { sq = sprintf("%c", 39); in_sq = 0 }
-    function emit(line,    i, n, c, out, bs) {
-      n = length(line); out = ""; bs = 0
+    BEGIN {
+      sq = sprintf("%c", 39)
+      dq = sprintf("%c", 34)
+      in_sq = 0
+      in_dq = 0
+    }
+    function is_word_boundary_prev(prev) {
+      # Bash starts a comment when `#` begins a token (start / whitespace /
+      # shell metacharacters), not when it sits inside a word like `foo#bar`.
+      return prev == "" || prev == " " || prev == "\t" || \
+             prev == ";" || prev == "|" || prev == "&" || \
+             prev == "(" || prev == ")" || prev == "<" || prev == ">" || \
+             prev == "`" || prev == "\n"
+    }
+    function emit(line,    i, n, c, out, bs, prev, in_comment) {
+      n = length(line); out = ""; bs = 0; prev = ""; in_comment = 0
       for (i = 1; i <= n; i++) {
         c = substr(line, i, 1)
+        if (in_comment) {
+          out = out c
+          bs = 0
+          prev = c
+          continue
+        }
         if (in_sq) {
           out = out c
           if (c == sq) in_sq = 0
           bs = 0
+          prev = c
           continue
         }
-        if (c == sq) { out = out c; in_sq = 1; bs = 0; continue }
-        if (c == "\\") { out = out c; bs++; continue }
+        if (in_dq) {
+          if (c == "\\") { out = out c; bs++; prev = c; continue }
+          out = out c
+          if (c == dq && (bs % 2) == 0) in_dq = 0
+          bs = 0
+          prev = c
+          continue
+        }
+        if (c == sq && (bs % 2) == 0) { out = out c; in_sq = 1; bs = 0; prev = c; continue }
+        if (c == dq && (bs % 2) == 0) { out = out c; in_dq = 1; bs = 0; prev = c; continue }
+        if (c == "#" && is_word_boundary_prev(prev)) {
+          # Comment to EOL — trailing backslash must not join (#1568).
+          out = out c
+          in_comment = 1
+          bs = 0
+          prev = c
+          continue
+        }
+        if (c == "\\") { out = out c; bs++; prev = c; continue }
         out = out c
         bs = 0
+        prev = c
       }
-      if (!in_sq && (bs % 2) == 1) {
+      # Bash continues inside double quotes; only single quotes and
+      # `#` comments suppress continuation (#1564 / #1568).
+      if (!in_sq && !in_comment && (bs % 2) == 1) {
         # Drop the continuing backslash; next record appends immediately.
         printf "%s", substr(out, 1, length(out) - 1)
         return
@@ -850,6 +892,12 @@ _is_argv_only_merge_command() {
   if _has_argv_merge "$1"; then
     return 0
   fi
+  # Continuations can split an argv list across lines (#1568). Detectors in
+  # is_merge_command_raw already scan the joined text; opacity must too, or
+  # the extractors fall through to the current branch's PR.
+  if _has_argv_merge "$(_join_shell_continuations "$1")"; then
+    return 0
+  fi
   _has_opaque_merge_wrapper "$1"
 }
 
@@ -875,7 +923,10 @@ _is_argv_only_merge_command() {
 #   require that the first post-`merge` token is a bare integer — not a shell
 #   variable, not a flag. If it is a variable or absent, return empty.
 extract_pr_number() {
-  local cmd="$1"
+  local cmd
+  # Join before parsing so a backslash-newline split `gh pr merge N` still
+  # yields N (#1568). Detectors already join; extractors must match.
+  cmd=$(_join_shell_continuations "$1")
   local pr=""
 
   # 1. gh api path extraction — greps the /pulls/<N>/merge segment directly.
@@ -1009,10 +1060,13 @@ extract_pr_number() {
 # remain opaque even with a literal element because this parser cannot read
 # their target. `$(...)` is not a PR/repo variable token.
 merge_command_uses_variable() {
-  local cmd="$1"
+  local cmd joined
+  # Join first so continued CLI merges and argv lists keep a readable target
+  # for the opacity / variable checks (#1568).
+  joined=$(_join_shell_continuations "$1")
   # Use the same bounded data view as is_merge_command. Uncertain or
   # executable commands keep the raw text, so variable targets still block.
-  cmd=$(_scrub_merge_command "$cmd") || cmd="$1"
+  cmd=$(_scrub_merge_command "$joined") || cmd="$joined"
 
   # All four hooks call this check before PR extraction. Three intentionally
   # skip when extraction returns empty, leaving the approval hook to report
@@ -1262,7 +1316,8 @@ resolve_ci_status_glab() {
 # target > cd-target heuristic > ambient checkout" without duplicating the
 # command parser (me2resh/apexyard#1151).
 extract_explicit_repo_from_command() {
-  local cmd="$1"
+  local cmd
+  cmd=$(_join_shell_continuations "$1")
   local repo=""
 
   # 1. --repo/-R on the merge-command span only. A flag is the clearest
@@ -1304,7 +1359,8 @@ extract_explicit_repo_from_command() {
 # forge/CWD discovery. pr_cmd_cd_target + git_origin_repo are supplied by
 # _lib-pr-repo.sh, which each merge-gate hook sources before calling this.
 resolve_merge_repo() {
-  local cmd="$1" repo="" cd_target=""
+  local cmd repo="" cd_target=""
+  cmd=$(_join_shell_continuations "$1")
 
   repo=$(extract_explicit_repo_from_command "$cmd")
 
@@ -1345,7 +1401,8 @@ resolve_merge_repo() {
 #
 # Returns empty if the repo cannot be determined.
 extract_repo_from_command() {
-  local cmd="$1"
+  local cmd
+  cmd=$(_join_shell_continuations "$1")
   local repo=""
 
   repo=$(extract_explicit_repo_from_command "$cmd")

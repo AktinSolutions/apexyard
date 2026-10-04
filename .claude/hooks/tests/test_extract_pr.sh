@@ -591,6 +591,82 @@ for _comment in '#x' 'echo hi #x' 'true #comment'; do
 done
 unset _cli _merge_verb _merge_line _cont_cmd _plain_cmd _comment _comment_cmd
 
+# --- #1568: extractors join continuations (not only detectors) ------------
+# Detectors already join (#1564/#1566). Without the same join in extractors,
+# a continued `… merge 7` falls through to the branch PR. MOCK_BRANCH_PR
+# proves the ambient fallback is not used.
+export MOCK_BRANCH_PR=99
+_cli=gh
+_merge_verb=mer
+_merge_verb+=ge
+_cont_cmd=$(printf '%s \\\npr %s 7 --repo o/r --squash' "$_cli" "$_merge_verb")
+assert_pr "1568 continued cli/pr extracts 7 (not branch 99)" "$_cont_cmd" "7"
+_cont_cmd=$(printf '%s pr \\\n%s 7 --repo o/r --squash' "$_cli" "$_merge_verb")
+assert_pr "1568 continued pr/verb extracts 7 (not branch 99)" "$_cont_cmd" "7"
+# Argv list split by backslash-newline inside a quoted python -c argument
+# must stay opaque (joined text reveals the argv merge).
+_argv_cont=$(printf 'python3 -c "import subprocess as s; s.run(['\''%s'\'',\\\n'\''%s'\'','\''%s'\'','\''5'\''])"' \
+  "$_cli" pr "$_merge_verb")
+assert_opaque "1568 continued argv-list merge is opaque" "$_argv_cont"
+assert_pr "1568 continued argv-list does not inherit branch PR" "$_argv_cont" ""
+unset MOCK_BRANCH_PR _cli _merge_verb _cont_cmd _argv_cont
+
+# --- #1568: comment-ending backslash is not a continuation (repo integrity) -
+# Blind join rewrote `--repo a/a` onto a later merge's `--repo b/b` when a
+# `# … \` line was glued to the next command. Bash does not continue comments.
+export MOCK_BRANCH_PR=99
+_cli=gh
+_merge_verb=mer
+_merge_verb+=ge
+_comment_mid=$(printf '%s %s %s 5 --repo a/a # \\\n%s %s %s 7 --repo b/b' \
+  "$_cli" pr "$_merge_verb" "$_cli" pr "$_merge_verb")
+assert_pr "1568 comment backslash keeps first PR (not glued 7)" "$_comment_mid" "5"
+_got_repo=$(extract_explicit_repo_from_command "$_comment_mid")
+if [ "$_got_repo" = "a/a" ]; then
+  echo "PASS [1568 comment backslash does not steal --repo]"
+  PASS=$((PASS+1))
+else
+  echo "FAIL [1568 comment backslash does not steal --repo]: got=[$_got_repo] want=[a/a]" >&2
+  FAIL=$((FAIL+1)); FAILED_CASES="${FAILED_CASES}1568-comment-repo "
+fi
+# Real continuation after a non-comment line must still join for extraction.
+_cont_repo=$(printf '%s %s %s 7 --repo \\\nother/repo --squash' \
+  "$_cli" pr "$_merge_verb")
+assert_pr "1568 --repo split across continuation extracts 7" "$_cont_repo" "7"
+_got_repo=$(extract_explicit_repo_from_command "$_cont_repo")
+if [ "$_got_repo" = "other/repo" ]; then
+  echo "PASS [1568 --repo split across continuation]"
+  PASS=$((PASS+1))
+else
+  echo "FAIL [1568 --repo split across continuation]: got=[$_got_repo]" >&2
+  FAIL=$((FAIL+1)); FAILED_CASES="${FAILED_CASES}1568-repo-split "
+fi
+unset MOCK_BRANCH_PR _cli _merge_verb _comment_mid _cont_repo _got_repo
+
+# An escaped quote is a literal shell character. It must not hide the #
+# comment or join that comment's trailing backslash to a later --repo.
+export MOCK_BRANCH_REPO=me2resh/apexyard
+_cli=gh
+_merge_verb=mer
+_merge_verb+=ge
+for _quote in '"' "'"; do
+  _escaped_quote=$(printf '\\%s' "$_quote")
+  _comment_text=note
+  [ "$_quote" = "'" ] && _comment_text="note '"
+  _comment_cmd=$(printf '%s pr %s 5 --subject %s # %s \\\n--repo other/approved' \
+    "$_cli" "$_merge_verb" "$_escaped_quote" "$_comment_text")
+  assert_pr "1568 escaped $_quote before comment keeps PR 5" "$_comment_cmd" "5"
+  _got_repo=$(extract_repo_from_command "$_comment_cmd")
+  if [ "$_got_repo" = "$MOCK_BRANCH_REPO" ]; then
+    echo "PASS [1568 escaped $_quote before comment keeps ambient repo]"
+    PASS=$((PASS+1))
+  else
+    echo "FAIL [1568 escaped $_quote before comment keeps ambient repo]: got=[$_got_repo]" >&2
+    FAIL=$((FAIL+1)); FAILED_CASES="${FAILED_CASES}1568-escaped-quote-repo "
+  fi
+done
+unset MOCK_BRANCH_REPO _cli _merge_verb _quote _escaped_quote _comment_text _comment_cmd _got_repo
+
 # --- Bash 3.2 time bound (PR #1546 security review, H1) --------------------
 # A gate that times out does not block, so a padded merge could skip every
 # gate. Run /bin/bash directly with a SIGKILL watchdog. The watchdog's EXIT
