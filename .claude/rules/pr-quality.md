@@ -33,6 +33,10 @@ on that run is a correctness finding under
 A docs-only PR with no tests to run needs no test evidence. State that in
 the `## Testing` section instead of leaving it empty.
 
+## Required sections
+
+The PR body needs `## Summary`, `## Testing`, and a `Closes #N` or `Refs #N` line. The PR creation hook checks these requirements for a supplied body.
+
 ## Glossary (MANDATORY)
 
 Every PR description **must** include a Glossary section:

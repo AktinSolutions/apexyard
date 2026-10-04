@@ -97,7 +97,6 @@ run_merge_gate_hook() {
 # APEXYARD_DISPATCH_GATE: Bash|*|require-skill-for-issue-create.sh
 # APEXYARD_DISPATCH_GATE: Bash|*|require-migration-ticket.sh
 # APEXYARD_DISPATCH_GATE: Bash|*|require-active-ticket.sh
-# APEXYARD_DISPATCH_GATE: Bash|*|suggest-mcp-search.sh
 # APEXYARD_DISPATCH_GATE: Bash|*|warn-review-marker-write.sh
 # APEXYARD_DISPATCH_GATE: Bash|*|warn-isolated-build-risk.sh
 # APEXYARD_DISPATCH_GATE: Bash|*|block-reviewer-repo-mutation.sh
@@ -154,7 +153,6 @@ for script in \
   require-skill-for-issue-create.sh \
   require-migration-ticket.sh \
   require-active-ticket.sh \
-  suggest-mcp-search.sh \
   warn-review-marker-write.sh \
   warn-isolated-build-risk.sh \
   block-reviewer-repo-mutation.sh; do
@@ -173,23 +171,39 @@ run_merge_gates() {
   run_merge_gate_hook require-architecture-review.sh
 }
 
+# The push and commit arms are run-once functions. The prefix case below and
+# the whole-command scan after it can both reach them (me2resh/apexyard#1527).
+_push_gates_ran=0
+run_push_gates() {
+  if [ "${_push_gates_ran}" -eq 1 ]; then
+    return 0
+  fi
+  _push_gates_ran=1
+  run_hook block-main-push.sh
+  run_hook validate-branch-name.sh
+  run_hook pre-push-gate.sh
+  run_hook block-agent-routing-drift.sh
+}
+
+_commit_gates_ran=0
+run_commit_gates() {
+  if [ "${_commit_gates_ran}" -eq 1 ]; then
+    return 0
+  fi
+  _commit_gates_ran=1
+  run_hook check-secrets.sh
+  run_hook block-onboarding-in-git.sh
+  run_hook verify-commit-refs.sh
+  run_hook validate-commit-format.sh
+  run_hook require-agdr-for-arch-changes.sh
+  run_hook block-agent-routing-drift.sh
+  run_hook warn-bootstrap-scope.sh
+}
+
 case "$COMMAND" in
   "git add "*) run_hook block-git-add-all.sh ;;
-  "git push "*)
-    run_hook block-main-push.sh
-    run_hook validate-branch-name.sh
-    run_hook pre-push-gate.sh
-    run_hook block-agent-routing-drift.sh
-    ;;
-  "git commit "*)
-    run_hook check-secrets.sh
-    run_hook block-onboarding-in-git.sh
-    run_hook verify-commit-refs.sh
-    run_hook validate-commit-format.sh
-    run_hook require-agdr-for-arch-changes.sh
-    run_hook block-agent-routing-drift.sh
-    run_hook warn-bootstrap-scope.sh
-    ;;
+  "git push "*) run_push_gates ;;
+  "git commit "*) run_commit_gates ;;
   "gh issue create "*)
     run_hook suggest-ticket-template.sh
     run_hook validate-issue-structure.sh
@@ -223,6 +237,48 @@ case "$COMMAND" in
     run_merge_gates
     ;;
 esac
+
+# A case glob matches only the start of the command. A push or commit that
+# follows `cd <dir> &&`, a `;`, or a git global option such as `-C <dir>`
+# missed every push and commit gate (me2resh/apexyard#1527). Scan the whole
+# command, as the merge gates do (AgDR-0162). Any non-word character ends
+# the subcommand, so `git push;`, `git push&&` and `(git push)` also route.
+#
+# The scan adds routing when its join succeeds. If awk fails, run the push
+# and commit gates unconditionally. The scan does not scrub
+# quoted data, so text that only mentions a push or commit (a heredoc body,
+# an echo, a commit message) also routes. That over-match can cause a false
+# block from a gate that refuses compound commands. A real compound commit
+# such as `git add a && git commit ...` reaches validate-commit-format.sh,
+# which refuses it, as it did before the dispatcher existed.
+#
+# Line continuations are joined first, because grep reads one line at a
+# time and `git \<newline> push` would otherwise put git and push on
+# different lines. Bash 3.2's whole-string substitution is superlinear on
+# thousands of continuations, so use one awk pass. The sentinel preserves
+# trailing newlines through command substitution and a final lone backslash.
+# The conditional awk substitution cannot abort dispatch under set -e.
+# The option list accepts `-C`, `-c` and the long options that take a
+# separate-word value, plus any `-x`, `--opt` or `--opt=value`.
+_scan_failed=0
+if _scan_cmd=$(printf '%sX' "$COMMAND" | LC_ALL=C awk '{ if (sub(/\\$/, "")) printf "%s ", $0; else printf "%s\n", $0 }'); then
+  _scan_cmd=${_scan_cmd%X}
+else
+  _scan_failed=1
+fi
+_git_opt_val='("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|]+)'
+_git_sub_re='(^|[^[:alnum:]_.-])git([[:space:]]+((-[Cc]|--(git-dir|work-tree|namespace|super-prefix|config-env))[[:space:]]+'"${_git_opt_val}"'|--?[A-Za-z][A-Za-z-]*(=[^[:space:];&|]+)?))*[[:space:]]+'
+if [ "$_scan_failed" -eq 1 ]; then
+  run_push_gates
+  run_commit_gates
+else
+  if LC_ALL=C grep -qE "${_git_sub_re}push([^[:alnum:]_.-]|\$)" <<<"$_scan_cmd"; then
+    run_push_gates
+  fi
+  if LC_ALL=C grep -qE "${_git_sub_re}commit([^[:alnum:]_.-]|\$)" <<<"$_scan_cmd"; then
+    run_commit_gates
+  fi
+fi
 
 # A wrapper such as `bash -c '… tracker_pr_merge …'` misses the prefix case.
 # Route those payloads with the same parser the merge-gate bodies use.

@@ -52,6 +52,10 @@ run_case 'single-quoted tracker text is data' 0 "printf '%s' 'gh pr create --tit
 run_case 'double-quoted tracker text is data' 0 'printf "%s" "gh issue create --title x"' "$root"
 run_case 'quoted command text inside a quoted argument is data' 0 "printf '%s' \"'gh' pr create --title x\"" "$root"
 run_case 'quoted heredoc tracker text is data' 0 "$(printf "cat <<'TEXT'\ngh pr create --title x\nTEXT")" "$root"
+run_case '#1525 brief-only tracker text is data' 0 \
+  $'cat > /tmp/brief.md <<\'EOF\'\ngh issue view 4\nEOF' "$root"
+run_case '#1525 build-agent command keeps raw fallback' 2 \
+  $'cat > /tmp/brief.md <<\'EOF\'\ngh issue view 4\nEOF\nclaude -p build' "$root"
 run_case 'unquoted heredoc tracker text is data' 0 "$(printf 'cat <<TEXT\ngh issue create --title x\nTEXT')" "$root"
 run_case 'real PR create with tracker text in its body is blocked' 2 "gh pr create --body 'gh issue create --title x'" "$root"
 run_case 'plain issue create is blocked' 2 'gh issue create --title x' "$root"
@@ -91,6 +95,9 @@ run_case 'continued CLI word without a repository remains blocked' 2 \
   "$(printf 'gh \\\n  issue view 42')" "$multiple"
 run_case 'continued subcommand without a repository remains blocked' 2 \
   "$(printf 'gh pr \\\n  list')" "$multiple"
+# #1521: Bash also removes a continuation inside a double-quoted CLI word.
+run_case 'double-quoted split CLI word stays blocked' 2 \
+  "$(printf '"g\\\nh" issue view 1')" "$multiple"
 # An escaped backslash before a newline is a literal backslash. The newline
 # ends the command, so a flag on the next line belongs to a new command.
 run_case 'escaped backslash then newline does not carry a repository flag' 2 \
@@ -113,12 +120,85 @@ run_case 'comment line ending in a backslash does not hide the next command' 2 \
   "$(printf '# list PRs \\\ngh pr list')" "$multiple"
 run_case 'inline comment ending in a backslash does not hide the next command' 2 \
   "$(printf 'echo hi # note \\\ngh pr list')" "$multiple"
+run_case 'comment ending in a letter and backslash does not hide a split CLI word' 2 \
+  "$(printf '# note x\\\ng\\\nh issue view 1')" "$multiple"
 run_case 'heredoc delimiter ending in a backslash does not hide the next command' 2 \
   "$(printf "cat <<'E\\\\'\nbody\nE\\\\\ngh pr list")" "$multiple"
 run_case 'command substitution is not joined' 2 \
   "$(printf 'x="$(printf a)" gh pr list \\\n --title "b --repo owner/project-a"')" "$multiple"
+# #1503: nested double quotes inside a parameter expansion can hide a
+# continued `--repo` in quoted text, so a command with `${` stays unjoined.
+run_case 'parameter expansion with nested quotes is not joined' 2 \
+  "$(printf 'gh pr list --search "${x:-"a \\\n --repo owner/project-a"}"')" "$multiple"
+# Review of PR #1511: a skipped (unjoined) command can split the CLI word
+# from its subcommand. Bash still joins the lines, so the gate must block.
+run_case 'parameter expansion before a split CLI word stays blocked' 2 \
+  "$(printf 'x=${y} gh \\\n  issue view 42')" "$multiple"
+run_case 'command substitution before a split CLI word stays blocked' 2 \
+  "$(printf 'x=$(true) gh \\\n  issue view 42')" "$multiple"
+run_case 'backtick before a split CLI word stays blocked' 2 \
+  "$(printf 'x=`true` gh \\\n  issue view 42')" "$multiple"
+run_case 'ANSI-C quoting before a split CLI word stays blocked' 2 \
+  "$(printf "x=\$'a' gh \\\\\n  issue view 42")" "$multiple"
+run_case 'trailing comment after a split CLI word stays blocked' 2 \
+  "$(printf 'gh \\\n  issue view 42 # note')" "$multiple"
+# A tracker command that only the joined view can see always blocks, even
+# with a flag: the joined view may join inside quotes, where Bash does not.
+# This is a conservative false positive (review round 2 of PR #1511).
+run_case 'split CLI word after a skip token blocks even with a repository flag' 2 \
+  "$(printf 'x=${y} gh \\\n  issue view 42 --repo owner/project-a')" "$multiple"
+run_case 'split CLI word with a flag inside double quotes stays blocked' 2 \
+  "$(printf 'x=${y} gh \\\n issue view 42 "a \\\n --repo owner/project-a"')" "$multiple"
+run_case 'split CLI word with a flag inside single quotes stays blocked' 2 \
+  "$(printf "x=\${y} gh \\\\\n issue view 42 'a \\\\\n --repo owner/project-a'")" "$multiple"
+run_case 'split CLI word with a flag after an escaped backslash stays blocked' 2 \
+  "$(printf 'x=${y} gh \\\n issue view 42 \\\\\n --repo owner/project-a')" "$multiple"
+run_case 'qualified command then a split CLI word with a quoted flag stays blocked' 2 \
+  "$(printf 'gh pr list --repo owner/project-a; x=${y} gh \\\n issue view 42 "a \\\n --repo owner/project-a"')" "$multiple"
+# Review round 3 of PR #1511: a join can also REMOVE a tracker match (a
+# letter glued onto the CLI word), so match counts cannot decide. A command
+# whose continuations the join does not model gets no flag-based allowance.
+run_case 'join that removes one match and adds another stays blocked (double quotes)' 2 \
+  "$(printf 'x=${y} echo a\\\ngh issue view 1 --repo owner/project-a; x=${y} gh \\\n issue view 42 "a \\\n --repo owner/project-a"')" "$multiple"
+run_case 'join that removes one match and adds another stays blocked (single quotes)' 2 \
+  "$(printf "x=\${y} echo a\\\\\ngh issue view 1 --repo owner/project-a; x=\${y} gh \\\\\n issue view 42 'a \\\\\n --repo owner/project-a'")" "$multiple"
+run_case 'join that removes one match and adds another stays blocked (escaped backslash)' 2 \
+  "$(printf 'x=${y} echo a\\\ngh issue view 1 --repo owner/project-a; x=${y} gh \\\n issue view 42 \\\\\n --repo owner/project-a')" "$multiple"
+run_case 'one-line command with a skip token and a repository flag is explicit' 0 \
+  'x=${y} gh issue view 42 --repo owner/project-a' "$multiple"
+# The continuation follows the closing quote. Bash passes agh to echo.
+run_case 'parameter expansion and a continued quoted echo argument stay allowed' 0 \
+  "$(printf 'x=${y} echo "ag"\\\nh issue view 1')" "$multiple"
+# jq replaces invalid UTF-8 with U+FFFD before the hook receives the command.
+# Keep that input covered, then use a UTF-8 letter to distinguish byte-based
+# delimiter matching from locale-dependent character matching in both scans.
+LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 run_case 'tracker next to invalid UTF-8 input stays blocked' 2 \
+  "$(printf '\377gh issue view 1')" "$multiple"
+LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 run_case 'tracker delimiter uses bytes in the direct and segment scans' 2 \
+  "$(printf '\303\251gh issue view 1')" "$multiple"
+LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 run_case 'tracker delimiter uses bytes in the unmodelled joined scan' 2 \
+  "$(printf 'x=${y} \303\251g\\\nh issue view 1')" "$multiple"
 run_case 'a command over the size cap is not joined' 2 \
   "$(printf 'gh pr list --title "%s" \\\n  --repo owner/project-a' "$(printf '%02100d' 0)")" "$multiple"
+
+# Hakim, PR #1511: a command with many continuations and a skip token must
+# not stall the gate. 20000 continued lines must finish in under 1 second.
+big="$TMP/big-command"
+{
+  printf 'cat <<E\nbody\nE\necho start'
+  i=0
+  while [ "$i" -lt 20000 ]; do printf ' \\\n -f x=1'; i=$((i + 1)); done
+} > "$big"
+start=$(jq -n now)
+run_case 'many continuations with a skip token and no tracker command pass' 0 "$(cat "$big")" "$multiple"
+elapsed=$(jq -n --argjson start "$start" 'now - $start')
+if jq -en --argjson elapsed "$elapsed" '$elapsed < 1' >/dev/null; then
+  echo "PASS: many continuations finish in ${elapsed}s (limit 1s)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: many continuations took ${elapsed}s (limit 1s)" >&2
+  FAIL=$((FAIL + 1))
+fi
 
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

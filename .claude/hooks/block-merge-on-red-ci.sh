@@ -2,12 +2,14 @@
 # CLASS: CONTROL (AgDR-0104 labelling, AgDR-0109). This hook decides on
 # STRUCTURED STATE, not on the text of a command: the CI conclusion the forge reports for the PR's HEAD.
 # That is what makes it trustworthy where a text-matching backstop like
-# warn-review-marker-write.sh is not. Keep it fail-closed: if it cannot
-# evaluate its precondition it must block, never allow (AgDR-0104).
+# warn-review-marker-write.sh is not. Command parsing and GitLab pipeline
+# resolution fail closed. GitHub Actions API failures fail open with an
+# explicit unverified-CI note (AgDR-0213).
 #
 # PreToolUse hook on `gh pr merge` / `gh api .../pulls/<N>/merge` AND their
 # GitLab counterparts `glab mr merge` / `glab api .../merge_requests/<N>/merge`:
-# blocks the merge if CI is failing, pending, or unresolvable.
+# blocks the merge if reported CI is failing or pending. GitHub Actions API
+# failures remain an explicit fail-open exception.
 #
 # All four merge shapes are covered — see _lib-extract-pr.sh for the parser.
 # #47 is why the gh-api-shape bypass was worth closing; #764/#767 added the
@@ -20,20 +22,24 @@
 # the PR so all checks are green, and only then merge." Was prose-only
 # until this hook shipped.
 #
-# GH PATH (unchanged, byte-identical to pre-#790 behaviour)
-# -----------------------------------------------------------
+# GH PATH
+# -------
 # Uses `gh pr checks <pr>` which returns one line per check with status.
 # Exit codes:
 #   0 = all checks passed (and none required are missing)
-#   1 = at least one check failed, was cancelled, or skipped
-#   8 = no checks at all
+#   1 = at least one check failed, was cancelled, or skipped; also the
+#       no-checks case ("no checks reported on the '<branch>' branch")
+#   8 = at least one check is pending
 #
-# The hook allows:
-#   - exit 0 (all green)
-#   - exit 8 if the repo has no CI (gh pr checks returns "no checks" — allow)
+# The hook checks Actions runs for the PR head on every GitHub merge.
+# It allows green checks only when those runs have also finished with an
+# accepted conclusion. The exact no-checks response still allows a repo
+# with no CI. Substring match is NOT enough (#1523).
 # Blocks:
 #   - exit 1 (red CI)
 #   - any check with state FAILURE | CANCELLED | TIMED_OUT
+#   - the latest run per workflow and event awaiting approval, still running, or
+#     completed without success, neutral, or skipped
 #
 # Pending checks (IN_PROGRESS | QUEUED): BLOCKED. The rule says all checks
 # must be green; pending is not green. Wait for CI to finish, then retry.
@@ -96,7 +102,8 @@ INPUT=$(cat)
 # status, not on approval markers — so only _lib-extract-pr.sh is guarded
 # here.
 _require_lib() {
-  local lib="$1"
+  local lib="$1" fn
+  shift
   if [ ! -r "$lib" ]; then
     echo "BLOCKED: merge gate cannot load a required library." >&2
     echo "Missing or unreadable: $lib" >&2
@@ -112,6 +119,12 @@ _require_lib() {
     echo "instead of skipping the check. Fix the file and retry." >&2
     exit 2
   fi
+  for fn in "$@"; do
+    if ! command -v "$fn" >/dev/null 2>&1 || ! declare -F "$fn" >/dev/null 2>&1; then
+      printf 'BLOCKED: merge gate missing required function %s after sourcing %s. Restore the library and retry.\n' "$fn" "$lib" >&2
+      exit 2
+    fi
+  done
 }
 
 # Shared merge-shape detector + PR-number parser (see _lib-extract-pr.sh).
@@ -121,7 +134,10 @@ _require_lib() {
 # original position after the parse) so is_merge_command is available as
 # the jq-independent fallback detector when the parse can't be trusted —
 # see #965.
-_require_lib "$(dirname "$0")/_lib-extract-pr.sh"
+_require_lib "$(dirname "$0")/_lib-extract-pr.sh" \
+  is_merge_command is_merge_command_raw _scrub_merge_command _normalize_json_escapes \
+  merge_command_uses_variable extract_pr_number resolve_merge_repo \
+  resolve_ci_status_glab
 # Leading cd-target recovery for shared merge-repo resolution (#687/#1151).
 # Optional only for standalone hook-test sandboxes that copy a minimal lib set.
 if [ -f "$(dirname "$0")/_lib-pr-repo.sh" ]; then
@@ -271,7 +287,7 @@ if [ -z "$COMMAND" ]; then
   # hook sees. A payload that DOES look merge-shaped but that we can't
   # safely parse/verify fails CLOSED (exit 2) instead of silently letting
   # an ungated merge through with an unverified CI status.
-  if is_merge_command "$(_normalize_json_escapes "$INPUT")"; then
+  if is_merge_command_raw "$(_normalize_json_escapes "$INPUT")"; then
     echo "BLOCKED: CI gate cannot evaluate this command — jq is unavailable or .tool_input.command could not be parsed, but the raw input looks merge-related. Refusing to merge until CI status can be verified. Restore jq (see .claude/hooks/check-jq-installed.sh) and retry." >&2
     exit 2
   fi
@@ -309,10 +325,6 @@ fi
 # `gh api .../pulls/<N>/merge` or `glab api .../merge_requests/<N>/merge` URL
 # path so the CI-status check below is still scoped correctly.
 CMD_REPO=$(resolve_merge_repo "$COMMAND")
-REPO_FLAG=""
-if [ -n "$CMD_REPO" ]; then
-  REPO_FLAG="--repo $CMD_REPO"
-fi
 
 PR_NUMBER=$(extract_pr_number "$COMMAND")
 
@@ -403,23 +415,201 @@ MSG
   esac
 fi
 
-# --- GitHub path (unchanged, byte-identical to pre-#790 behaviour) ---
-# Query checks. gh pr checks returns text output; we check both the exit code
-# and a "no checks reported" substring — the latter is how gh reports the
-# genuinely-unchecked case regardless of exit code version.
-CHECKS_OUTPUT=$(gh pr checks "$PR_NUMBER" $REPO_FLAG 2>&1)
+# --- GitHub path ---
+# Validate the repo before any gh call receives it. An omitted --repo uses
+# the current repository; keep the validated value in a Bash argument array.
+GATE_OWNER_REPO="$CMD_REPO"
+if [ -z "$GATE_OWNER_REPO" ]; then
+  GATE_OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)
+fi
+if [[ ! "$GATE_OWNER_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
+   [[ "$GATE_OWNER_REPO" == ./* || "$GATE_OWNER_REPO" == ../* ||
+      "$GATE_OWNER_REPO" == */. || "$GATE_OWNER_REPO" == */.. ]]; then
+  echo "BLOCKED: PR #${PR_NUMBER} has an invalid owner/repo: ${GATE_OWNER_REPO:-<empty>}. Use a literal owner/repo and retry." >&2
+  exit 2
+fi
+REPO_ARGS=()
+if [ -n "$CMD_REPO" ]; then
+  REPO_ARGS=(--repo "$GATE_OWNER_REPO")
+fi
+
+# Query checks. gh pr checks returns text output; we check both the exit
+# code and whether the whole trimmed output is the CLI's exact no-checks
+# message (#1523 — a substring match wrongly allowed a check NAME that
+# contained "no checks reported").
+# ${arr[@]+"${arr[@]}"}: bash 3.2 treats an empty "${arr[@]}" as unbound
+# under set -u. This form expands to nothing when the array is empty.
+CHECKS_OUTPUT=$(gh pr checks "$PR_NUMBER" ${REPO_ARGS[@]+"${REPO_ARGS[@]}"} 2>&1)
 CHECKS_RC=$?
 
-# "no checks reported on the 'X' branch" — legitimate no-CI state. Allow.
-# Projects without CI (or branches without the expected workflow wiring)
-# hit this path. Log a single-line note so the user knows the gate was a no-op.
-if echo "$CHECKS_OUTPUT" | grep -q "no checks reported"; then
-  echo "NOTE: PR #${PR_NUMBER} has no CI checks configured. Merge-on-red-CI gate is a no-op for this PR." >&2
+# "no checks reported on the 'X' branch" — allow only when BOTH: checks
+# exited non-zero, AND the entire trimmed output matches that exact CLI
+# message. A substring match is not enough, because a contributor controls
+# check names and a `pull_request` run uses the PR's own workflow files
+# (#1523).
+#
+# The Actions query below also runs when checks exit 0. A gated or newly
+# queued run can be invisible to `gh pr checks` while other checks pass.
+_checks_trimmed="${CHECKS_OUTPUT#"${CHECKS_OUTPUT%%[![:space:]]*}"}"
+_checks_trimmed="${_checks_trimmed%"${_checks_trimmed##*[![:space:]]}"}"
+# [^[:cntrl:]] and not .: in bash =~, . also matches a newline, so a
+# multi-line check list that starts and ends with the right text would
+# match. Branch names cannot contain control characters.
+_no_checks_re="^no checks reported on the '[^[:cntrl:]]*' branch$"
+NO_CHECKS=0
+if [ "$CHECKS_RC" -ne 0 ] && [[ "$_checks_trimmed" =~ $_no_checks_re ]]; then
+  NO_CHECKS=1
+fi
+
+# Workflow runs live in the base repo. Validate the head before using it
+# in an API path. A malformed PR head blocks rather than becoming an API fault.
+GATE_HEAD_SHA=$(gh pr view "$PR_NUMBER" ${REPO_ARGS[@]+"${REPO_ARGS[@]}"} --json headRefOid --jq '.headRefOid' 2>/dev/null)
+if [[ ! "$GATE_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  echo "BLOCKED: PR #${PR_NUMBER} has an invalid head SHA. Resolve the PR head and retry." >&2
+  exit 2
+fi
+
+# Only the exact no-checks response needs a workflow inventory to preserve
+# the genuine no-CI note. A failed inventory is an unverified-CI result.
+WORKFLOW_COUNT=""
+WORKFLOW_ERROR=""
+if [ "$NO_CHECKS" = "1" ]; then
+  WORKFLOWS_JSON=$(gh api "repos/${GATE_OWNER_REPO}/actions/workflows?per_page=100" 2>/dev/null)
+  WORKFLOW_RC=$?
+  if [ "$WORKFLOW_RC" -ne 0 ]; then
+    WORKFLOW_ERROR="workflow query failed"
+  elif ! printf '%s' "$WORKFLOWS_JSON" | jq -e '
+    type == "object" and
+    (.total_count | type == "number" and . >= 0 and floor == .) and
+    (.workflows | type == "array") and
+    all(.workflows[]; type == "object" and (.state | type == "string"))
+  ' >/dev/null 2>&1; then
+    WORKFLOW_ERROR="workflow response was incomplete or invalid"
+  elif [ "$(printf '%s' "$WORKFLOWS_JSON" | jq -r '.total_count')" != "$(printf '%s' "$WORKFLOWS_JSON" | jq -r '.workflows | length')" ]; then
+    WORKFLOW_ERROR="workflow response was incomplete or invalid"
+  else
+    WORKFLOW_COUNT=$(printf '%s' "$WORKFLOWS_JSON" | jq -r '[.workflows[] | select(.state == "active")] | length')
+  fi
+fi
+
+# One head-filtered request per merge. A partial page cannot prove that
+# every run passed, so refuse a merge if the response reports more runs
+# than this request returned.
+RUNS_JSON=$(gh api "repos/${GATE_OWNER_REPO}/actions/runs?head_sha=${GATE_HEAD_SHA}&per_page=100" 2>/dev/null)
+RUNS_RC=$?
+RUNS_ERROR=""
+if [ "$RUNS_RC" -ne 0 ]; then
+  RUNS_ERROR="run query failed"
+elif ! printf '%s' "$RUNS_JSON" | jq -e '
+  type == "object" and
+  (.total_count | type == "number" and . >= 0 and floor == .) and
+  (.workflow_runs | type == "array") and
+  (.total_count >= (.workflow_runs | length)) and
+  all(.workflow_runs[]; type == "object" and
+    (.workflow_id | type == "number") and
+    (.run_number | type == "number") and
+    (.event | type == "string") and
+    (.created_at | type == "string") and
+    (.id | type == "number") and
+    (.name == null or (.name | type == "string")) and
+    (.status | type == "string") and
+    has("conclusion") and
+    (.conclusion == null or (.conclusion | type == "string")))
+' >/dev/null 2>&1; then
+  RUNS_ERROR="run response was incomplete or invalid"
+fi
+
+# Apply the same latest-run rule to complete and partly invalid responses.
+# In an invalid response, only inspect runs whose blocking state and selection
+# keys can be read. Missing tie-break fields sort before valid values.
+BLOCKING_RUNS=""
+if printf '%s' "$RUNS_JSON" | jq -e 'type == "object"' >/dev/null 2>&1; then
+  BLOCKING_RUNS=$(printf '%s' "$RUNS_JSON" | jq -r '
+  (.workflow_runs | if type == "array" then . else [] end) |
+  map(select(type == "object" and
+    (.workflow_id | type == "number") and
+    (.run_number | type == "number") and
+    (.status | type == "string") and
+    has("conclusion") and
+    (.conclusion == null or (.conclusion | type == "string")))) |
+  group_by([.workflow_id, .event]) |
+  map(max_by([.run_number,
+    (.created_at | if type == "string" then . else "" end),
+    (.id | if type == "number" then . else 0 end)]))[] |
+  select(.conclusion == "action_required" or .status != "completed" or
+    (.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")) |
+  # Keep the outer parentheses: jq 1.7 and 1.8 bind `A // B as $x | …`
+  # differently, and 1.7 would drop the status line for a named run.
+  ((.name | if type == "string" and . != "" then . else null end) //
+    ("workflow " + (.workflow_id | tostring))) as $run_name |
+  "\($run_name) — status=\(.status), conclusion=\(.conclusion // "none")"
+' 2>/dev/null)
+  BLOCKING_RUNS_RC=$?
+  if [ "$BLOCKING_RUNS_RC" -ne 0 ]; then
+    echo "BLOCKED: PR #${PR_NUMBER}: the gate cannot evaluate the head runs. Retry when jq can read the Actions response." >&2
+    exit 2
+  fi
+fi
+
+if [ -n "$BLOCKING_RUNS" ]; then
+  if [ -n "$RUNS_ERROR" ]; then
+    echo "BLOCKED: PR #${PR_NUMBER}: the Actions runs response was partly invalid (${RUNS_ERROR}) but showed a failing run for head ${GATE_HEAD_SHA}:" >&2
+    printf '%s\n' "$BLOCKING_RUNS" >&2
+  else
+    cat >&2 <<MSG
+BLOCKED: PR #${PR_NUMBER} has workflow runs that have not passed for head ${GATE_HEAD_SHA}:
+${BLOCKING_RUNS}
+
+To unblock: Approve runs at action_required on the PR Checks tab. Wait for
+queued or in-progress runs to finish. Fix failed or cancelled runs, then
+retry the merge after each workflow's latest run has a success, neutral, or
+skipped conclusion.
+MSG
+  fi
+  exit 2
+fi
+
+# Count the returned page independently of full run validation. Even an
+# invalid run cannot make an incomplete page safe to merge.
+PARTIAL_PAGE=$(printf '%s' "$RUNS_JSON" | jq -r '
+  if type == "object" and
+     (.total_count | type == "number") and
+     (.workflow_runs | type == "array") then
+    (.workflow_runs | length) as $page_count |
+    select(.total_count > $page_count) |
+    "\(.total_count)\t\($page_count)"
+  else empty end
+' 2>/dev/null)
+if [ -n "$PARTIAL_PAGE" ]; then
+  IFS="$(printf '\t')" read -r RUN_COUNT PAGE_COUNT <<< "$PARTIAL_PAGE"
+  echo "BLOCKED: PR #${PR_NUMBER} has ${RUN_COUNT} head workflow runs, but the Actions API returned only ${PAGE_COUNT}. Review all head runs and retry when the gate can check every run." >&2
+  exit 2
+fi
+
+if [ -n "$RUNS_ERROR" ]; then
+  echo "NOTE: PR #${PR_NUMBER}: CI state could not be checked (Actions API unavailable: ${RUNS_ERROR}). Merge-on-red-CI gate did not verify CI state." >&2
+  if [ "$CHECKS_RC" = "0" ] || [ "$NO_CHECKS" = "1" ]; then
+    exit 0
+  fi
+else
+  RUN_COUNT=$(printf '%s' "$RUNS_JSON" | jq -r '.total_count')
+fi
+
+if [ -n "$WORKFLOW_ERROR" ]; then
+  echo "NOTE: PR #${PR_NUMBER}: CI state could not be checked (Actions API unavailable: ${WORKFLOW_ERROR}). Merge-on-red-CI gate did not verify CI state." >&2
+  exit 0
+fi
+
+if [ "$NO_CHECKS" = "1" ]; then
+  if [ "$WORKFLOW_COUNT" = "0" ] && [ "$RUN_COUNT" = "0" ]; then
+    echo "NOTE: PR #${PR_NUMBER} has no CI checks configured. Merge-on-red-CI gate is a no-op for this PR." >&2
+  elif [ "$RUN_COUNT" = "0" ]; then
+    echo "NOTE: PR #${PR_NUMBER} reports no CI checks, though the repo has ${WORKFLOW_COUNT} active workflow(s) — no run matched this head (path or branch filters, most likely). Merge-on-red-CI gate is a no-op for this PR; no CI result validated this head." >&2
+  fi
   exit 0
 fi
 
 if [ "$CHECKS_RC" = "0" ]; then
-  # All green — allow
   exit 0
 fi
 
