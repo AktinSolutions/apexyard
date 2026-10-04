@@ -25,8 +25,12 @@
 #     _lib-project-context.sh, so a stalled repo can't eat the budget.
 #
 # DEDUPE: one injection per (session_id, agent_id-or-"main", project) —
-# a marker directory claimed atomically with mkdir. A subagent has its
-# own agent_id (spike-confirmed) and so gets its own injection.
+# a marker directory claimed atomically with mkdir (pending). After the
+# context is emitted the claim becomes done (a `done` file inside the
+# marker). A pending marker older than ~5 s (past the hook timeout) is
+# treated as stale and reclaimed, so a SIGKILL mid-build cannot suppress
+# later injections forever. A subagent has its own agent_id
+# (spike-confirmed) and so gets its own injection.
 #
 # SCOPE: matched on Read|Glob|Grep|Edit|Write|MultiEdit in settings.json.
 # Bash writes (`cat > workspace/x/foo.ts`) are NOT covered — see the
@@ -88,28 +92,67 @@ SESS_KEY=$(printf '%s' "$SESSION_ID" | cksum 2>/dev/null | awk '{print $1}')
 MARKER_KEY=$(printf '%s|%s' "$AGENT_ID" "$PROJECT_NAME" | cksum 2>/dev/null | awk '{print $1}')
 [ -n "$SESS_KEY" ] && [ -n "$MARKER_KEY" ] || exit 0
 MARKER="$MARKER_DIR/injected-$SESS_KEY-$MARKER_KEY"
+# Pending markers older than this many seconds are stale (hook timeout is 3 s).
+PROJCTX_PENDING_STALE_SECS="${PROJCTX_PENDING_STALE_SECS:-5}"
+case "$PROJCTX_PENDING_STALE_SECS" in ''|0*|???????*|*[!0123456789]*) PROJCTX_PENDING_STALE_SECS=5 ;; esac
 
-# Claim the marker atomically BEFORE building the text: mkdir is atomic and
-# refuses an existing path (a symlink too). Release it on any failure so the
-# next touch retries.
-mkdir "$MARKER" 2>/dev/null || exit 0
-# Release the claim if we are killed mid-build (SIGKILL cannot be trapped).
-trap 'rmdir "$MARKER" 2>/dev/null; exit 0' TERM INT HUP
+# Age of a path in seconds (portable macOS/BSD vs GNU stat). Empty on failure.
+_projctx_path_age_secs() {
+  local m now
+  m=$(stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null) || return 1
+  now=$(date +%s 2>/dev/null) || return 1
+  printf '%s' $((now - m))
+}
 
-if ! CONTEXT=$(projctx_emit "$PROJECT_NAME" "$PROJECT_WS" 2>/dev/null) || [ -z "$CONTEXT" ]; then rmdir "$MARKER" 2>/dev/null; exit 0; fi
+# Try to claim MARKER as a pending directory. On conflict: done → give up;
+# fresh pending → give up (parallel caller owns it); stale pending → reclaim.
+_projctx_claim_marker() {
+  local age
+  if mkdir "$MARKER" 2>/dev/null; then
+    return 0
+  fi
+  # Existing marker (or unusable path). A done file means already injected.
+  if [ -f "$MARKER/done" ]; then
+    return 1
+  fi
+  # Pending without done: reclaim only when older than the stale threshold.
+  if [ -d "$MARKER" ] && [ ! -L "$MARKER" ]; then
+    age=$(_projctx_path_age_secs "$MARKER") || age=""
+    if [ -n "$age" ] && [ "$age" -ge "$PROJCTX_PENDING_STALE_SECS" ]; then
+      rm -rf "$MARKER" 2>/dev/null
+      mkdir "$MARKER" 2>/dev/null && return 0
+    fi
+  fi
+  return 1
+}
+
+# Claim pending BEFORE building the text. Convert to done only after emit.
+_projctx_claim_marker || exit 0
+# Release a still-pending claim on TERM/INT/HUP (SIGKILL cannot be trapped;
+# stale recovery above covers that path).
+trap 'rm -rf "$MARKER" 2>/dev/null; exit 0' TERM INT HUP
+
+if ! CONTEXT=$(projctx_emit "$PROJECT_NAME" "$PROJECT_WS" 2>/dev/null) || [ -z "$CONTEXT" ]; then
+  rm -rf "$MARKER" 2>/dev/null
+  exit 0
+fi
 
 OUTPUT=$(jq -n --arg t "$CONTEXT" '{
   hookSpecificOutput: {
     hookEventName: "PostToolUse",
     additionalContext: $t
   }
-}' 2>/dev/null) || { rmdir "$MARKER" 2>/dev/null; exit 0; }
+}' 2>/dev/null) || { rm -rf "$MARKER" 2>/dev/null; exit 0; }
+
+# Pending → done. A lost write still leaves a directory that becomes stale.
+printf 'done\n' > "$MARKER/done" 2>/dev/null || true
+trap - TERM INT HUP
 
 printf '%s\n' "$OUTPUT"
 exit 0
 # ponytail: two known ceilings, not bugs.
 #   1. Compaction can drop this turn's additionalContext from the model's
-#      working context, and the dedupe marker stays written — the project
+#      working context, and the done marker stays written — the project
 #      never gets re-injected in that session. Upgrade: clear
 #      ${APEXYARD_OPS_PIN_DIR:-$HOME/.claude/apexyard}/projctx/injected-* markers from a
 #      SessionStart(compact) hook.

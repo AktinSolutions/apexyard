@@ -74,8 +74,8 @@ The hook must meet each constraint below. A later change must not remove one wit
 1. **Live read.** The hook reads every file from the workspace at injection time. It copies no project file into the ops fork or the portfolio.
 2. **Nothing at session start.** Nothing is injected at session start; a SessionStart(compact) hook may clear markers (pending follow-up). The injecting hook runs on PostToolUse only. A session that touches no workspace gets no project context.
 3. **One injection per session, agent, and project.** The dedupe key is `session_id` + `agent_id` (or `main` when absent) + project name. A subagent has its own `agent_id`, so it gets its own injection.
-4. **An atomic claim.** The hook claims the dedupe marker before it reads any project file. It uses an atomic create, for example `mkdir "$marker"` or a `noclobber` redirect. A hook that loses the claim exits 0 with no output. When the build of the text fails, the hook removes the claim so that the next touch retries.
-5. **A 9,500-character budget.** The total `additionalContext` stays at 9,500 characters or less. The measured limit is 10,000 characters. Above that limit, Claude Code replaces the text with a 2 KB preview, which is worse than a controlled cut.
+4. **An atomic pending claim, then a done marker.** The hook claims the dedupe marker before it reads any project file. The claim is an atomic `mkdir` that creates a pending marker. A hook that loses the claim exits 0 with no output. When the build of the text fails, the hook removes the pending claim so that the next touch retries. Only after the context is emitted does the hook convert the claim to done by writing a `done` file inside the marker directory. A later touch that finds a pending marker with no `done` file treats it as stale when the marker is older than about 5 seconds (past the hook timeout) and reclaims it. That stale recovery covers a SIGKILL mid-build, which cannot run a trap. Parallel first touches still inject exactly once: only one caller wins the `mkdir`, and the others see a fresh pending marker and exit.
+5. **A 9,500-character budget.** The total `additionalContext` stays at 9,500 characters or less. The measured limit is 10,000 characters. Above that limit, Claude Code replaces the text with a 2 KB preview, which is worse than a controlled cut. `PROJCTX_BUDGET` accepts 1 to 6 ASCII digits with no leading zero and is clamped to at most 9,500.
 6. **Budget order.** The index comes first and is capped. The hook fills the budget in this order:
    1. The header and the opening frame marker. The hook reserves the closing frame marker first and never cuts it.
    2. The indexes: imports, path-scoped rules, then skills, then agents. Each index has at most 30 entries and the indexes together have about 2,000 characters (`PROJCTX_INDEX_BUDGET`, default 2000). Index paths are relative to the workspace, and each description is cut to 100 characters. An index that hits a cap ends with "…and N more …", for example "…and N more imports in CLAUDE.md" or "…and N more in `<dir>`".
@@ -84,7 +84,7 @@ The hook must meet each constraint below. A later change must not remove one wit
 8. **Bounded work.** The hook reads each file with a byte limit, for example `head -c`. Rule reads stop at 200 files. The skill and agent loops count every entry, but they read at most 30 files each. Import scanning is bounded by the 64 KB `CLAUDE.md` read, and the import list is capped at 30 entries.
 9. **A 3-second timeout.** The `settings.json` entry has `"timeout": 3`. The git worktree lookup uses `timeout 1` when that command exists. On a timeout, Claude Code discards the output and the tool call continues.
 10. **Always exit 0.** The hook exits 0 on every path. It never exits 2. It gives no output when `jq`, the registry, or a file is missing. The hook cannot block or allow a tool call.
-11. **Contained reads.** The hook resolves `..` and symlinks in the tool path before it matches a workspace. It also resolves the real path of each file that it reads. This includes `CLAUDE.md`, `AGENTS.md` (when implemented; row 14), each rule, each `SKILL.md`, and each agent file. It also includes the `.claude`, `.claude/rules`, `.claude/skills`, and `.claude/agents` directories. The hook skips a file unless its real path is inside the canonical workspace. The import list names only relative imports without `..`; the hook does not resolve their targets.
+11. **Contained reads.** The hook resolves `..` and symlinks in the tool path before it matches a workspace. It also resolves the real path of each file that it reads. This includes `CLAUDE.md`, `AGENTS.md` (when implemented; row 14), each rule, each `SKILL.md`, and each agent file. It also includes the `.claude`, `.claude/rules`, `.claude/skills`, and `.claude/agents` directories. The hook skips a file unless its real path is inside the canonical workspace. The import list names only relative imports without `..`; the hook does not resolve their targets. The parsed registry cache is keyed by a content hash of the registry file (`cksum`), not by mtime and size, so a same-length `workspace:` rewrite with a restored mtime cannot reuse a stale mapping. On every resolve hit the hook re-checks the name and absolute workspace against a live registry parse and rejects the match when they no longer appear. An empty or malformed cache file is a miss. Cache writes use a temp file in the same directory and `mv` into place.
 12. **Private state.** The registry cache and the markers live in `${APEXYARD_OPS_PIN_DIR:-$HOME/.claude/apexyard}/projctx`. The directory has mode 0700 and an owner check. The hook refuses a symlinked state directory. The hook writes nothing outside this directory.
 13. **No double load from the project root.** The hook injects nothing when the session `cwd` is inside the workspace. Claude Code loads that `CLAUDE.md` natively.
 14. **`AGENTS.md` layout.** When `CLAUDE.md` is absent, or holds only an `@AGENTS.md` import, the hook injects the workspace-root `AGENTS.md` in the `CLAUDE.md` slot. The same budget and containment apply. The hook expands no other import. AgDR-0073 makes `AGENTS.md` the canonical file for projects that `/handover` adopts.
@@ -173,21 +173,21 @@ When #1388 ships, the exclude matches only the ops clone's own rules. In the sin
 
 ## Implementation state
 
-This table is a snapshot at PR #1425 code head `8ae145e`. The PR is still open. A requirement marked "Not implemented" is part of this decision, and the PR or a follow-up must deliver it.
+This table is a snapshot at PR #1425 after the review-fix round for findings 1 to 5. The PR is still open. A requirement marked "Not implemented" is part of this decision, and the PR or a follow-up must deliver it.
 
-| Constraint | State at `8ae145e` | Source |
+| Constraint | State after review fixes | Source |
 |---|---|---|
 | 1. Live read | Implemented | PR body |
 | 2. Nothing at session start | Implemented | Test (b). No SessionStart entry. |
 | 3. Dedupe key | Implemented | Test (d) |
-| 4. Atomic claim | Implemented. The TERM/INT/HUP trap releases the claim; SIGKILL leaves it (Known limit 4). | Tests (l), (m), (w) |
-| 5. 9,500-character budget | Implemented | Test (f) |
+| 4. Atomic pending claim, then done | Implemented. TERM/INT/HUP remove a still-pending claim. A pending marker older than about 5 seconds is reclaimed (SIGKILL recovery). Done is written only after emit. | Tests (l), (m), (w), (reg2) |
+| 5. 9,500-character budget | Implemented. `PROJCTX_BUDGET` is clamped to at most 9,500. | Tests (f), (reg5) |
 | 6. Budget order | Partial. Header and frame come first. The index is capped at about 2,000 chars and 30 entries per section, and the body gets the rest. Index-first order is kept (D1). | Tests (q), (a2) |
 | 7. Truncation pointer for every cut section | Partial. Two pointers exist: the body-cut note and the "…and N more" lines in the index. | Tariq S5. Test (q). |
 | 8. Bounded work | Implemented. Rule reads stop at 200 files. The skill and agent loops count every entry but read at most 30 files each. Import scanning is bounded by the 64 KB `CLAUDE.md` read, and the import list is capped at 30 entries. | Tests (o), (q), (x) |
 | 9. 3-second timeout | Implemented | `settings.json`. Spike check 3b. |
 | 10. Always exit 0 | Implemented | Test (g) |
-| 11. Contained reads | Implemented, including the `..` and newline refusals. Hardlinks are not detected. Frontmatter values and file names are stripped of or refused for control characters; NUL is stripped from hook input fields; budget variables accept 1 to 6 ASCII digits with no leading zero; index names are cut to 60 chars and `paths:` values to 200; import entries are cut to 200 chars; paths with C1 controls or U+2028/U+2029 are refused. | Tests (k), (p), (p2), (r), (x2), (y), (z1), (z1b), (z3), (z3b), (z3c), (z3d) |
+| 11. Contained reads | Implemented, including the `..` and newline refusals. Hardlinks are not detected. Frontmatter values and file names are stripped of or refused for control characters; NUL is stripped from hook input fields; budget variables accept 1 to 6 ASCII digits with no leading zero and `PROJCTX_BUDGET` is capped at 9,500; index names are cut to 60 chars and `paths:` values to 200; import entries are cut to 200 chars; paths with C1 controls or U+2028/U+2029 are refused. Registry cache keyed by content hash; resolve hits re-validated against a live parse; empty or malformed cache is a miss; cache write is atomic. | Tests (k), (p), (p2), (r), (x2), (y), (z1), (z1b), (z3), (z3b), (z3c), (z3d), (reg1), (reg3), (reg5) |
 | 12. Private state | Implemented | Test (i) |
 | 13. No double load from the project root | Implemented for `cwd` inside the workspace. No skip for a workspace under `cwd` (Known limit 5). | Test (e) |
 | 14. `AGENTS.md` layout | Not implemented. Follow-up. | Tariq S1 |
@@ -211,16 +211,15 @@ These limits are accepted for now. Each one is a follow-up, not yet filed.
 1. **No re-injection after compaction.** The marker stays after compaction, but the text can leave the context. The main session is usually long, so the conventions can be gone for the rest of the session. This limit matters most. Upgrade: clear the session's markers from a SessionStart(compact) hook.
 2. **Rule subdirectories.** The hook reads only `.claude/rules/*.md`. Claude Code also finds rules in subdirectories. A rule at `.claude/rules/backend/x.md` is not injected and not indexed.
 3. **`.claude/CLAUDE.md`.** The hook reads only the workspace-root `CLAUDE.md`. A project that keeps its memory file at `.claude/CLAUDE.md` gets no `CLAUDE.md` text.
-4. **SIGKILL.** A TERM, INT or HUP signal releases the claim. A SIGKILL cannot be trapped and leaves the marker, so the project is not injected again for that session and agent. Bash runs the TERM/INT/HUP trap only after the `$(projctx_emit)` child exits, so a signal during the build releases the claim late, not at once; a SIGKILL never releases it.
+4. **SIGKILL timing.** A TERM, INT or HUP signal removes a still-pending claim. A SIGKILL cannot be trapped, so it leaves a pending marker. The next touch reclaims that marker once it is older than about 5 seconds. Until then, a retry in the same session and agent still sees a fresh pending marker and injects nothing. Bash may also run the TERM/INT/HUP trap only after the `$(projctx_emit)` child exits, so a signal during the build can release the claim late.
 5. **Double load in the single-fork layout.** In the single-fork layout, a nested `workspace/<name>/CLAUDE.md` may also be loaded natively by Claude Code; the hook injects it regardless (up to ~2,300 duplicate tokens). A headless check (2026-09-30) found no native load on a Glob or Read first touch, but that check had no control and is not conclusive. After #1388, its always-on rule bodies may double-load the same way. Upgrade: add the skip back once native loading is verified.
 
 Other deferred items from the PR body and the reviews:
 
 - The `Bash` tool is not matched. Upgrade: resolve the project from `cwd`. (follow-up, not yet filed)
 - The markers and cache files are not cleaned up. (follow-up, not yet filed)
-- The cache writes are not atomic. (follow-up, not yet filed)
 - The hook caches no negative result, so a miss inside any git repo runs the git lookup. (follow-up, not yet filed)
-- A re-pointed workspace symlink stays cached until the registry file changes. (follow-up, not yet filed)
+- A re-pointed workspace symlink stays cached until the registry file content hash changes. (follow-up, not yet filed)
 - A `workspace:` path with spaces resolves only when `yq` is installed. This gap is in the shared registry parser and existed before this hook. (follow-up, not yet filed)
 - Phase 2 of #1423: the `/start-ticket` trigger and project skills as slash commands. (follow-up, not yet filed)
 
@@ -232,7 +231,7 @@ Other deferred items from the PR body and the reviews:
 | Workspace | The local checkout path of a managed project, from the registry `workspace:` field. Also called the main checkout. |
 | Injection | One `additionalContext` output of the hook for one agent and one project |
 | First touch | The first file tool call by an agent inside a workspace, or inside a worktree of it, in a session |
-| Claim | The atomic create of the dedupe marker, before the hook reads any project file |
+| Claim | The atomic create of the pending dedupe marker, before the hook reads any project file. The claim becomes done only after the context is emitted. |
 | `additionalContext` | Text that a Claude Code hook returns. Claude Code adds it to the model context. |
 | Mechanical gate | A hook that checks tool input or files on disk and can block a tool call. It does not depend on the model. |
 | Advisory control | A rule or a warning that works only when the model follows it |

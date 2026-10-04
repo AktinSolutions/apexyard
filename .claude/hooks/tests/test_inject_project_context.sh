@@ -12,6 +12,10 @@
 
 set -u
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
 SRC_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 HOOK_DIR="$SRC_ROOT/.claude/hooks"
 HOOK="$HOOK_DIR/inject-project-context.sh"
@@ -347,7 +351,7 @@ rm -rf "$MARKER_DIR"
 # --- (m) B1: a failing projctx_emit releases the marker, so the next touch retries
 echo 'projctx_emit() { return 1; }' >> "$FORK/.claude/hooks/_lib-project-context.sh"
 OUT=$(invoke "$(payload m1 "" "" "$WS/src/a.ts")")
-LEFT=$(find "$MARKER_DIR" -name 'injected-*' 2>/dev/null | wc -l)
+LEFT=$(find "$MARKER_DIR" -name 'injected-*' 2>/dev/null | wc -l | tr -d ' ')
 cp "$HOOK_DIR/_lib-project-context.sh" "$FORK/.claude/hooks/_lib-project-context.sh"
 OUT2=$(invoke "$(payload m1 "" "" "$WS/src/a.ts")")
 if [ -z "$OUT" ] && [ "$LEFT" = 0 ] && [ -n "$OUT2" ]; then
@@ -474,7 +478,7 @@ BGPID=$!
 sleep 1
 pkill -TERM -f "$FORK/.claude/hooks/inject-project-context.sh" 2>/dev/null
 wait "$BGPID" 2>/dev/null
-LEFT=$(find "$MARKER_DIR" -name 'injected-*' 2>/dev/null | wc -l)
+LEFT=$(find "$MARKER_DIR" -name 'injected-*' 2>/dev/null | wc -l | tr -d ' ')
 cp "$HOOK_DIR/_lib-project-context.sh" "$FORK/.claude/hooks/_lib-project-context.sh"
 if [ "$LEFT" = 0 ]; then
   pass_case "(w) SIGTERM during build releases the marker"
@@ -558,7 +562,7 @@ if [ -n "$UTF" ]; then
   fi
   rm -rf "$WS/.claude/skills/cafe" "$MARKER_DIR"
 else
-  echo "SKIP: (z1b) no UTF-8 locale installed"
+  echo "omit: (z1b) no UTF-8 locale installed"
 fi
 
 # --- (z3) a non-numeric budget is never evaluated by $(( ))
@@ -602,8 +606,156 @@ if [ -n "$UTF" ]; then
   fi
   rm -rf "$MARKER_DIR"
 else
-  echo "SKIP: (z3d) no UTF-8 locale installed"
+  echo "omit: (z3d) no UTF-8 locale installed"
 fi
+
+# --- (reg1) content-hash cache: same-length workspace rewrite + restored mtime
+# must not keep injecting the old path (PR #1425 finding 1).
+BASE_REG=$(mktemp -d -t projctx-reg1.XXXXXX)
+OUT_REG="$BASE_REG/aaaaaaaa"
+WS_REG="$BASE_REG/bbbbbbbb"
+mkdir -p "$OUT_REG" "$WS_REG"
+echo "CANARY_REG1_OUT" > "$OUT_REG/CLAUDE.md"
+echo "CANARY_REG1_WS" > "$WS_REG/CLAUDE.md"
+if [ "${#OUT_REG}" -ne "${#WS_REG}" ]; then
+  fail_case "(reg1) setup" "path lengths differ ${#OUT_REG} vs ${#WS_REG}"
+else
+  cp "$FORK/apexyard.projects.yaml" "$FORK/apexyard.projects.yaml.bak"
+  REG_FILE="$FORK/apexyard.projects.yaml"
+  cat > "$REG_FILE" <<YAML
+version: 1
+projects:
+  - name: demo
+    repo: acme/demo
+    workspace: $OUT_REG
+    status: active
+YAML
+  rm -rf "$MARKER_DIR"
+  OUT=$(invoke "$(payload reg1a "" "" "$OUT_REG/src/a.ts")")
+  if ! printf '%s' "$OUT" | grep -q CANARY_REG1_OUT; then
+    fail_case "(reg1) seed cache" "out_len=${#OUT}"
+  else
+    # Freeze the seed registry's mtime before rewriting (cp alone would
+    # stamp the reference with "now" and miss the mtime-key cache).
+    MTIME_REF=$(mktemp -t projctx-reg1-mtime.XXXXXX)
+    SIZE_REF=$(mktemp -t projctx-reg1-size.XXXXXX)
+    touch -r "$REG_FILE" "$MTIME_REF"
+    cp "$REG_FILE" "$SIZE_REF"
+    cat > "$REG_FILE" <<YAML
+version: 1
+projects:
+  - name: demo
+    repo: acme/demo
+    workspace: $WS_REG
+    status: active
+YAML
+    if [ "$(wc -c < "$REG_FILE" | tr -d ' ')" -ne "$(wc -c < "$SIZE_REF" | tr -d ' ')" ]; then
+      fail_case "(reg1) equal size" "new=$(wc -c < "$REG_FILE" | tr -d ' ') old=$(wc -c < "$SIZE_REF" | tr -d ' ')"
+    else
+      touch -r "$MTIME_REF" "$REG_FILE"
+      # Clear only injection markers; keep registry-*.tsv so a stale mtime-key
+      # cache can still hit on the untouched code.
+      for d in "$MARKER_DIR"/injected-*; do
+        [ -e "$d" ] && rm -rf "$d"
+      done
+      OUT_OLD=$(invoke "$(payload reg1b "" "" "$OUT_REG/src/a.ts")")
+      # Fresh session id so a done-marker from OUT_OLD cannot suppress WS.
+      OUT_NEW=$(invoke "$(payload reg1c "" "" "$WS_REG/src/a.ts")")
+      if ! printf '%s' "$OUT_OLD" | grep -q CANARY_REG1_OUT \
+         && printf '%s' "$OUT_NEW" | grep -q CANARY_REG1_WS; then
+        pass_case "(reg1) content-hash cache: same-size+mtime rewrite drops old workspace"
+      else
+        fail_case "(reg1) stale cache" "old_len=${#OUT_OLD} new_len=${#OUT_NEW} old_hit=$(printf '%s' "$OUT_OLD" | grep -c CANARY_REG1_OUT) new_hit=$(printf '%s' "$OUT_NEW" | grep -c CANARY_REG1_WS)"
+      fi
+    fi
+    rm -f "$MTIME_REF" "$SIZE_REF"
+  fi
+  mv "$FORK/apexyard.projects.yaml.bak" "$FORK/apexyard.projects.yaml"
+fi
+rm -rf "$BASE_REG" "$MARKER_DIR"
+# Restore the demo workspace registration for later cases.
+cat > "$FORK/apexyard.projects.yaml" <<YAML
+version: 1
+projects:
+  - name: demo
+    repo: acme/demo
+    workspace: $WS
+    status: active
+YAML
+rm -rf "$MARKER_DIR"
+
+# --- (reg2) SIGKILL mid-build: pending marker goes stale; retry injects
+# (PR #1425 finding 2).
+echo 'projctx_emit() { sleep 30; }' >> "$FORK/.claude/hooks/_lib-project-context.sh"
+( invoke "$(payload reg2 "" "" "$WS/src/a.ts")" >"$SB/reg2.out" 2>/dev/null ) &
+BGPID=$!
+# Wait until the pending marker directory exists.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  PENDING=$(find "$MARKER_DIR" -maxdepth 1 -type d -name 'injected-*' 2>/dev/null | head -1)
+  [ -n "$PENDING" ] && break
+  sleep 0.2
+done
+if [ -z "${PENDING:-}" ]; then
+  kill -KILL "$BGPID" 2>/dev/null
+  wait "$BGPID" 2>/dev/null
+  cp "$HOOK_DIR/_lib-project-context.sh" "$FORK/.claude/hooks/_lib-project-context.sh"
+  fail_case "(reg2) setup" "pending marker never appeared"
+else
+  kill -KILL "$BGPID" 2>/dev/null
+  wait "$BGPID" 2>/dev/null
+  cp "$HOOK_DIR/_lib-project-context.sh" "$FORK/.claude/hooks/_lib-project-context.sh"
+  # Backdate the pending marker so it is older than the stale threshold.
+  REF_OLD=$(mktemp -t projctx-reg2-old.XXXXXX)
+  touch -t 200001010000 "$REF_OLD" 2>/dev/null || touch -d '2000-01-01' "$REF_OLD" 2>/dev/null
+  touch -r "$REF_OLD" "$PENDING"
+  rm -f "$REF_OLD"
+  # Ensure no done file.
+  rm -f "$PENDING/done" 2>/dev/null
+  OUT=$(invoke "$(payload reg2 "" "" "$WS/src/a.ts")")
+  if printf '%s' "$OUT" | grep -q CANARY_CLAUDE_MD_MARKER; then
+    pass_case "(reg2) SIGKILL pending marker goes stale; retry injects"
+  else
+    fail_case "(reg2) stale pending recovery" "out_len=${#OUT} pending=$PENDING"
+  fi
+fi
+rm -rf "$MARKER_DIR"
+
+# --- (reg3) empty cache TSV is a miss; next invoke still injects
+# (PR #1425 finding 3).
+rm -rf "$MARKER_DIR"
+mkdir -p "$MARKER_DIR"
+# Build a correct content-hash key for the current registry, plant empty TSV.
+REG_PATH="$FORK/apexyard.projects.yaml"
+KEY=$(cksum < "$REG_PATH" | awk '{print $1}')
+: > "$MARKER_DIR/registry-$KEY.tsv"
+OUT=$(invoke "$(payload reg3 "" "" "$WS/src/a.ts")")
+if printf '%s' "$OUT" | grep -q CANARY_CLAUDE_MD_MARKER && [ -s "$MARKER_DIR/registry-$KEY.tsv" ]; then
+  pass_case "(reg3) empty cache TSV treated as miss; inject + atomic rebuild"
+else
+  fail_case "(reg3) empty cache" "out_len=${#OUT} cache_size=$(wc -c < "$MARKER_DIR/registry-$KEY.tsv" | tr -d ' ')"
+fi
+rm -rf "$MARKER_DIR"
+
+# --- (reg5) PROJCTX_BUDGET above the default is clamped to 9500
+# (PR #1425 finding 5).
+cp "$WS/CLAUDE.md" "$WS/CLAUDE.md.bak"
+{
+  echo "# Demo project"
+  echo "CANARY_CLAUDE_MD_MARKER lives here."
+  for i in $(seq 1 500); do
+    echo "Padding line $i for budget clamp regression with filler prose."
+  done
+} > "$WS/CLAUDE.md"
+RAW=$(PROJCTX_BUDGET=20000 invoke "$(payload reg5 "" "" "$WS/src/a.ts")")
+CTX=$(ctx_of "$RAW")
+CTX_LEN=${#CTX}
+if [ "$CTX_LEN" -gt 0 ] && [ "$CTX_LEN" -le 9500 ]; then
+  pass_case "(reg5) PROJCTX_BUDGET=20000 clamped: additionalContext <= 9500 ($CTX_LEN)"
+else
+  fail_case "(reg5) budget clamp" "len=$CTX_LEN"
+fi
+mv "$WS/CLAUDE.md.bak" "$WS/CLAUDE.md"
+rm -rf "$MARKER_DIR"
 
 echo "===== test_inject_project_context.sh ====="
 echo "Passed: $PASS"

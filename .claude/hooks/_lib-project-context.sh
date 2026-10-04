@@ -28,6 +28,8 @@ PROJCTX_BUDGET="${PROJCTX_BUDGET:-9500}"
 # 1 to 6 decimal digits, no leading zero: both values reach $(( )), which would
 # run $(...) in them, read 08 as an octal error, and wrap on 20+ digits.
 case "$PROJCTX_BUDGET" in ''|0*|???????*|*[!0123456789]*) PROJCTX_BUDGET=9500 ;; esac
+# Cap at the default: a larger value can push Claude Code into the 2 KB preview.
+[ "$PROJCTX_BUDGET" -gt 9500 ] && PROJCTX_BUDGET=9500
 case "${PROJCTX_INDEX_BUDGET:-}" in ''|0*|???????*|*[!0123456789]*) PROJCTX_INDEX_BUDGET=2000 ;; esac
 # Per-user state under $HOME, never shared /tmp: another local user could
 # pre-create a predictable /tmp dir and poison the registry cache (context
@@ -46,11 +48,61 @@ projctx_state_dir() {
 
 # ------------------------------------------------------------------------------
 # Internal: name<TAB>absolute-workspace, one per registered project that
-# declares a workspace:. Parsed from the registry once per (path, mtime,
-# size) via _mrt_parse_registry, then cached as a flat TSV file so a burst
+# declares a workspace:. Parsed from the registry once per content hash
+# (cksum) via _mrt_parse_registry, then cached as a flat TSV file so a burst
 # of hook invocations in one session re-reads a small local file instead
-# of re-parsing the registry every time.
+# of re-parsing the registry every time. Empty or malformed cache files are
+# treated as a miss. Writes are atomic (temp file + mv in the same dir).
 # ------------------------------------------------------------------------------
+
+# True when stdin / $1 is a non-empty TSV of name<TAB>absolute-path lines.
+_projctx_tsv_ok() {
+  local f="${1:-}" line n=0
+  if [ -n "$f" ]; then
+    [ -f "$f" ] && [ ! -L "$f" ] && [ -s "$f" ] || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -z "$line" ] && continue
+      case "$line" in
+        *$'\t'/*) n=$((n + 1)) ;;
+        *) return 1 ;;
+      esac
+    done < "$f"
+  else
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -z "$line" ] && continue
+      case "$line" in
+        *$'\t'/*) n=$((n + 1)) ;;
+        *) return 1 ;;
+      esac
+    done
+  fi
+  [ "$n" -gt 0 ]
+}
+
+# True when name + absolute workspace still appear in a live registry parse
+# (not the on-disk cache). Used after a cache-backed resolve hit.
+_projctx_pair_in_live_registry() {
+  local want_name="$1" want_ws="$2" root name workspace ws_abs parsed
+  command -v _mrt_parse_registry >/dev/null 2>&1 || return 1
+  root=$(_portfolio_root 2>/dev/null) || root=""
+  parsed=$(_mrt_parse_registry 2>/dev/null) || return 1
+  while IFS='|' read -r name _ workspace _; do
+    [ -z "$name" ] && continue
+    [ "$name" = "$want_name" ] || continue
+    [ -z "$workspace" ] && continue
+    case "$workspace" in
+      /*) ws_abs="$workspace" ;;
+      *) ws_abs=""; [ -n "$root" ] && ws_abs="$root/$workspace" ;;
+    esac
+    [ -z "$ws_abs" ] && continue
+    ws_abs=$(_portfolio_canonicalize "$ws_abs" 2>/dev/null) || continue
+    [ "$ws_abs" = "$want_ws" ] && return 0
+  done <<EOF
+$parsed
+EOF
+  return 1
+}
+
 _projctx_registry_tsv() {
   # portfolio_registry costs ~45 ms (config reads); the hook runs on every
   # file tool call, so memoise the resolved path per session.
@@ -65,30 +117,32 @@ _projctx_registry_tsv() {
   fi
   [ -f "$registry" ] || return 1
 
-  local stamp
-  stamp=$(stat -c '%Y:%s' "$registry" 2>/dev/null || stat -f '%m:%z' "$registry" 2>/dev/null)
-  [ -z "$stamp" ] && stamp="unknown"
-
+  # Content hash, not mtime+size: a same-length workspace rewrite with a
+  # restored mtime must miss (review finding on PR #1425).
   local key cache_file state_dir
-  key=$(printf '%s|%s' "$registry" "$stamp" | cksum 2>/dev/null | awk '{print $1}')
+  key=$(cksum < "$registry" 2>/dev/null | awk '{print $1}')
   [ -z "$key" ] && key="nokey"
   state_dir=$(projctx_state_dir) || state_dir=""
   cache_file=""
   [ -n "$state_dir" ] && cache_file="$state_dir/registry-$key.tsv"
 
   if [ -n "$cache_file" ] && [ -f "$cache_file" ] && [ ! -L "$cache_file" ]; then
-    cat "$cache_file" 2>/dev/null
-    return 0
+    if _projctx_tsv_ok "$cache_file"; then
+      cat "$cache_file" 2>/dev/null
+      return 0
+    fi
+    # Empty or malformed → miss (and rebuild below).
+    rm -f "$cache_file" 2>/dev/null
   fi
 
   command -v _mrt_parse_registry >/dev/null 2>&1 || return 1
 
-  local root name workspace ws_abs content registry
+  local root name workspace ws_abs content parsed tmp
   root=$(_portfolio_root 2>/dev/null) || root=""
   content=""
   # Heredoc, not `< <(`: this library is sourced by POSIX-mode shells
   # (test_posix_sourced_libs.sh).
-  registry=$(_mrt_parse_registry 2>/dev/null)
+  parsed=$(_mrt_parse_registry 2>/dev/null)
   while IFS='|' read -r name _ workspace _; do
     [ -z "$name" ] && continue
     [ -z "$workspace" ] && continue
@@ -103,12 +157,21 @@ _projctx_registry_tsv() {
     content="${content}${name}	${ws_abs}
 "
   done <<EOF
-$registry
+$parsed
 EOF
 
   # Uncacheable (state dir unusable) → still return the parsed result.
-  if [ -n "$cache_file" ] && [ ! -L "$cache_file" ]; then
-    printf '%s' "$content" > "$cache_file" 2>/dev/null
+  # Atomic replace: write a temp in the same directory, then mv.
+  if [ -n "$cache_file" ] && [ ! -L "$cache_file" ] && [ -n "$content" ] && _projctx_tsv_ok <<EOF
+$content
+EOF
+  then
+    tmp="$cache_file.tmp.$$"
+    if printf '%s' "$content" > "$tmp" 2>/dev/null; then
+      mv -f "$tmp" "$cache_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+    else
+      rm -f "$tmp" 2>/dev/null
+    fi
   fi
   printf '%s' "$content"
 }
@@ -131,8 +194,12 @@ projctx_resolve() {
     [ -z "$name" ] && continue
     case "$abs_path" in "$ws"|"$ws"/*) ;; *) continue ;; esac
     if portfolio_path_under "$abs_path" "$ws" 2>/dev/null; then
-      printf '%s\t%s\n' "$name" "$ws"
-      return 0
+      # Cache hit can be stale or planted; confirm against a live parse.
+      if _projctx_pair_in_live_registry "$name" "$ws" 2>/dev/null; then
+        printf '%s\t%s\n' "$name" "$ws"
+        return 0
+      fi
+      continue
     fi
   done <<EOF
 $tsv
@@ -165,8 +232,11 @@ EOF
   while IFS="$(printf '\t')" read -r name ws; do
     [ -z "$name" ] && continue
     if [ "$main_root" -ef "$ws" ]; then
-      printf '%s\t%s\n' "$name" "$ws"
-      return 0
+      if _projctx_pair_in_live_registry "$name" "$ws" 2>/dev/null; then
+        printf '%s\t%s\n' "$name" "$ws"
+        return 0
+      fi
+      continue
     fi
   done <<EOF
 $tsv
