@@ -83,9 +83,12 @@ _projctx_registry_tsv() {
 
   command -v _mrt_parse_registry >/dev/null 2>&1 || return 1
 
-  local root name workspace ws_abs content
+  local root name workspace ws_abs content registry
   root=$(_portfolio_root 2>/dev/null) || root=""
   content=""
+  # Heredoc, not `< <(`: this library is sourced by POSIX-mode shells
+  # (test_posix_sourced_libs.sh).
+  registry=$(_mrt_parse_registry 2>/dev/null)
   while IFS='|' read -r name _ workspace _; do
     [ -z "$name" ] && continue
     [ -z "$workspace" ] && continue
@@ -99,7 +102,9 @@ _projctx_registry_tsv() {
     ws_abs=$(_portfolio_canonicalize "$ws_abs" 2>/dev/null) || continue
     content="${content}${name}	${ws_abs}
 "
-  done < <(_mrt_parse_registry 2>/dev/null)
+  done <<EOF
+$registry
+EOF
 
   # Uncacheable (state dir unusable) → still return the parsed result.
   if [ -n "$cache_file" ] && [ ! -L "$cache_file" ]; then
