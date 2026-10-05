@@ -14,9 +14,14 @@
     "tracker_repo"
   ],
 
+  "orbit": {
+    "default_planning": false
+  },
+
   "ticket": {
     "prefix_whitelist": [
       "Feature",
+      "Slice",
       "Bug",
       "Chore",
       "Refactor",
@@ -158,6 +163,9 @@
     "multi_close_skip_marker": "<!-- multi-close: approved -->"
   },
 
+  "_comment_external_contributions": "Repositories you contribute to but do NOT govern — an upstream OSS project you send PRs to (me2resh/apexyard#1448). For a repo listed here, validate-pr-create.sh does not apply this framework's PR-title convention, because that project has its own CONTRIBUTING.md and its own tracker. Empty by default: the exemption is opt-in and repo-scoped. The registry wins — if a listed repo is also a managed project the exemption does not apply, so adding a governed repo here cannot quietly disable title validation for work the framework governs. This relaxes a CONVENTION check only; leak protection, secret scanning and every security control are unaffected. Format: owner/name slugs, e.g. [\"openfga/vscode-ext\"].",
+  "external_contributions": [],
+
   "leak_protection": {
     "public_framework_repos": [
       "me2resh/apexyard"
@@ -232,7 +240,8 @@
   "tracker": {
     "_comment": "Tracker dispatch — selects which CLI verifies that ticket-IDs reference real tickets. Default is GH (GitHub Issues via `gh issue view`), matching today's behaviour exactly. Supported `kind` values: gh, glab, linear, jira, asana, custom, none. `view_command` is a template with `{id}` and `{owner_repo}` placeholders — the lib substitutes them and runs the result. It is intentionally NOT pinned here: the lib picks a KIND-AWARE built-in default (gh → `gh issue view … --json state,title,url,labels,body`; glab → `glab issue view … --output json`), so a glab/gh adopter who only sets `kind` gets the matching command without also having to set `view_command`. Pinning a default here would deep-merge over a `kind: glab` override and force the gh command (me2resh/apexyard#755). linear/jira/asana/custom adopters still set their own `view_command`. `id_pattern` is the regex `validate-branch-name.sh` and `validate-pr-create.sh` use to shape-check ticket IDs (covers GH `#123` / `GH-123` plus enterprise prefixes like `LIN-456` / `JIRA-789` by default). Set `kind = none` to disable existence verification entirely (shape-only). See AgDR-0033 and `.claude/hooks/_lib-tracker.sh`.",
     "kind": "gh",
-    "id_pattern": "^(#[0-9]+|GH-[0-9]+|[A-Z]{2,10}-[0-9]+)$"
+    "id_pattern": "^(#[0-9]+|GH-[0-9]+|[A-Z]{2,10}-[0-9]+)$",
+    "list_default_limit": 30
   },
 
   "pdf": {
