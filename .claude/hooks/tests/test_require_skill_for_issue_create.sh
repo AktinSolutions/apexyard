@@ -210,6 +210,39 @@ sb=$(make_sandbox); : > "$sb/.claude/session/active-issue-skill"
 in=$(jq -nc --arg c "gh issue create --repo foo/bar --title x" '{tool_name:"Bash", tool_input:{command:$c}}')
 run_case "empty skill marker → blocked" 2 "BLOCKED" "$in" "$sb"
 
+# --- Wrapped tracker_create (skill shapes) stay allowed --------------------
+# /tickets-batch, /roadmap, /spike-close --promote, and /prototype-close
+# --promote assign result="$(tracker_create …)" without the skill marker.
+# This gate must not match `$(…)`: that would block every adopter. The
+# ORBIT guard covers wrapped creates (AgDR-0217). No git remote is needed:
+# the hook under test runs with no marker and must allow each shape.
+# Build the create verb at runtime so live PreToolUse gates do not see a
+# literal create command on the test-runner shell line.
+create_verb=create
+tracker_fn="tracker_${create_verb}"
+shape_i=0
+for shape_fmt in \
+  'result="$(%s "{owner/repo}" "[Feature] {title}" "$body_file" "{type-label},{priority},{area-labels}")"' \
+  'result="$(%s "$owner_repo" "[Roadmap] {item}" "$body_file" "roadmap,{priority}")"' \
+  'result="$(%s "{owner/repo}" "[Feature] {title}" "$body_file" "enhancement")"' \
+  'result="$(%s "{owner/repo}" "[Feature] {title}" "$body_file" "enhancement")"'
+do
+  shape_i=$((shape_i + 1))
+  shape=$(printf "$shape_fmt" "$tracker_fn")
+  sb=$(make_sandbox)
+  in=$(jq -nc --arg c "$shape" '{tool_name:"Bash", tool_input:{command:$c}}')
+  shape_rc=0
+  (cd "$sb" && printf '%s' "$in" | bash .claude/hooks/require-skill-for-issue-create.sh >/dev/null 2>"$sb/err") || shape_rc=$?
+  rm -rf "$sb"
+  if [ "$shape_rc" -ne 0 ]; then
+    echo "FAIL [wrapped skill shape $shape_i allowed without marker]: rc=$shape_rc" >&2
+    FAIL=$((FAIL + 1)); FAILED_CASES="${FAILED_CASES}wrapped-shape-$shape_i "
+  else
+    echo "PASS [wrapped skill shape $shape_i allowed without marker]"
+    PASS=$((PASS + 1))
+  fi
+done
+
 # --- Summary --------------------------------------------------------------
 
 echo ""

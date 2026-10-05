@@ -14,9 +14,14 @@
     "tracker_repo"
   ],
 
+  "orbit": {
+    "default_planning": false
+  },
+
   "ticket": {
     "prefix_whitelist": [
       "Feature",
+      "Slice",
       "Bug",
       "Chore",
       "Refactor",
