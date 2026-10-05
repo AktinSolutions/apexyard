@@ -201,11 +201,13 @@ while [ "$_gate_iter" -lt 10 ]; do
   # structural change from round 1 (which ran all four shapes every
   # iteration, unconditionally) to round 2 (check-then-strip).
 
-  # 1. cd <path> && / ; / | -- quoted or bare path.
+  # 1. cd <path> && / || / ; / | -- quoted or bare path.
+  #    Match `||` before `|` so a double-pipe chain is not left with a
+  #    leading `|` that hides a later `gh pr create` (#1451 B1-c).
   _stripped=$(printf '%s' "$_cmd_head" | sed -E \
-    "s/^[[:space:]]*cd[[:space:]]+\"[^\"]+\"[[:space:]]*(&&|;|\|)[[:space:]]*//;
-     s/^[[:space:]]*cd[[:space:]]+'[^']+'[[:space:]]*(&&|;|\|)[[:space:]]*//;
-     s/^[[:space:]]*cd[[:space:]]+[^&;|[:space:]]+[[:space:]]*(&&|;|\|)[[:space:]]*//")
+    "s/^[[:space:]]*cd[[:space:]]+\"[^\"]+\"[[:space:]]*(&&|\|\||;|\|)[[:space:]]*//;
+     s/^[[:space:]]*cd[[:space:]]+'[^']+'[[:space:]]*(&&|\|\||;|\|)[[:space:]]*//;
+     s/^[[:space:]]*cd[[:space:]]+[^&;|[:space:]]+[[:space:]]*(&&|\|\||;|\|)[[:space:]]*//")
   if [ "$_stripped" != "$_cmd_head" ]; then
     _cmd_head="$_stripped"
   else
@@ -224,9 +226,9 @@ while [ "$_gate_iter" -lt 10 ]; do
         # 4. A quote-free arbitrary segment followed by a top-level
         #    separator — last resort, only tried once shapes 1-3 (and the
         #    verb-check above) have already failed to match this
-        #    iteration's head.
+        #    iteration's head. `||` before `|` (same as shape 1).
         _cmd_head=$(printf '%s' "$_cmd_head" | sed -E \
-          "s/^[[:space:]]*[^\"'&;|]+(&&|;|\|)[[:space:]]*//")
+          "s/^[[:space:]]*[^\"'&;|]+(&&|\|\||;|\|)[[:space:]]*//")
       fi
     fi
   fi
@@ -301,8 +303,222 @@ if [ -z "$PR_TYPES" ]; then
   PR_TYPES="feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert|release|spike|sync"
 fi
 
+# External contributions (#1448): a PR aimed at a repository the adopter
+# contributes to but does NOT govern. Such a repository has its own
+# CONTRIBUTING.md and its own tracker, so imposing this framework's title
+# convention on it refuses a PR that is correct for its destination.
+#
+# Opt-in and repo-scoped: `.external_contributions[]` in project-config, the
+# same shape leak-protection uses for its public-framework-repo list.
+#
+# The registry WINS. If the target is a managed project, the exemption does
+# not apply however the list is written — otherwise adding a governed repo to
+# this list would quietly disable title validation for work the framework is
+# supposed to be governing, which is a gate relaxation dressed up as config.
+#
+# Helpers for this block only (#1451 B1-b / B1-c / B2-b / A-2).
+
+# Normalise a repo reference to lowercase owner/name. Strips scheme,
+# git@host:, bare host/, trailing .git, and trailing /. Echoes nothing when
+# the result is not exactly owner/name (caller decides whether to warn).
+_vpc_normalize_repo_slug() {
+  local s
+  s=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  s=$(printf '%s' "$s" | sed -E 's|^[a-z][a-z0-9+.-]*://||')
+  s=$(printf '%s' "$s" | sed -E 's|^git@[^:]+:||')
+  s=$(printf '%s' "$s" | sed -E 's|^[a-z0-9.-]+\.[a-z]{2,}/||')
+  s=$(printf '%s' "$s" | sed -E 's|\.git$||')
+  s=$(printf '%s' "$s" | sed -E 's|/$||')
+  if printf '%s' "$s" | grep -qE '^[^/]+/[^/]+$'; then
+    printf '%s' "$s"
+  fi
+}
+
+# Echo the PR-create SEGMENT of a quote-blanked first line (#1451 B1-c).
+# Starts at the `gh pr create` invocation and ends at the next top-level
+# `&&`, `||`, `;`, `|`, or end of line. A trailing unquoted `#` comment
+# (a `#` that starts a shell word) is stripped so a comment mentioning
+# `--repo` cannot grant the exemption. Echoes nothing when no create verb
+# is present on the line.
+_vpc_pr_create_segment() {
+  # Portable word-boundary after "create": macOS awk (nawk) has no `\b`.
+  printf '%s' "$1" | awk '
+    {
+      line = $0
+      if (!match(line, /(^|[[:space:]])gh[[:space:]]+pr[[:space:]]+create([^a-zA-Z0-9_]|$)/)) next
+      start = RSTART
+      if (substr(line, start, 1) ~ /[[:space:]]/) start++
+      seg = substr(line, start)
+      out = ""
+      n = length(seg)
+      i = 1
+      while (i <= n) {
+        two = substr(seg, i, 2)
+        if (two == "&&" || two == "||") break
+        c = substr(seg, i, 1)
+        if (c == ";" || c == "|") break
+        out = out c
+        i++
+      }
+      if (match(out, /(^|[[:space:]])#/)) {
+        if (RSTART == 1) out = ""
+        else out = substr(out, 1, RSTART - 1)
+      }
+      print out
+    }
+  '
+}
+
+EXTERNAL_TARGET=""
+if [ -n "$CMD_REPO" ] && command -v config_get >/dev/null 2>&1; then
+  # CMD_REPO is pr_cmd_target_repo's continuation-joined parse — the repo
+  # the CLI will actually use. Normalise it before any list/registry match
+  # (#1451 B2-b): URL and SSH forms must become owner/name or the registry-
+  # wins rail never fires.
+  _vpc_repo_lc=$(_vpc_normalize_repo_slug "$CMD_REPO")
+
+  # FAIL CLOSED on an ambiguous / body-injected target (#1451 B1 / B1-b / B1-c).
+  # Quote-blanking is line-oriented, so a multi-line --body heredoc left a
+  # `--repo` token on a later line visible to a whole-command scan, and
+  # CMD_REPO could be set from body text while the real create targeted the
+  # governed cwd. Take the exemption candidate ONLY from the PR-create
+  # SEGMENT of the command's first line (from `gh pr create` to the next
+  # unquoted `&&` / `||` / `;` / `|` / newline, with trailing `#` comments
+  # stripped), with quoted spans blanked there, and require that candidate
+  # to equal CMD_REPO after the same normalisation. A prior `gh pr view
+  # --repo … &&` or a trailing `# … --repo …` comment must not grant the
+  # exemption. Reuse pr_cmd_target_repo for the segment value so there is
+  # one parser. If the segment target cannot be resolved unambiguously,
+  # no exemption.
+  _vpc_ambiguous=""
+  if [ -z "$_vpc_repo_lc" ]; then
+    # CMD_REPO did not normalise to owner/name — cannot match the list safely.
+    _vpc_ambiguous="1"
+  else
+    _vpc_first_line=$(printf '%s\n' "$COMMAND" | head -n 1)
+    _vpc_first_unquoted=$(printf '%s' "$_vpc_first_line" \
+      | sed -E 's/"[^"]*"/""/g; s/'"'"'[^'"'"']*'"'"'/'"''"'/g')
+    _vpc_create_seg=$(_vpc_pr_create_segment "$_vpc_first_unquoted")
+    if [ -z "$_vpc_create_seg" ]; then
+      _vpc_ambiguous="1"
+    else
+      # Exactly one --repo/-R flag on the create segment, outside quotes.
+      _vpc_repo_tokens=$(printf '%s\n' "$_vpc_create_seg" \
+        | grep -oE '(^|[[:space:]])(--repo|-R)([[:space:]]+|=)' | wc -l | tr -d ' ')
+      if [ "${_vpc_repo_tokens:-0}" != "1" ]; then
+        _vpc_ambiguous="1"
+      else
+        _vpc_first_repo=""
+        if command -v pr_cmd_target_repo >/dev/null 2>&1; then
+          # Leading space satisfies pr_cmd_target_repo's flag-boundary sed.
+          _vpc_first_repo=$(pr_cmd_target_repo " ${_vpc_create_seg}")
+        else
+          _vpc_first_repo=$(printf '%s' "$_vpc_create_seg" \
+            | sed -nE 's/.*[[:space:]]--repo[[:space:]]+([^[:space:]]+).*/\1/p' | head -1)
+          if [ -z "$_vpc_first_repo" ]; then
+            _vpc_first_repo=$(printf '%s' "$_vpc_create_seg" \
+              | sed -nE 's/.*[[:space:]]--repo=([^[:space:]]+).*/\1/p' | head -1)
+          fi
+          if [ -z "$_vpc_first_repo" ]; then
+            _vpc_first_repo=$(printf '%s' "$_vpc_create_seg" \
+              | sed -nE 's/.*[[:space:]]-R[[:space:]]+([^[:space:]]+).*/\1/p' | head -1)
+          fi
+          if [ -z "$_vpc_first_repo" ]; then
+            _vpc_first_repo=$(printf '%s' "$_vpc_create_seg" \
+              | sed -nE 's/.*[[:space:]]-R=([^[:space:]]+).*/\1/p' | head -1)
+          fi
+        fi
+        _vpc_first_repo_lc=$(_vpc_normalize_repo_slug "$_vpc_first_repo")
+        # Must equal the CLI target. A body-only --repo makes CMD_REPO non-empty
+        # while the create segment has none (or a different flag) — refuse.
+        if [ -z "$_vpc_first_repo_lc" ] || [ "$_vpc_first_repo_lc" != "$_vpc_repo_lc" ]; then
+          _vpc_ambiguous="1"
+        fi
+      fi
+    fi
+  fi
+
+  if [ -z "$_vpc_ambiguous" ]; then
+    # The registry WINS, and the check must cover every registry shape the
+    # framework supports: `repo: x`, a block `repos:` list, an inline
+    # `repos: [a, b]`, and any of those with a trailing comment (#1451 B2).
+    # A hand-rolled grep missed the inline and commented forms, so reuse the
+    # registry parser instead — its field 6 lists every repo for an entry.
+    # Compare normalised owner/name slugs (#1451 B2-b).
+    _vpc_governed=""
+    if [ -f "$HOOK_DIR/_lib-portfolio-paths.sh" ]; then
+      # shellcheck disable=SC1090,SC1091
+      . "$HOOK_DIR/_lib-portfolio-paths.sh"
+    fi
+    if [ -f "$HOOK_DIR/_lib-multi-repo-trace.sh" ]; then
+      # shellcheck disable=SC1090,SC1091
+      . "$HOOK_DIR/_lib-multi-repo-trace.sh"
+    fi
+    if command -v _mrt_parse_registry >/dev/null 2>&1; then
+      _vpc_all_repos=""
+      while IFS= read -r _vpc_reg_raw; do
+        [ -n "$_vpc_reg_raw" ] || continue
+        _vpc_reg_raw=$(printf '%s' "$_vpc_reg_raw" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        _vpc_reg_lc=$(_vpc_normalize_repo_slug "$_vpc_reg_raw")
+        if [ -z "$_vpc_reg_lc" ]; then
+          echo "NOTE: validate-pr-create.sh: ignoring registry repo entry '$_vpc_reg_raw' (not owner/name after normalisation)." >&2
+          continue
+        fi
+        _vpc_all_repos=$(printf '%s\n%s' "$_vpc_all_repos" "$_vpc_reg_lc")
+      done <<EOF
+$(_mrt_parse_registry 2>/dev/null | cut -d'|' -f6 | tr ',' '\n')
+EOF
+      case "
+$_vpc_all_repos
+" in
+        *"
+$_vpc_repo_lc
+"*) _vpc_governed="1" ;;
+      esac
+    else
+      # No parser available: fail closed rather than exempt on a registry we
+      # could not read (#1451 B2, suggested). An unreadable registry must not
+      # be indistinguishable from an empty one.
+      _vpc_governed="1"
+    fi
+
+    if [ -z "$_vpc_governed" ]; then
+      # A-2: listing this checkout's own origin must not disable the local
+      # title check. Resolve origin once; ignore matching list entries.
+      _vpc_origin_lc=""
+      if command -v git_origin_repo >/dev/null 2>&1; then
+        _vpc_origin_lc=$(_vpc_normalize_repo_slug "$(git_origin_repo "$PWD" 2>/dev/null || true)")
+      fi
+      while IFS= read -r _vpc_listed; do
+        [ -n "$_vpc_listed" ] || continue
+        _vpc_listed_lc=$(_vpc_normalize_repo_slug "$_vpc_listed")
+        if [ -z "$_vpc_listed_lc" ]; then
+          echo "NOTE: validate-pr-create.sh: ignoring external_contributions entry '$_vpc_listed' (not owner/name after normalisation)." >&2
+          continue
+        fi
+        if [ -n "$_vpc_origin_lc" ] && [ "$_vpc_listed_lc" = "$_vpc_origin_lc" ]; then
+          echo "NOTE: validate-pr-create.sh: ignoring external_contributions entry '$_vpc_listed' (matches this checkout's origin; cannot disable the local title check)." >&2
+          continue
+        fi
+        if [ "$_vpc_listed_lc" = "$_vpc_repo_lc" ]; then
+          EXTERNAL_TARGET="1"
+          break
+        fi
+      done <<EOF
+$(config_get '.external_contributions[]' 2>/dev/null)
+EOF
+    fi
+  fi
+  unset _vpc_repo_lc _vpc_ambiguous _vpc_first_line _vpc_first_unquoted \
+        _vpc_create_seg _vpc_repo_tokens _vpc_first_repo _vpc_first_repo_lc \
+        _vpc_governed _vpc_all_repos _vpc_reg_raw _vpc_reg_lc _vpc_listed \
+        _vpc_listed_lc _vpc_origin_lc
+fi
+
 TICKET_REF=""
-if [ -n "$TITLE" ]; then
+if [ -n "$EXTERNAL_TARGET" ]; then
+  echo "NOTE: validate-pr-create.sh: ${CMD_REPO} is listed in .external_contributions — this framework's PR-title convention is not applied. Follow that project's own CONTRIBUTING.md." >&2
+elif [ -n "$TITLE" ]; then
   if ! echo "$TITLE" | grep -qE "^(${PR_TYPES})\(([A-Z]{2,10}-[0-9]+|#[0-9]+)\)!?:"; then
     ERRORS="${ERRORS}PR title '$TITLE' doesn't match format: type(TICKET-ID): description\n"
     ERRORS="${ERRORS}Accepted types (from .claude/project-config.*.json → .pr.title_type_whitelist): ${PR_TYPES//|/, }\n"
@@ -860,6 +1076,10 @@ if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "main" ] && [ "$CURRENT_BR
   # `sync(#N):`, which the title check above validates.
   if echo "$CURRENT_BRANCH" | grep -qE '^release/v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$|^sync/main-to-dev-after-v[0-9]+\.[0-9]+\.[0-9]+$'; then
     :  # release-cut or release-sync branch, exempt — fall through to the rest of the validator
+  elif [ -n "$EXTERNAL_TARGET" ]; then
+    :  # External contribution (#1448/#1451 B3): the branch belongs to the
+       # contributor's own fork and the destination project has its own
+       # naming conventions, so a framework ticket ID is not required here.
   elif ! echo "$CURRENT_BRANCH" | grep -qE '[A-Z]{2,10}-[0-9]+|GH-[0-9]+|#[0-9]+'; then
     ERRORS="${ERRORS}Branch '$CURRENT_BRANCH' missing ticket ID.\n"
   fi
