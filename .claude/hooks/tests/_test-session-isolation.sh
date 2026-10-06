@@ -45,3 +45,12 @@ if [ -z "${_APEXYARD_TEST_PIN_DIR:-}" ] || [ ! -d "${_APEXYARD_TEST_PIN_DIR}" ];
 fi
 export APEXYARD_OPS_PIN_DIR="${_APEXYARD_TEST_PIN_DIR}"
 _TEST_SESSION_ISOLATION_SOURCED=1
+
+# #1528 — the leak scans look up remote visibility with `gh api`. A test must
+# never reach the network. Default the test-only lookup command to `false`
+# (lookup fails → fail closed → scan) and set APEXYARD_LEAK_TEST_MODE=1 so
+# the stub is honoured (without the flag production ignores the override).
+# Suites that exercise classification override APEXYARD_LEAK_VISIBILITY_CMD
+# with a stub.
+export APEXYARD_LEAK_TEST_MODE=1
+export APEXYARD_LEAK_VISIBILITY_CMD="${APEXYARD_LEAK_VISIBILITY_CMD:-false}"
