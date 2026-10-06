@@ -123,7 +123,7 @@ payload() {
 invoke() {
   local stdin_json="$1"
   ( cd "$FORK" && unset CLAUDE_CODE_SESSION_ID 2>/dev/null
-    printf '%s' "$stdin_json" | "$FORK/.claude/hooks/inject-project-context.sh" )
+    printf '%s' "$stdin_json" | "$BASH" "$FORK/.claude/hooks/inject-project-context.sh" )
 }
 
 # --- (a) matching path → emits additionalContext with CLAUDE.md, rule handling, skill index
@@ -231,7 +231,7 @@ mv "$WS/CLAUDE.md.bak" "$WS/CLAUDE.md"
 rm -rf "$MARKER_DIR"
 
 # --- (g) broken input / missing registry → exit 0, no output
-OUT=$(printf 'not json at all' | ( cd "$FORK" && "$FORK/.claude/hooks/inject-project-context.sh" ))
+OUT=$(printf 'not json at all' | ( cd "$FORK" && "$BASH" "$FORK/.claude/hooks/inject-project-context.sh" ))
 EXIT_BROKEN=$?
 mv "$FORK/apexyard.projects.yaml" "$FORK/apexyard.projects.yaml.bak"
 OUT2=$(invoke "$(payload s7 "" "" "$WS/src/index.ts")")
@@ -684,6 +684,41 @@ projects:
 YAML
 rm -rf "$MARKER_DIR"
 
+# --- (reg1b) identical relative registries in two ops clones need distinct
+# cache entries: each workspace: is relative to its own portfolio root.
+CLONES="$SB/two-clones"
+for clone in one two; do
+  clone_root="$CLONES/$clone"
+  mkdir -p "$clone_root/.claude/hooks" "$clone_root/workspace/demo"
+  git -C "$clone_root" init -q 2>/dev/null
+  for f in _lib-project-context.sh _lib-multi-repo-trace.sh _lib-portfolio-paths.sh \
+           _lib-read-config.sh _lib-ops-root.sh inject-project-context.sh; do
+    cp "$HOOK_DIR/$f" "$clone_root/.claude/hooks/$f"
+  done
+  : > "$clone_root/onboarding.yaml"
+  cat > "$clone_root/apexyard.projects.yaml" <<'YAML'
+version: 1
+projects:
+  - name: demo
+    repo: acme/demo
+    workspace: workspace/demo
+    status: active
+YAML
+  printf 'CANARY_CLONE_%s\n' "$clone" > "$clone_root/workspace/demo/CLAUDE.md"
+done
+rm -rf "$MARKER_DIR"
+OUT_ONE=$(cd "$CLONES/one" && unset CLAUDE_CODE_SESSION_ID 2>/dev/null
+  payload clone_one "" "" "$CLONES/one/workspace/demo/a.ts" | "$BASH" .claude/hooks/inject-project-context.sh)
+OUT_TWO=$(cd "$CLONES/two" && unset CLAUDE_CODE_SESSION_ID 2>/dev/null
+  payload clone_two "" "" "$CLONES/two/workspace/demo/a.ts" | "$BASH" .claude/hooks/inject-project-context.sh)
+if printf '%s' "$OUT_ONE" | grep -q CANARY_CLONE_one \
+   && printf '%s' "$OUT_TWO" | grep -q CANARY_CLONE_two; then
+  pass_case "(reg1b) identical relative registries resolve in both ops clones"
+else
+  fail_case "(reg1b) shared registry cache" "clone_one_len=${#OUT_ONE} clone_two_len=${#OUT_TWO}"
+fi
+rm -rf "$MARKER_DIR"
+
 # --- (reg2) SIGKILL mid-build: pending marker goes stale; retry injects
 # (PR #1425 finding 2).
 echo 'projctx_emit() { sleep 30; }' >> "$FORK/.claude/hooks/_lib-project-context.sh"
@@ -720,19 +755,78 @@ else
 fi
 rm -rf "$MARKER_DIR"
 
+# --- (reg2b) parallel callers of one stale marker inject exactly once.
+# The stat shim lets every caller observe the old timestamp before any can
+# reclaim it. The rm shim staggers old delete-then-mkdir recovery so its
+# separate callers each remove the previous claim; fixed code never uses it.
+SYNC="$SB/stale-race"
+SHIM="$SYNC/bin"
+mkdir -p "$SHIM" "$SYNC/ready"
+REAL_STAT=$(command -v stat)
+cat > "$SHIM/stat" <<'SH'
+#!/bin/sh
+last=
+for arg do last=$arg; done
+stamp=$("$PROJCTX_TEST_REAL_STAT" "$@") || exit 1
+if [ "$last" = "$PROJCTX_TEST_MARKER" ]; then
+  : > "$PROJCTX_TEST_SYNC/ready/$PROJCTX_TEST_SLOT"
+  n=0
+  while [ "$n" -lt 100 ]; do
+    set -- "$PROJCTX_TEST_SYNC"/ready/*
+    [ "$#" -ge 4 ] && break
+    sleep 0.1
+    n=$((n + 1))
+  done
+  [ "$n" -lt 100 ] || : > "$PROJCTX_TEST_SYNC/barrier-timeout"
+fi
+printf '%s\n' "$stamp"
+SH
+cat > "$SHIM/rm" <<'SH'
+#!/bin/sh
+if [ "${1:-}" = -rf ] && [ "${2:-}" = "$PROJCTX_TEST_MARKER" ]; then
+  sleep "$PROJCTX_TEST_SLOT"
+fi
+exec /bin/rm "$@"
+SH
+chmod +x "$SHIM/stat" "$SHIM/rm"
+RACE_SESS=reg2b
+RACE_SESS_KEY=$(printf '%s' "$RACE_SESS" | cksum | awk '{print $1}')
+RACE_MARKER_KEY=$(printf '%s' 'main|demo' | cksum | awk '{print $1}')
+RACE_MARKER="$MARKER_DIR/injected-$RACE_SESS_KEY-$RACE_MARKER_KEY"
+mkdir -p "$RACE_MARKER"
+touch -t 200001010000 "$RACE_MARKER" 2>/dev/null || touch -d '2000-01-01' "$RACE_MARKER" 2>/dev/null
+PIN=$(payload "$RACE_SESS" "" "" "$WS/src/a.ts")
+for slot in 0 1 2 3; do
+  ( PATH="$SHIM:$PATH" PROJCTX_TEST_REAL_STAT="$REAL_STAT" \
+    PROJCTX_TEST_MARKER="$RACE_MARKER" PROJCTX_TEST_SYNC="$SYNC" \
+    PROJCTX_TEST_SLOT="$slot" invoke "$PIN" > "$SYNC/out$slot" ) &
+done
+wait
+NONEMPTY=0
+for slot in 0 1 2 3; do [ -s "$SYNC/out$slot" ] && NONEMPTY=$((NONEMPTY + 1)); done
+if [ "$NONEMPTY" = 1 ] && [ ! -e "$SYNC/barrier-timeout" ]; then
+  pass_case "(reg2b) four parallel stale-marker callers: exactly one injection"
+else
+  fail_case "(reg2b) stale-marker race" "non-empty outputs: $NONEMPTY barrier_timeout=$([ -e "$SYNC/barrier-timeout" ] && echo yes || echo no)"
+fi
+rm -rf "$MARKER_DIR"
+
 # --- (reg3) empty cache TSV is a miss; next invoke still injects
 # (PR #1425 finding 3).
 rm -rf "$MARKER_DIR"
 mkdir -p "$MARKER_DIR"
-# Build a correct content-hash key for the current registry, plant empty TSV.
-REG_PATH="$FORK/apexyard.projects.yaml"
-KEY=$(cksum < "$REG_PATH" | awk '{print $1}')
-: > "$MARKER_DIR/registry-$KEY.tsv"
+# Seed a real cache entry, then empty it without relying on the key format.
+invoke "$(payload reg3seed "" "" "$WS/src/a.ts")" >/dev/null
+CACHE_FILE=""
+for entry in "$MARKER_DIR"/registry-*.tsv; do
+  [ -f "$entry" ] && CACHE_FILE="$entry"
+done
+[ -n "$CACHE_FILE" ] && : > "$CACHE_FILE"
 OUT=$(invoke "$(payload reg3 "" "" "$WS/src/a.ts")")
-if printf '%s' "$OUT" | grep -q CANARY_CLAUDE_MD_MARKER && [ -s "$MARKER_DIR/registry-$KEY.tsv" ]; then
+if [ -n "$CACHE_FILE" ] && printf '%s' "$OUT" | grep -q CANARY_CLAUDE_MD_MARKER && [ -s "$CACHE_FILE" ]; then
   pass_case "(reg3) empty cache TSV treated as miss; inject + atomic rebuild"
 else
-  fail_case "(reg3) empty cache" "out_len=${#OUT} cache_size=$(wc -c < "$MARKER_DIR/registry-$KEY.tsv" | tr -d ' ')"
+  fail_case "(reg3) empty cache" "out_len=${#OUT} cache_file=$CACHE_FILE"
 fi
 rm -rf "$MARKER_DIR"
 

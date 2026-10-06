@@ -107,7 +107,7 @@ _projctx_path_age_secs() {
 # Try to claim MARKER as a pending directory. On conflict: done → give up;
 # fresh pending → give up (parallel caller owns it); stale pending → reclaim.
 _projctx_claim_marker() {
-  local age
+  local age reclaim_lock moved claimed=1
   if mkdir "$MARKER" 2>/dev/null; then
     return 0
   fi
@@ -116,11 +116,27 @@ _projctx_claim_marker() {
     return 1
   fi
   # Pending without done: reclaim only when older than the stale threshold.
+  # The short lock keeps a second stale observer from moving the new claim.
   if [ -d "$MARKER" ] && [ ! -L "$MARKER" ]; then
     age=$(_projctx_path_age_secs "$MARKER") || age=""
     if [ -n "$age" ] && [ "$age" -ge "$PROJCTX_PENDING_STALE_SECS" ]; then
-      rm -rf "$MARKER" 2>/dev/null
-      mkdir "$MARKER" 2>/dev/null && return 0
+      reclaim_lock="$MARKER.reclaim"
+      mkdir "$reclaim_lock" 2>/dev/null || return 1
+      # Recheck under the lock: a prior caller may have replaced the marker.
+      age=$(_projctx_path_age_secs "$MARKER") || age=""
+      if [ -d "$MARKER" ] && [ ! -L "$MARKER" ] && [ ! -f "$MARKER/done" ] \
+         && [ -n "$age" ] && [ "$age" -ge "$PROJCTX_PENDING_STALE_SECS" ]; then
+        moved=$(mktemp -d "$MARKER.stale.XXXXXX" 2>/dev/null) || moved=""
+        if [ -n "$moved" ]; then
+          # Only the caller that moves the stale directory may claim its path.
+          if mv "$MARKER" "$moved/pending" 2>/dev/null; then
+            mkdir "$MARKER" 2>/dev/null && claimed=0
+          fi
+          rm -rf "$moved" 2>/dev/null
+        fi
+      fi
+      rmdir "$reclaim_lock" 2>/dev/null || true
+      return "$claimed"
     fi
   fi
   return 1

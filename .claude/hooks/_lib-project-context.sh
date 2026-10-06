@@ -48,9 +48,10 @@ projctx_state_dir() {
 
 # ------------------------------------------------------------------------------
 # Internal: name<TAB>absolute-workspace, one per registered project that
-# declares a workspace:. Parsed from the registry once per content hash
-# (cksum) via _mrt_parse_registry, then cached as a flat TSV file so a burst
-# of hook invocations in one session re-reads a small local file instead
+# declares a workspace:. Parsed from the registry once per hash of its
+# content, resolved path, and portfolio root via _mrt_parse_registry, then
+# cached as a flat TSV file so a burst of hook invocations in one session
+# re-reads a small local file instead
 # of re-parsing the registry every time. Empty or malformed cache files are
 # treated as a miss. Writes are atomic (temp file + mv in the same dir).
 # ------------------------------------------------------------------------------
@@ -117,10 +118,17 @@ _projctx_registry_tsv() {
   fi
   [ -f "$registry" ] || return 1
 
-  # Content hash, not mtime+size: a same-length workspace rewrite with a
-  # restored mtime must miss (review finding on PR #1425).
-  local key cache_file state_dir
-  key=$(cksum < "$registry" 2>/dev/null | awk '{print $1}')
+  # Include both the content and its resolution context. Identical relative
+  # registries in separate ops clones must not share absolute workspace TSVs.
+  # Content (not mtime+size) also catches same-length rewrites.
+  local key cache_file state_dir root registry_real root_real
+  root=$(_portfolio_root 2>/dev/null) || root=""
+  registry_real=$(_portfolio_canonicalize "$registry" 2>/dev/null) || return 1
+  root_real=""
+  if [ -n "$root" ]; then
+    root_real=$(_portfolio_canonicalize "$root" 2>/dev/null) || return 1
+  fi
+  key=$({ printf '%s\0%s\0' "$registry_real" "$root_real"; cat "$registry"; } 2>/dev/null | cksum | awk '{print $1}')
   [ -z "$key" ] && key="nokey"
   state_dir=$(projctx_state_dir) || state_dir=""
   cache_file=""
@@ -137,8 +145,7 @@ _projctx_registry_tsv() {
 
   command -v _mrt_parse_registry >/dev/null 2>&1 || return 1
 
-  local root name workspace ws_abs content parsed tmp
-  root=$(_portfolio_root 2>/dev/null) || root=""
+  local name workspace ws_abs content parsed tmp
   content=""
   # Heredoc, not `< <(`: this library is sourced by POSIX-mode shells
   # (test_posix_sourced_libs.sh).
