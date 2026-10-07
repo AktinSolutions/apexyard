@@ -1,7 +1,8 @@
 #!/bin/bash
 # AgDR-0216 must state the decision, the options and the limits that the
-# resolver design depends on. A later commit adds the superseded notes in the
-# older AgDRs to this test.
+# resolver design depends on. The older AgDRs that it supersedes or amends
+# must carry a note that says so, and the CHANGELOG must tell adopters what to
+# do.
 
 SRC_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 AGDR="$SRC_ROOT/docs/agdr/AgDR-0216-ticket-marker-in-worktree-git-dir.md"
@@ -41,6 +42,20 @@ has "partly supersedes AgDR-0066 and AgDR-0141" 'partly supersedes AgDR-0066 and
 has "amends AgDR-0168 and AgDR-0017" 'amends AgDR-0168 and AgDR-0017'
 has "workspace roots and every .git must be real" 'must be real directories'
 has "ambiguous common dir is refused" 'ambiguous'
+
+# The older AgDRs say where AgDR-0216 changes them.
+note() {
+  local name="$1" file="$2" rx="$3"
+  if [ ! -f "$SRC_ROOT/docs/agdr/$file" ]; then bad "$name" "$file is missing"; return; fi
+  if grep -Eq -- "$rx" "$SRC_ROOT/docs/agdr/$file"; then ok "$name"; else bad "$name" "$file has no note matching /$rx/"; fi
+}
+note "AgDR-0066 is partly superseded by AgDR-0216" AgDR-0066-per-worktree-ticket-marker-tier.md '^> \*\*Partly superseded by AgDR-0216\.'
+note "AgDR-0141 is partly superseded by AgDR-0216" AgDR-0141-normalize-linked-worktree-ops-root.md '^> \*\*Partly superseded by AgDR-0216\.'
+note "AgDR-0168 is amended by AgDR-0216" AgDR-0168-unextractable-target-honors-session-ticket-only.md '^> \*\*Amended by AgDR-0216\.'
+note "AgDR-0017 is amended by AgDR-0216" AgDR-0017-spike-skill-schema-and-exemptions.md '^> \*\*Amended by AgDR-0216\.'
+
+# The CHANGELOG tells adopters to re-read /start-ticket.
+if grep -q 're-read\|read `/start-ticket` again' "$SRC_ROOT/CHANGELOG.md" && grep -q 'AgDR-0216' "$SRC_ROOT/CHANGELOG.md"; then ok "CHANGELOG names AgDR-0216 and the /start-ticket re-read"; else bad "CHANGELOG" "no AgDR-0216 entry with the /start-ticket instruction"; fi
 
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]

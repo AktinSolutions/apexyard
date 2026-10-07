@@ -2,6 +2,8 @@
 
 > In the context of orchestrators fanning out parallel sub-agents on the SAME managed project, facing a last-writer-wins collision on the shared per-project marker (`tickets/<project>`) that silently passes the ticket gate against the wrong ticket, I decided to add a per-worktree marker tier (`tickets/<project>/<safe-branch>`) resolved before the per-project tier, to achieve independent per-agent ticket declarations, accepting that `tickets/<project>` is now a file in single-agent mode and a directory in worktree mode (disambiguated by the hook's `-f` test).
 
+> **Partly superseded by AgDR-0216.** The per-worktree tier `tickets/<project>/<branch>`, the per-project tier and `current-ticket` are replaced by one marker per working tree in that tree's git dir (`apexyard-ticket`). The old files are read only in a main clone, for their own project, until the legacy reader is removed. A linked worktree never reads them. The reasoning about last-writer-wins collisions still stands.
+
 ## Context
 
 The two-tier layout from #41 (`tickets/<project>` → `current-ticket`) fixes *cross-project* concurrency cleanly. It does **not** fix *same-project* concurrency: two agents fanned out on different tickets within one repo both write `tickets/<project>`; last writer wins, and the loser's subsequent hook checks pass against the wrong ticket — silently, no error. This blocks orchestrator throughput (the only workaround is serialising tickets per project). Confirmed real in `require-active-ticket.sh` and mirrored in `require-migration-ticket.sh`.

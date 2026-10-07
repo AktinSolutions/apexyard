@@ -1,3 +1,17 @@
+## [Unreleased]
+
+Behaviour change: the active ticket now lives in each working tree's git dir (#1576, AgDR-0216). `/start-ticket` writes `apexyard-ticket` into the git dir of the tree you run it in. Each linked worktree needs its own `/start-ticket`. `git worktree remove` deletes the marker with the worktree.
+
+After you run `/update`, read `/start-ticket` again. Old markers under `.claude/session/` still work in a main clone, for their own project only. A SessionStart notice lists them. A linked worktree, and a project that relied only on `current-ticket`, blocks once until you run `/start-ticket` there. A future release removes the old reader.
+
+### Changed
+
+- The ticket gate, the migration gate, the AgDR spike exemptions, the tracker-repo guard and `/status` read the marker through one resolver. It finds the git dir without a git process, so `GIT_DIR` and git config cannot redirect it.
+- The gate now blocks unregistered repos under `workspace/`, submodules and nested repos, symlinked roots or `.git`, and repos owned by another user. Each block names its reason.
+- A spike marker in one project no longer exempts a change in another project.
+- `/fan-out` creates each writer worktree from its task's own repo and writes the marker into it.
+- `/approve-merge` offers to remove the merged PR's worktree. It asks first and never uses `--force`.
+
 ## [v5.7.0] — 2026-09-27
 
 Minor release — 2 features, 9 fixes, 1 improvement.
