@@ -116,64 +116,41 @@ if [ -n "$ops_root" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Active ticket — read marker.
+# 3. Active ticket: read the marker of the working tree you are in.
 #
-# Per apexyard#41: per-project marker first if workspace is a real name,
-# then fall back to the ops-level current-ticket. Each marker is a
-# key=value file written by /start-ticket; we only need `number` and
-# `title` here.
+# Each working tree keeps its own marker in its git dir (AgDR-0216). The
+# shared resolver finds and validates it. A directory outside the ops fork and
+# its registered clones has no marker. Each marker is a key=value file
+# written by /start-ticket; we only need `number`, `title` and `repo` here.
 # ---------------------------------------------------------------------------
-read_marker_field() {
-  # Reads `key=value` lines, tolerating trailing CR. Outputs the value
-  # for the first matching key only. No grep/awk shell-injection risk —
-  # marker files are written by /start-ticket and never user-input.
-  local file="$1" key="$2" line v
-  [ -f "$file" ] || return 1
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line%$'\r'}"
-    case "$line" in
-      "$key="*)
-        v="${line#"$key="}"
-        printf '%s' "$v"
-        return 0
-        ;;
-    esac
-  done < "$file"
-  return 1
-}
-
 ticket=""
 ticket_repo=""
 ticket_number=""
 
-if [ -n "$ops_root" ]; then
-  marker_paths=()
-  case "$workspace" in
-    "(ops)"|"(unknown)"|"")
-      ;;
-    *)
-      marker_paths+=("$ops_root/.claude/session/tickets/$workspace")
-      ;;
-  esac
-  marker_paths+=("$ops_root/.claude/session/current-ticket")
-
-  for m in "${marker_paths[@]}"; do
-    if [ -f "$m" ]; then
-      n=$(read_marker_field "$m" number || true)
-      t=$(read_marker_field "$m" title  || true)
-      r=$(read_marker_field "$m" repo   || true)
-      if [ -n "$n" ]; then
-        ticket_number="$n"
-        ticket_repo="$r"
-        if [ -n "$t" ]; then
-          ticket="#${n} — ${t}"
-        else
-          ticket="#${n}"
-        fi
-        break
+if [ -n "$ops_root" ] && [ -f "$ops_root/.claude/hooks/_lib-active-ticket.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$ops_root/.claude/hooks/_lib-active-ticket.sh"
+  # The portfolio paths resolve against the process working directory, so the
+  # lookup runs from the ops root. The subshell keeps this script in place.
+  m=$(cd "$ops_root" 2>/dev/null \
+    && . "$ops_root/.claude/hooks/_lib-active-ticket.sh" \
+    && active_ticket_init "$ops_root" \
+    && active_ticket_lookup "$cwd" \
+    && printf '%s' "$REPLY") || m=""
+  if [ -n "$m" ]; then
+    n=$(active_ticket_read_field "$m" number && printf '%s' "$REPLY" || true)
+    t=$(active_ticket_read_field "$m" title && printf '%s' "$REPLY" || true)
+    r=$(active_ticket_read_field "$m" repo && printf '%s' "$REPLY" || true)
+    if [ -n "$n" ]; then
+      ticket_number="$n"
+      ticket_repo="$r"
+      if [ -n "$t" ]; then
+        ticket="#${n} — ${t}"
+      else
+        ticket="#${n}"
       fi
     fi
-  done
+  fi
 fi
 
 if [ -z "$ticket" ]; then

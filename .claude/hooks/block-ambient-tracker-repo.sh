@@ -154,18 +154,36 @@ fi
 OPS_ROOT=$(resolve_ops_root "$PWD")
 [ -n "$OPS_ROOT" ] || exit 0
 
-# Read the repo pins from active ticket markers. A marker without repo= is the
-# legacy/framework fallback and cannot establish a managed-project target.
-MARKER_DIR="$OPS_ROOT/.claude/session"
+# The repo pins come from the marker of the working tree that runs the
+# command. A project tree is judged by its own marker only. From the ops fork,
+# which has no marker of its own for a project ticket, the markers of the
+# registered workspace clones and their linked worktrees count too. This guard
+# only adds blocks, so reading more markers is safe. A tree with no marker, or
+# a marker without repo=, cannot establish a managed-project target.
+if [ -f "$HOOK_DIR/_lib-active-ticket.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$HOOK_DIR/_lib-active-ticket.sh"
+else
+  exit 0
+fi
+active_ticket_init "$PWD" || exit 0
 REPOS=""
-for marker in "$MARKER_DIR/current-ticket" "$MARKER_DIR/tickets"/* "$MARKER_DIR/tickets"/*/*; do
-  [ -f "$marker" ] || continue
-  repo=$(sed -n 's/^repo=//p' "$marker" | head -1)
-  [ -n "$repo" ] && REPOS="${REPOS}${repo}\n"
-done
+if active_ticket_lookup_cwd; then
+  if active_ticket_read_field "$REPLY" repo && [ -n "$REPLY" ]; then
+    REPOS="${REPLY}"$'\n'
+  fi
+fi
+if [ -n "$AT_GITDIR" ] && [ -z "$AT_PROJECT" ] && active_ticket_project_markers; then
+  while IFS= read -r marker; do
+    [ -n "$marker" ] || continue
+    if active_ticket_read_field "$marker" repo && [ -n "$REPLY" ]; then
+      REPOS="${REPOS}${REPLY}"$'\n'
+    fi
+  done <<< "$REPLY"
+fi
 [ -n "$REPOS" ] || exit 0
 
-UNIQUE_REPOS=$(printf '%b' "$REPOS" | sed '/^$/d' | sort -u)
+UNIQUE_REPOS=$(printf '%s' "$REPOS" | sed '/^$/d' | sort -u)
 COUNT=$(printf '%s\n' "$UNIQUE_REPOS" | sed '/^$/d' | wc -l | tr -d ' ')
 
 # If exactly one active target matches the checkout's origin, ambient gh is

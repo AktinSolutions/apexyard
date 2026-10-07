@@ -676,19 +676,47 @@ active_ticket_gitdir() {
 # from the ops fork. Each clone is validated, so an unregistered repo is never
 # read. Builtins only.
 active_ticket_project_markers() {
-  local d g m out=""
+  local d g m t s name out=""
   REPLY=""
-  [ -n "$_AT_WS" ] && [ -d "$_AT_WS" ] || return 1
-  for d in "$_AT_WS"/*/; do
-    d="${d%/}"
-    [ -d "$d" ] || continue
-    active_ticket_gitdir "$d" || continue
-    g="$AT_GITDIR"
-    if [ -f "$g/apexyard-ticket" ] && [ ! -L "$g/apexyard-ticket" ]; then out="$out$g/apexyard-ticket"$'\n'; fi
-    for m in "$g"/worktrees/*/apexyard-ticket; do
-      if [ -f "$m" ] && [ ! -L "$m" ]; then out="$out$m"$'\n'; fi
+  if [ -n "$_AT_WS" ] && [ -d "$_AT_WS" ]; then
+    for d in "$_AT_WS"/*/; do
+      d="${d%/}"
+      [ -d "$d" ] || continue
+      active_ticket_gitdir "$d" || continue
+      g="$AT_GITDIR"
+      if [ -f "$g/apexyard-ticket" ] && [ ! -L "$g/apexyard-ticket" ]; then out="$out$g/apexyard-ticket"$'\n'; fi
+      for m in "$g"/worktrees/*/apexyard-ticket; do
+        if [ -f "$m" ] && [ ! -L "$m" ]; then out="$out$m"$'\n'; fi
+      done
     done
-  done
+  fi
+  # Old-layout files, until the legacy reader is removed. After an update,
+  # every adopter has these and no new marker yet. They are returned even
+  # where the legacy rule would refuse them for an edit, because a reader that
+  # only adds blocks gains from seeing more tickets. A current-ticket file
+  # counts whatever repo it names. A tickets/<name> file counts when <name> is
+  # registered, and so does each file in a tickets/<name>/ directory (the old
+  # per-branch form). This part goes away with the legacy reader.
+  s="$_AT_OPS/.claude/session"
+  if [ -n "$_AT_OPS" ] && [ ! -L "$s" ]; then
+    if [ -f "$s/current-ticket" ] && [ ! -L "$s/current-ticket" ]; then out="$out$s/current-ticket"$'\n'; fi
+    if [ -d "$s/tickets" ] && [ ! -L "$s/tickets" ]; then
+      _at_fill_reg
+      for t in "$s/tickets"/*; do
+        name="${t##*/}"
+        if [ -f "$t" ] && [ ! -L "$t" ]; then
+          if _at_reg_scan "$name"; then out="$out$t"$'\n'; fi
+        elif [ -d "$t" ] && [ ! -L "$t" ]; then
+          # The per-branch form tickets/<name>/<branch>.
+          if _at_reg_scan "$name"; then
+            for m in "$t"/*; do
+              if [ -f "$m" ] && [ ! -L "$m" ]; then out="$out$m"$'\n'; fi
+            done
+          fi
+        fi
+      done
+    fi
+  fi
   REPLY="$out"
   [ -n "$out" ]
 }
