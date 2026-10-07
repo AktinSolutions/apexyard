@@ -14,8 +14,10 @@
 #
 # DISCOVERY RUNS NO GIT PROCESS. The lookup reads the same files git reads
 # (.git, <gitdir>/commondir, <gitdir>/gitdir) with shell builtins only. No
-# GIT_* variable and no git config can steer it. The lookup makes 0 forks and
-# 0 execs. A static test (test_active_ticket_process_budget.sh) fails when a
+# GIT_* variable and no git config can steer it. Once the context is filled,
+# the lookup makes 0 forks and 0 execs. The first lookup in a workspace clone
+# may resolve the registry path once per process, and that step can fork. A
+# static test (test_active_ticket_process_budget.sh) fails when a
 # lookup function gains a command substitution, a pipe, a subshell or an
 # external command. The functions that fork on purpose are
 # active_ticket_init and active_ticket_write.
@@ -36,7 +38,9 @@
 # the first source in a process. It never reads OPS_ROOT, WORKSPACE_DIR or
 # the registry path from the environment. Hooks pass them with
 # active_ticket_set_context. Every other caller uses active_ticket_init.
-# shellcheck disable=SC2088
+# SC2034: AT_REASON, AT_GITDIR, AT_TREE, AT_LEGACY_FILE, AT_LEGACY_WHY and the
+# AT_REG_* names are output variables that callers read.
+# shellcheck disable=SC2088,SC2034
 
 # ---------------------------------------------------------------------------
 # Path helpers (builtins only)
@@ -54,9 +58,9 @@ _at_rp() {
     p="${p%/*}"
     [ -n "$p" ] || p=/
   fi
-  CDPATH= builtin cd -P -- "$p" 2>/dev/null || return 1
+  CDPATH='' builtin cd -P -- "$p" 2>/dev/null || return 1
   REPLY="$PWD"
-  if ! CDPATH= builtin cd -- "$o" 2>/dev/null; then
+  if ! CDPATH='' builtin cd -- "$o" 2>/dev/null; then
     REPLY=""
     AT_REASON="cwd unavailable"
     return 1
@@ -94,7 +98,11 @@ _at_lex() {
     esac
     case "$seg" in
       ''|.) ;;
-      ..) out="${out%/*}" ;;
+      ..)
+        # Popping a component hides a link in it, so refuse the link.
+        if [ -L "$out" ]; then _at_fail "symlink in marker path: $out"; return 1; fi
+        out="${out%/*}"
+        ;;
       *) out="$out/$seg" ;;
     esac
   done
@@ -155,26 +163,78 @@ _at_gitfile() {
 # Registry scan (builtins only)
 # ---------------------------------------------------------------------------
 
+# The portfolio library sets _PP_GUARD to the process id when it is sourced.
+# Its outputs are trusted only then, so an inherited _PP_WS or _PP_REG is
+# never used.
+_at_pp_trusted() {
+  [ "${_PP_GUARD[1]:-}" = "$$" ]
+}
+
+# The registry path comes from the portfolio resolver. A relative value is
+# relative to the ops root, as for every portfolio path. Without a trusted
+# resolver the path stays unknown, and the lookup fails closed.
+_at_fill_reg() {
+  [ -z "$_AT_REG" ] || return 0
+  _at_pp_trusted || return 0
+  if [ -z "${_PP_REG:-}" ] && command -v portfolio_resolve_registry_into_var >/dev/null 2>&1; then
+    portfolio_resolve_registry_into_var
+  fi
+  case "${_PP_REG:-}" in
+    '') ;;
+    /*) _AT_REG="$_PP_REG" ;;
+    *) [ -z "$_AT_OPS" ] || _AT_REG="$_AT_OPS/${_PP_REG#./}" ;;
+  esac
+  return 0
+}
+
+# True when <item> is in <set>, a string of items that each start and end with
+# a space. The comparison ignores case, because repo slugs do.
+_at_member() {
+  local was=1 r=1
+  shopt -q nocasematch && was=0
+  shopt -s nocasematch
+  case "$1" in
+    *" $2 "*) r=0 ;;
+  esac
+  [ "$was" = 0 ] || shopt -u nocasematch
+  return "$r"
+}
+
+# Adds one repo slug to the entry's set. Reads the caller's locals.
+_at_reg_add() {
+  local v="$1"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  v="${v#[\"\']}"
+  v="${v%[\"\']}"
+  [ -z "$v" ] || ent_set="$ent_set$v "
+}
+
 # Records the entry that has just ended. Reads the caller's locals.
 _at_reg_flush() {
-  [ -z "$ent_repo" ] || AT_REG_REPOS="$AT_REG_REPOS$ent_repo "
+  AT_REG_REPOS="$AT_REG_REPOS${ent_set# }"
   if [ -n "$want" ] && [ "$ent_name" = "$want" ]; then
     found=0
     AT_REG_REPO="$ent_repo"
+    AT_REG_REPO_SET="$ent_set"
   fi
   ent_name=""
   ent_repo=""
+  ent_set=" "
+  in_repos=0
 }
 
 # Scan the registry for the project <name>. Sets AT_REG_REPO to its repo: value
-# and AT_REG_REPOS to every repo: value, each followed by a space. Keys count
-# only at the indent of an entry's first key, so a nested repo: key in a
-# sub-map never matches. Returns 0 when <name> is registered. An empty <name>
-# only collects AT_REG_REPOS and returns 1.
+# and AT_REG_REPO_SET to every slug of that entry: repo:, each repos: item and
+# primary:. AT_REG_REPOS holds the slugs of every entry. Each slug is followed
+# by a space. Keys count only at the indent of an entry's first key, so a
+# nested repo: key in a sub-map never matches. Returns 0 when <name> is
+# registered. An empty <name> only collects AT_REG_REPOS and returns 1.
 _at_reg_scan() {
-  local want="$1" raw line lead rest sp k v eind="" eset=0 kind="" in_proj=0 found=1
-  local ent_name="" ent_repo=""
+  local want="$1" raw line lead rest sp k v item eind="" eset=0 kind="" in_proj=0 found=1
+  local ent_name="" ent_repo="" ent_set=" " in_repos=0
   AT_REG_REPO=""
+  AT_REG_REPO_SET=" "
   AT_REG_REPOS=" "
   [ -n "${_AT_REG:-}" ] && [ -r "$_AT_REG" ] || return 1
   while IFS= read -r raw || [ -n "$raw" ]; do
@@ -194,6 +254,18 @@ _at_reg_scan() {
     [ "$in_proj" = 1 ] || continue
     lead="${line%%[![:space:]]*}"
     line="${line#"$lead"}"
+    if [ "$in_repos" = 1 ]; then
+      case "$line" in
+        '-'*)
+          if [ "${#lead}" -ge "${#kind}" ]; then
+            rest="${line#-}"
+            _at_reg_add "$rest"
+            continue
+          fi
+          ;;
+      esac
+      in_repos=0
+    fi
     case "$line" in
       '-'*)
         rest="${line#-}"
@@ -212,11 +284,35 @@ _at_reg_scan() {
     v="${line#*:}"
     v="${v#"${v%%[![:space:]]*}"}"
     v="${v%"${v##*[![:space:]]}"}"
-    v="${v#[\"\']}"
-    v="${v%[\"\']}"
     case "$k" in
-      name) ent_name="$v" ;;
-      repo) ent_repo="$v" ;;
+      name)
+        v="${v#[\"\']}"
+        v="${v%[\"\']}"
+        ent_name="$v"
+        ;;
+      repo)
+        v="${v#[\"\']}"
+        v="${v%[\"\']}"
+        ent_repo="$v"
+        _at_reg_add "$v"
+        ;;
+      primary) _at_reg_add "$v" ;;
+      repos)
+        if [ -z "$v" ]; then
+          in_repos=1
+        else
+          v="${v#\[}"
+          v="${v%\]}"
+          while [ -n "$v" ]; do
+            item="${v%%,*}"
+            case "$v" in
+              *,*) v="${v#*,}" ;;
+              *) v="" ;;
+            esac
+            _at_reg_add "$item"
+          done
+        fi
+        ;;
     esac
   done < "$_AT_REG"
   [ "$in_proj" = 0 ] || _at_reg_flush
@@ -249,9 +345,11 @@ _at_reset_state() {
   AT_REASON=""
   AT_GITDIR=""
   AT_TREE=""
+  AT_PROJECT=""
   AT_LEGACY_FILE=""
   AT_LEGACY_WHY=""
   AT_REG_REPO=""
+  AT_REG_REPO_SET=" "
   AT_REG_REPOS=" "
   _at_memo_clear
 }
@@ -352,7 +450,7 @@ _at_validate_w_body() {
         esac
         if [ "$wslink" = 1 ]; then _at_fail "symlink in marker path: $_AT_WS"; return 1; fi
         [[ $name =~ $_AT_NAME_RE ]] || { _at_fail "unregistered common dir"; return 1; }
-        [ -n "$_AT_REG" ] || _AT_REG="${_PP_REG:-}"
+        _at_fill_reg
         _at_reg_scan "$name" || { _at_fail "unregistered common dir"; return 1; }
         if [ -L "$_AT_WS/$name" ] || [ -L "$_AT_WS/$name/.git" ]; then
           _at_fail "symlink in marker path: $_AT_WS/$name"
@@ -433,6 +531,7 @@ _at_resolve_g() {
   AT_REASON=""
   AT_GITDIR=""
   AT_TREE=""
+  AT_PROJECT=""
   AT_LEGACY_FILE=""
   AT_LEGACY_WHY=""
   _at_lex "$1" || { [ -n "$AT_REASON" ] || AT_REASON="unresolvable path"; return 1; }
@@ -470,6 +569,7 @@ _at_resolve_g() {
   done
   AT_GITDIR="$_AT_MG"
   AT_TREE="$_AT_MT"
+  AT_PROJECT="$_AT_MN"
   return 0
 }
 
@@ -509,13 +609,15 @@ _at_legacy() {
     esac
   done < "$cand"
   if [ -z "$repo" ] || [ -z "$num" ]; then AT_LEGACY_WHY="missing repo= or number="; return 1; fi
+  # The same ticket-id shape that the writer and the migration gate accept.
+  num="${num#\#}"
   case "$num" in
-    *[!0-9]*) AT_LEGACY_WHY="number= is not all digits"; return 1 ;;
+    ''|*[!A-Za-z0-9_-]*) AT_LEGACY_WHY="number= is not a ticket id"; return 1 ;;
   esac
-  [ -n "$_AT_REG" ] || _AT_REG="${_PP_REG:-}"
+  _at_fill_reg
   if [ -n "$_AT_MN" ]; then
     _at_reg_scan "$_AT_MN" || { AT_LEGACY_WHY="project not in the registry"; return 1; }
-    if [ "$repo" != "$AT_REG_REPO" ]; then AT_LEGACY_WHY="repo mismatch"; return 1; fi
+    _at_member "$AT_REG_REPO_SET" "$repo" || { AT_LEGACY_WHY="repo mismatch"; return 1; }
   else
     # No registry file means no managed project can own the repo. A registry
     # that exists but cannot be read, or an unknown path, fails closed.
@@ -524,9 +626,10 @@ _at_legacy() {
       return 1
     fi
     _at_reg_scan ""
-    case "$AT_REG_REPOS" in
-      *" $repo "*) AT_LEGACY_WHY="current-ticket names a managed project"; return 1 ;;
-    esac
+    if _at_member "$AT_REG_REPOS" "$repo"; then
+      AT_LEGACY_WHY="current-ticket names a managed project"
+      return 1
+    fi
   fi
   REPLY="$cand"
 }
@@ -566,6 +669,41 @@ active_ticket_gitdir() {
   return 1
 }
 
+
+# REPLY holds the marker file of every registered workspace clone and of each
+# linked worktree of it, one path per line. A reader that must see every
+# ticket in the portfolio, such as a guard that only adds blocks, uses this
+# from the ops fork. Each clone is validated, so an unregistered repo is never
+# read. Builtins only.
+active_ticket_project_markers() {
+  local d g m out=""
+  REPLY=""
+  [ -n "$_AT_WS" ] && [ -d "$_AT_WS" ] || return 1
+  for d in "$_AT_WS"/*/; do
+    d="${d%/}"
+    [ -d "$d" ] || continue
+    active_ticket_gitdir "$d" || continue
+    g="$AT_GITDIR"
+    if [ -f "$g/apexyard-ticket" ] && [ ! -L "$g/apexyard-ticket" ]; then out="$out$g/apexyard-ticket"$'\n'; fi
+    for m in "$g"/worktrees/*/apexyard-ticket; do
+      if [ -f "$m" ] && [ ! -L "$m" ]; then out="$out$m"$'\n'; fi
+    done
+  done
+  REPLY="$out"
+  [ -n "$out" ]
+}
+
+# Compatibility wrapper for callers that use $( ). An empty argument is an
+# unextractable write target. It is judged against the hook's working
+# directory.
+active_ticket_marker_for_path() {
+  if [ -z "${1:-}" ]; then
+    active_ticket_lookup_cwd
+  else
+    active_ticket_lookup "$1"
+  fi
+  printf '%s' "$REPLY"
+}
 
 # True when <path> names the marker file or its temporary file in the git dir
 # of a registered tree. The only write the gates allow into a .git directory.
@@ -641,9 +779,13 @@ active_ticket_init() {
   if command -v portfolio_resolve_into_vars >/dev/null 2>&1; then
     portfolio_resolve_into_vars
   fi
-  [ -n "$_AT_WS" ] || _AT_WS="${_PP_WS:-}"
+  if _at_pp_trusted; then
+    case "${_PP_WS:-}" in
+      /*) [ -n "$_AT_WS" ] || _AT_WS="$_PP_WS" ;;
+    esac
+  fi
   [ -n "$_AT_WS" ] || [ -z "$_AT_OPS" ] || _AT_WS="$_AT_OPS/workspace"
-  [ -n "$_AT_REG" ] || _AT_REG="${_PP_REG:-}"
+  _at_fill_reg
   [ -n "$_AT_OPS" ] && [ -n "$_AT_WS" ]
 }
 
@@ -700,6 +842,13 @@ active_ticket_write() {
     echo "apexyard: cannot write ticket marker in $G: write failed.$hint" >&2
     return 1
   }
+  # mv would move the temporary file into a directory of that name and report
+  # success, so refuse anything that is not a regular file.
+  if [ -e "$G/apexyard-ticket" ] && [ ! -f "$G/apexyard-ticket" ]; then
+    rm -f "$tmp"
+    echo "apexyard: cannot write ticket marker in $G: apexyard-ticket exists and is not a regular file" >&2
+    return 1
+  fi
   if ! chmod 0644 "$tmp" 2>/dev/null || ! mv -f "$tmp" "$G/apexyard-ticket" 2>/dev/null; then
     rm -f "$tmp"
     echo "apexyard: cannot write ticket marker in $G: chmod or mv failed.$hint" >&2
@@ -768,8 +917,8 @@ _atl_anchor() {
 
 _atl_project_for_resolved_path() {
   local path="$1" project="" tail ws ops
-  ws=$(_atl_anchor "${WORKSPACE_DIR:-}")
-  ops=$(_atl_anchor "${OPS_ROOT:-}")
+  ws=$(_atl_anchor "${_AT_WS:-}")
+  ops=$(_atl_anchor "${_AT_OPS:-}")
   if [ -n "$ws" ]; then
     case "$path" in
       "$ws"/*) tail="${path#"$ws"/}"; project="${tail%%/*}" ;;
@@ -792,54 +941,4 @@ active_ticket_project_for_path() {
   resolved=$(_atl_resolve_path "$1")
   [ -n "$resolved" ] || return 0
   _atl_project_for_resolved_path "$resolved"
-}
-
-_atl_existing_dir() {
-  local dir="$1"
-  while [ -n "$dir" ] && [ "$dir" != "/" ] && [ ! -d "$dir" ]; do
-    dir=$(dirname "$dir")
-  done
-  [ -d "$dir" ] && printf '%s' "$dir"
-}
-
-# The tiered marker lookup that the gates use today. The gates switch to
-# active_ticket_lookup in a later commit, and this function then becomes a
-# thin wrapper around it.
-active_ticket_marker_for_path() {
-  local raw="$1" resolved project="" marker="" wt safe dir gd gcd
-  resolved=$(_atl_resolve_path "$raw")
-  local home="${MARKER_HOME:-${OPS_ROOT:-${REPO_ROOT:-.}}}"
-  # An empty $resolved has two causes. An empty $raw is an unextractable Bash
-  # write target, and the ops-level current-ticket fallback still gates it.
-  # A non-empty $raw that failed to resolve (~user, ~+, ~-) must return an
-  # empty marker, so the migration gate refuses it instead of using the
-  # ticket of a different project.
-  if [ -n "$resolved" ]; then
-    project=$(_atl_project_for_resolved_path "$resolved")
-  fi
-
-  if [ -n "$project" ]; then
-    wt="${CLAUDE_WORKTREE_BRANCH:-}"
-    if [ -z "$wt" ]; then
-      dir=$(_atl_existing_dir "$(dirname "$resolved")")
-      gd=$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null)
-      gcd=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
-      if [ -n "$gd" ] && [ "$gd" != "$gcd" ]; then
-        wt=$(git -C "$dir" branch --show-current 2>/dev/null)
-      fi
-    fi
-    if [ -n "$wt" ]; then
-      safe="${wt//\//__}"
-      marker="$home/.claude/session/tickets/$project/$safe"
-      [ -f "$marker" ] || marker=""
-    fi
-  fi
-
-  if [ -z "$marker" ] && [ -n "$project" ] && [ -f "$home/.claude/session/tickets/$project" ]; then
-    marker="$home/.claude/session/tickets/$project"
-  elif [ -z "$marker" ] && { [ -n "$resolved" ] || [ -z "$raw" ]; } \
-    && [ -f "$home/.claude/session/current-ticket" ]; then
-    marker="$home/.claude/session/current-ticket"
-  fi
-  printf '%s' "$marker"
 }

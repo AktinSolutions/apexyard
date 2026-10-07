@@ -12,17 +12,20 @@ When this skill writes a durable artifact, read .claude/rules/writing-standard.m
 
 # /start-ticket - Declare the Active Ticket
 
-Writes a session marker so the `require-active-ticket.sh` PreToolUse hook permits Edit/Write on code paths. Without it, the hook blocks edits to anything outside `.claude/`, `docs/`, `projects/*/docs/`, and `*.md`.
+Writes the active-ticket marker for one working tree, so the `require-active-ticket.sh` PreToolUse hook permits Edit/Write on code paths in that tree. Without it, the hook blocks edits to anything outside `.claude/`, `docs/`, `projects/*/docs/`, and `*.md`.
 
-Marker layout (apexyard#41 + #513):
+Each working tree keeps its own marker in its own git dir (AgDR-0216):
 
-| Path | When the hook uses it |
-|------|----------------------|
-| `<ops_root>/.claude/session/tickets/<project>/<safe-branch>` | **Tier 0 (#513).** Edit is under `<ops_root>/workspace/<project>/` AND the file's repo is on a git-worktree branch (or `CLAUDE_WORKTREE_BRANCH` is set). Lets parallel agents on the *same* project hold independent tickets. `safe-branch` = branch with `/`→`__`. |
-| `<ops_root>/.claude/session/tickets/<project>` | **Tier 1.** Edit is under `<ops_root>/workspace/<project>/` AND this per-project marker exists (as a FILE). Single-agent default. |
-| `<ops_root>/.claude/session/current-ticket` | **Tier 2.** Fallback. Checked if neither above matched. Also the marker for ops-repo framework edits (no `workspace/<name>/` prefix). |
+| Working tree | Marker path |
+|--------------|-------------|
+| Main clone (the ops fork, or `workspace/<project>/`) | `<repo>/.git/apexyard-ticket` |
+| Linked worktree (`git worktree add`) | `<repo>/.git/worktrees/<id>/apexyard-ticket` |
 
-All markers live in the ops fork (gitignored). No more `.claude/session/` inside each managed-project clone. `tickets/<project>` is a FILE (tier 1) or a DIRECTORY holding `<safe-branch>` markers (tier 0) — the hook's `-f` tests keep the two from colliding.
+One tree holds one ticket. Parallel sessions on one project no longer overwrite each other, because each linked worktree has its own marker. `git worktree remove` deletes the marker with the worktree. The marker is never tracked, so it does not appear in `git status`.
+
+The hook accepts a git dir only for the ops fork or a registered `workspace/<project>/` clone. The marker is a process gate. Anyone with write access to the git dir can forge it. It is not an authorization boundary.
+
+Old-layout markers under `<ops_root>/.claude/session/` (`current-ticket`, `tickets/<project>`) still work in a main clone, for their own project only, until the legacy reader is removed. Step 4d offers to move one.
 
 This is the mechanical enforcement of the Pre-Build Gate in `.claude/rules/workflow-gates.md` — "do not start coding until the ticket exists".
 
@@ -86,7 +89,7 @@ Match the convention in `.claude/rules/git-conventions.md`.
 
 ### 4. Resolve the target marker
 
-Per apexyard#41, the marker path depends on whether the ticket's tracker repo matches a registered managed project.
+The marker lives in the git dir of the working tree you are in. A ticket on a managed project's repo is declared from that project's clone, or from one of its worktrees.
 
 #### 4a. Locate the ops root
 
@@ -143,54 +146,40 @@ Notes on the fallback:
 
 `$project` is now either a registered project name (e.g. `sample-app`, `demo-svc`) or empty (ticket's tracker repo isn't registered — typically because the ticket is on the ops fork itself, or a repo that's not under management).
 
-#### 4c. Pick the marker path
+#### 4c. Pick the working tree
 
-Three tiers (apexyard#41 + #513). When the ticket maps to a registered project
-AND this session is running inside a **git worktree** (parallel agents fanned
-out on the same project), write a per-worktree marker so two agents on the same
-project don't overwrite each other's ticket (last-writer-wins). Otherwise write
-the per-project file (single-agent — unchanged), or the ops fallback.
+The marker goes into the tree that holds the code you will change.
+
+- Run the skill from inside the tree, and use `.` as the tree.
+- When the ticket maps to a registered project (step 4b) and you run from the ops root, use `workspace/<project>` as the tree.
+- A ticket on the ops fork itself uses the ops root, or the linked worktree of the ops fork you work in.
 
 ```bash
-if [ -n "$project" ]; then
-  # Detect a worktree: prefer the harness-set env var, else check whether the
-  # current checkout is a LINKED worktree (not the main working tree). Compare
-  # the ABSOLUTE git-dir against the ABSOLUTE common-dir — they differ only in a
-  # linked worktree. The absolute forms matter: a plain --git-dir vs
-  # --git-common-dir comparison false-positives in the main checkout (one comes
-  # back absolute, the other relative). This is the SAME detection the
-  # require-active-ticket.sh / require-migration-ticket.sh read side uses.
-  wt_branch="${CLAUDE_WORKTREE_BRANCH:-}"
-  if [ -z "$wt_branch" ]; then
-    gd=$(git rev-parse --absolute-git-dir 2>/dev/null)
-    gcd=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
-    if [ -n "$gd" ] && [ "$gd" != "$gcd" ]; then
-      wt_branch=$(git branch --show-current 2>/dev/null)
-    fi
-  fi
-
-  if [ -n "$wt_branch" ]; then
-    safe_branch="${wt_branch//\//__}"          # '/' → '__' filesystem-safe
-    marker="$ops_root/.claude/session/tickets/$project/$safe_branch"
-  else
-    marker="$ops_root/.claude/session/tickets/$project"
-  fi
-  mkdir -p "$(dirname "$marker")"
+if [ -n "$project" ] && [ "$PWD" = "$ops_root" ]; then
+  tree="$ops_root/workspace/$project"
 else
-  marker="$ops_root/.claude/session/current-ticket"
-  mkdir -p "$(dirname "$marker")"
+  tree="$PWD"
 fi
 ```
 
-Note: `tickets/$project` is a FILE in single-agent mode and a DIRECTORY in
-worktree mode (it holds the per-branch markers). If you're switching a project
-from single-agent to worktree mode and `tickets/$project` already exists as a
-file, remove it first (`rm "$ops_root/.claude/session/tickets/$project"`) so the
-directory can be created.
+#### 4d. Offer to move an old marker
+
+If an old-layout file exists for this project (`$ops_root/.claude/session/tickets/<project>`), or for the ops fork (`$ops_root/.claude/session/current-ticket`), ask with `AskUserQuestion`:
+
+> An old marker for `<repo>#<number>` exists. Write it to this tree and delete the old file?
+
+On yes, use the old file's `repo` and `number` for step 5, then delete the old file. On no, continue with the ticket from step 1 and leave the old file. Never move a marker without asking.
 
 ### 5. Write the marker
 
-Write these key=value lines to the path resolved in step 4c:
+The marker is written by one function, `active_ticket_write`, in `.claude/hooks/_lib-active-ticket.sh`. Run it through `bash -c`, with the values as arguments, so a title with quotes or newlines cannot break the command:
+
+```bash
+bash -c '. "$1/.claude/hooks/_lib-active-ticket.sh" && active_ticket_write "$2" "$3" "$4" "$5" "$6" "$7"' _ \
+  "$ops_root" "$tree" "<owner/repo>" "<number>" "<title>" "<url>" "<branch>"
+```
+
+The function validates the tree, then writes these lines atomically into the tree's git dir:
 
 ```
 repo=<owner/repo>
@@ -200,6 +189,10 @@ url=<url>
 suggested_branch=<branch>
 started_at=<ISO-8601>
 ```
+
+It refuses a tree that is not the ops fork or a registered clone, a symlink in the path, a repo owned by another user, and a malformed `.git` file. It prints the reason to stderr. If it prints a hint about the sandbox, the session may not write into the git dir. Stop and tell the user. See AgDR-0216 for the allowlist the user can add.
+
+Do NOT write the marker with the Edit or Write tool. `.git` is a protected path for those tools.
 
 ### 6. Move the board card to "In progress" (opt-in)
 
@@ -218,11 +211,11 @@ returns 0 — it never blocks the ticket start.
 
 ### 7. Confirm to the User
 
-Output a two-line confirmation that names the marker path so the user sees which scope this ticket is active on:
+Output a confirmation that names the marker path, so the user sees which working tree this ticket governs:
 
 ```
 Active ticket: <owner/repo>#<number> — <title>
-Marker: <marker>  (per-project / ops fallback)
+Marker: <tree git dir>/apexyard-ticket  (this working tree only)
 Suggested branch: <branch>
 ```
 
@@ -230,12 +223,12 @@ Do NOT create the branch automatically. The user may already be on a branch, or 
 
 ## Notes
 
-- `.claude/session/` (including `.claude/session/tickets/`) is gitignored — markers are per-machine, per-clone of the ops fork.
-- Running `/start-ticket` again overwrites the marker at whichever path resolved in step 4c (per-project or fallback). That's how you switch tickets — including jumping between projects (each project's marker lives in its own file, so switching between `sample-app` and `demo-svc` doesn't lose either one's context).
-- To clear a specific project's marker: `rm <ops_root>/.claude/session/tickets/<project>`.
-- To clear the ops-level fallback: `rm <ops_root>/.claude/session/current-ticket`.
-- Exempt paths (`.claude/`, `docs/`, `projects/*/docs/`, any `*.md`) don't need a ticket — the skill is only required before touching source / config / infra.
-- **Migration from pre-#41 layout**: if your workflow still has a `.claude/session/current-ticket` inside a managed-project clone (`workspace/<name>/.claude/session/current-ticket`), it's harmless but no longer read by the hook. Delete it or re-run `/start-ticket` to have the new marker written under the ops fork's `.claude/session/tickets/<name>`.
+- The marker lives in the git dir, so it is per machine and per working tree. It is never committed.
+- Running `/start-ticket` again in the same tree overwrites that tree's marker. That is how you switch tickets. A linked worktree and its main clone hold separate markers.
+- To clear a tree's marker, delete `<git dir>/apexyard-ticket`. `git worktree remove` does it for a linked worktree.
+- A tree needs its own `/start-ticket`. A marker in the main clone does not govern a linked worktree.
+- Exempt paths (`.claude/`, `docs/`, `projects/*/docs/`, any `*.md`) don't need a ticket. The skill is only required before touching source, config, or infra.
+- **Migration from the old layout**: `current-ticket` and `tickets/<project>` files under the ops fork's `.claude/session/` still work in a main clone, for their own project only. A SessionStart notice lists them. Step 4d moves one on request. A future release removes the old reader.
 
 ---
 

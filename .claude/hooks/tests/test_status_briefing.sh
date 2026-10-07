@@ -176,7 +176,7 @@ run_case "unknown-cwd" "$sb" "$unrelated_dir" "" \
 rm -rf "$unrelated_dir"
 
 # ---------------------------------------------------------------------------
-# 4. ops-fallback ticket marker — read from .claude/session/current-ticket
+# 4. ops fork ticket marker — read from the fork git dir
 # ---------------------------------------------------------------------------
 sb=$(make_fork)
 write_marker "$sb" "current-ticket" "me2resh/apexyard" "182" "[Feature] briefing slide"

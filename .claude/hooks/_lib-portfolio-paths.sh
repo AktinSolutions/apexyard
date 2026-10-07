@@ -105,43 +105,53 @@ _portfolio_reset_caches() {
 
 # ------------------------------------------------------------------------------
 # Public: portfolio_resolve_into_vars
-#   Fills _PP_WS (the workspace dir) and _PP_REG (the registry path) in the
-#   current shell, with no command substitution around the call. It computes
-#   the config fingerprint once per process. It reads the session cache files
-#   with shell builtins and falls back to portfolio_workspace_dir and
-#   portfolio_registry on a miss, which also write the cache.
+#   Fills _PP_WS (the workspace dir) in the current shell, with no command
+#   substitution around the call. It computes the config fingerprint once per
+#   process. It reads the session cache files with shell builtins and falls
+#   back to portfolio_workspace_dir on a miss, which also writes the cache.
+#   It fills _PP_REG (the registry path) only from the session cache. Use
+#   portfolio_resolve_registry_into_var when the registry is needed, so a
+#   caller that never reads the registry never pays for resolving it.
 #
-#   The two outputs are lib-internal and unexported. This function never reads
+#   The outputs are lib-internal and unexported. These functions never read
 #   WORKSPACE_DIR, PORTFOLIO_WORKSPACE_DIR or PORTFOLIO_REGISTRY from the
 #   environment.
 # ------------------------------------------------------------------------------
+_portfolio_pp_cached() {
+  # $1 = cache name. Sets REPLY from the session cache file, or returns 1.
+  local f l1="" l2=""
+  REPLY=""
+  [ -z "${APEXYARD_DISABLE_RESOLUTION_CACHE:-}" ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] || return 1
+  [ "$_PP_FP" != "UNKNOWN" ] || return 1
+  f="${APEXYARD_OPS_PIN_DIR:-$HOME/.claude/apexyard}/resolve-cache-${CLAUDE_CODE_SESSION_ID}-$1"
+  [ -f "$f" ] || return 1
+  { IFS= read -r l1; IFS= read -r l2; } < "$f" 2>/dev/null
+  [ -n "$l2" ] && [ "$l1" = "$_PP_FP" ] || return 1
+  REPLY="$l2"
+}
+
 portfolio_resolve_into_vars() {
   [ -z "$_PP_FP" ] || return 0
-  local fp="UNKNOWN" dir f l1 l2 name
+  local fp="UNKNOWN"
   if command -v _resolution_cache_current_fingerprint >/dev/null 2>&1; then
     fp=$(_resolution_cache_current_fingerprint)
   fi
-  _PP_FP="$fp"
-  dir="${APEXYARD_OPS_PIN_DIR:-$HOME/.claude/apexyard}"
-  for name in portfolio-workspace-dir portfolio-registry; do
-    l1=""
-    l2=""
-    f="$dir/resolve-cache-${CLAUDE_CODE_SESSION_ID:-}-$name"
-    if [ -z "${APEXYARD_DISABLE_RESOLUTION_CACHE:-}" ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] \
-       && [ "$fp" != "UNKNOWN" ] && [ -f "$f" ]; then
-      { IFS= read -r l1; IFS= read -r l2; } < "$f" 2>/dev/null
-    fi
-    if [ -z "$l2" ] || [ "$l1" != "$fp" ]; then
-      case "$name" in
-        portfolio-workspace-dir) l2=$(portfolio_workspace_dir 2>/dev/null) ;;
-        *) l2=$(portfolio_registry 2>/dev/null) ;;
-      esac
-    fi
-    case "$name" in
-      portfolio-workspace-dir) _PP_WS="$l2" ;;
-      *) _PP_REG="$l2" ;;
-    esac
-  done
+  _PP_FP="${fp:-UNKNOWN}"
+  if _portfolio_pp_cached portfolio-workspace-dir; then
+    _PP_WS="$REPLY"
+  else
+    _PP_WS=$(portfolio_workspace_dir 2>/dev/null)
+  fi
+  if _portfolio_pp_cached portfolio-registry; then
+    _PP_REG="$REPLY"
+  fi
+}
+
+portfolio_resolve_registry_into_var() {
+  [ -z "$_PP_REG" ] || return 0
+  portfolio_resolve_into_vars
+  [ -z "$_PP_REG" ] || return 0
+  _PP_REG=$(portfolio_registry 2>/dev/null)
 }
 
 case "${_PP_GUARD[1]:-}" in
@@ -449,7 +459,10 @@ _portfolio_resolve_with_session_cache() {
 
   local fp cached
   if command -v _resolution_cache_current_fingerprint >/dev/null 2>&1; then
-    fp=$(_resolution_cache_current_fingerprint)
+    # portfolio_resolve_into_vars has already computed the fingerprint of this
+    # process. Reuse it instead of computing it again.
+    fp="${_PP_FP:-}"
+    [ -n "$fp" ] || fp=$(_resolution_cache_current_fingerprint)
     if [ "$fp" != "UNKNOWN" ]; then
       if cached=$(_resolution_cache_read "$cache_name" "$fp" 2>/dev/null) && [ -n "$cached" ]; then
         printf '%s' "$cached"

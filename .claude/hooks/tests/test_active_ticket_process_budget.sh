@@ -138,6 +138,7 @@ run_all
 BASE="$RESULT"
 BASE_NORM="${BASE//err=0$'\n'/err=0$'\n'}"
 hash -r
+# shellcheck disable=SC2123
 PATH=/nonexistent
 hash -r
 run_all_nopath
@@ -169,6 +170,7 @@ printf 'repo=org/p1\nnumber=9\n' > "$OPS/.claude/session/tickets/p1"
 _at_memo_clear
 active_ticket_lookup "$WS/p1/a.ts"
 legacy_normal="rc=$?:$REPLY"
+# shellcheck disable=SC2123
 PATH=/nonexistent
 hash -r
 _at_memo_clear
@@ -178,6 +180,7 @@ PATH="$REAL_PATH"
 hash -r
 if [ "$legacy_normal" = "$legacy_nopath" ] && [ "$legacy_normal" = "rc=0:$OPS/.claude/session/tickets/p1" ]; then ok "1d legacy pass needs no external command"; else bad "1d" "$legacy_normal vs $legacy_nopath"; fi
 printf 'repo=org/other\nnumber=9\n' > "$OPS/.claude/session/tickets/p1"
+# shellcheck disable=SC2123
 PATH=/nonexistent
 hash -r
 _at_memo_clear
@@ -188,6 +191,25 @@ hash -r
 if [ "$legacy_mismatch" = "rc=1:" ]; then ok "1e legacy mismatch needs no external command"; else bad "1e" "$legacy_mismatch"; fi
 rm -f "$OPS/.claude/session/tickets/p1"
 printf 'repo=org/p1\nnumber=5\n' > "$WS/p1/.git/apexyard-ticket"
+
+# 1f. The registry path is unknown and no trusted resolver exists. The lookup
+# fails closed, runs no external command and writes nothing to stderr.
+SAVED_REG="$_AT_REG"
+_AT_REG=""
+_at_memo_clear
+# shellcheck disable=SC2123
+PATH=/nonexistent
+hash -r
+active_ticket_lookup "$WS/p1/src/a.ts" 2> "$B/err"
+noreg_rc=$?
+noreg_reason="$AT_REASON"
+noreg_err=""
+IFS= read -r noreg_err < "$B/err" || true
+PATH="$REAL_PATH"
+hash -r
+_AT_REG="$SAVED_REG"
+_at_memo_clear
+if [ "$noreg_rc" = 1 ] && [ -z "$REPLY" ] && [ "$noreg_reason" = "unregistered common dir" ] && [ -z "$noreg_err" ]; then ok "1f an unknown registry path fails closed with empty stderr"; else bad "1f" "rc=$noreg_rc reason=$noreg_reason err=$noreg_err"; fi
 
 # --- 2. writer counter -------------------------------------------------------
 SHIM="$B/shim"
@@ -204,6 +226,7 @@ EOF
   chmod +x "$SHIM/$tool"
 done
 _at_memo_clear
+# shellcheck disable=SC2123
 PATH="$SHIM"
 hash -r
 active_ticket_write "$WS/p1" org/p1 11 "counted" "http://x/11" "feature/count" 2> "$B/werr"
@@ -215,6 +238,8 @@ n_date=$(grep -c '^date$' "$COUNT")
 if [ "$wrc" = 0 ] && grep -q '^number=11$' "$WS/p1/.git/apexyard-ticket"; then ok "2a the writer works with counting wrappers"; else bad "2a" "rc=$wrc $(cat "$B/werr")"; fi
 if [ "$n_main" -le 3 ]; then ok "2b the writer makes at most 3 external commands ($n_main)"; else bad "2b" "$n_main commands"; fi
 if [ "$n_date" -le 1 ] && { [ "$n_date" = 0 ] || [ "${BASH_VERSINFO[0]}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" = 4 ] && [ "${BASH_VERSINFO[1]}" -lt 2 ]; }; }; then ok "2c date is used only on a bash older than 4.2"; else bad "2c" "date ran $n_date times on bash $BASH_VERSION"; fi
+
+# 4 (the hook-level count) is at the end of the file.
 
 # --- 3. static fork scan -----------------------------------------------------
 # The awk program masks quoted text and strips comments. A double-quoted
@@ -306,7 +331,7 @@ done
 [ "$cls_ok" = 1 ] && ok "3a the classifier handles known-good and known-bad lines"
 
 # Extract the scanned function bodies from the library.
-SCAN_NAMES='^(_at_[a-z_]+|active_ticket_(lookup|lookup_cwd|gitdir|is_marker_target|read_field|set_context))$'
+SCAN_NAMES='^(_at_[a-z_]+|active_ticket_(lookup|lookup_cwd|gitdir|is_marker_target|read_field|set_context|marker_for_path|project_markers))$'
 EXTRA_SCAN="${ACTIVE_TICKET_EXTRA_SCAN:-}"
 scan_fail=0
 scanned=0
@@ -336,6 +361,114 @@ mbody=$(awk '$0 ~ "^_at_owned\\(\\) \\{" {print; exit}' "$B/mutant.sh")
 mmask=$(printf '%s\n' "$mbody" | mask_awk)
 r=$(classify "$mmask")
 if [ -n "$r" ]; then ok "3c a command substitution in a lookup function is caught"; else bad "3c" "mutant not caught: $mmask"; fi
+
+# --- 4. hook-level process count ---------------------------------------------
+# One run of the real hook per shape, traced with strace. The test counts
+# process clones (it skips CLONE_THREAD) and successful execve calls. Each
+# count must not exceed the count of the same hook before the marker moved
+# into the git dir, on the same fixture.
+#
+# The limits in budget_limits were measured on the fixture of this test with
+# the hook of the merge base (27f7565), on a developer machine. Confirm them
+# on the CI ubuntu leg, and re-measure when the runner or the fixture changes:
+#   APEXYARD_BUDGET_MEASURE=1 bash test_active_ticket_process_budget.sh
+# To measure another hook version, point APEXYARD_BUDGET_HOOKS_DIR at its
+# .claude/hooks directory. That version needs an old-layout current-ticket to
+# pass.
+#
+# The case needs strace and a working ptrace. On Linux in CI (the CI variable
+# is set), a missing strace or a denied ptrace fails the case. Elsewhere the
+# case prints a note and runs nothing.
+
+# budget_limits <shape>: sets max_f and max_e
+budget_limits() {
+  case "$1" in
+    ops) max_f=118; max_e=48 ;;
+    wt) max_f=123; max_e=53 ;;
+    main) max_f=130; max_e=57 ;;
+    exempt) max_f=18; max_e=10 ;;
+    bash) max_f=530; max_e=224 ;;
+    mig) max_f=374; max_e=119 ;;
+    *) max_f=0; max_e=0 ;;
+  esac
+}
+
+HOOKSDIR="${APEXYARD_BUDGET_HOOKS_DIR:-$SRC_ROOT/.claude/hooks}"
+FIXBASE="${RUNNER_TEMP:-$HOME/.cache/apexyard-tests}"
+
+hook_count_case() {
+  if ! command -v strace >/dev/null 2>&1 || ! strace -qq -o /dev/null true >/dev/null 2>&1; then
+    if [ -n "${CI:-}" ] && [ "$(uname -s)" = Linux ] && [ -z "${APEXYARD_BUDGET_MEASURE:-}" ]; then
+      bad "4 hook-level process count" "strace is missing or ptrace is denied on a Linux CI runner"
+    else
+      echo "INFO: hook-level process count not run: strace is missing or ptrace is denied"
+    fi
+    return 0
+  fi
+  mkdir -p "$FIXBASE" || { echo "INFO: hook-level process count not run: no fixture directory"; return 0; }
+  local sb f
+  sb=$(mktemp -d "$FIXBASE/budget.XXXXXX")
+  sb=$(cd -P "$sb" && pwd)
+  mkrepo "$sb"
+  : > "$sb/.apexyard-fork"
+  : > "$sb/onboarding.yaml"
+  printf 'projects:\n  - name: p1\n    repo: org/p1\n' > "$sb/apexyard.projects.yaml"
+  mkdir -p "$sb/.claude/hooks" "$sb/.claude/session" "$sb/workspace"
+  for f in require-active-ticket.sh require-migration-ticket.sh _lib-detect-bash-write.sh _lib-read-config.sh \
+           _lib-path-resolve.sh _lib-active-ticket.sh _lib-mask-quoted.sh _lib-portfolio-paths.sh \
+           _lib-ops-root.sh _lib-resolution-cache.sh _lib-tracker.sh; do
+    cp "$HOOKSDIR/$f" "$sb/.claude/hooks/$f"
+  done
+  cp "$SRC_ROOT/.claude/project-config.defaults.json" "$sb/.claude/project-config.defaults.json"
+  printf '{ "tracker": { "kind": "none" } }\n' > "$sb/.claude/project-config.json"
+  mkrepo "$sb/workspace/p1"
+  git -C "$sb/workspace/p1" worktree add -q "$sb/wt1" -b wt1
+  mkdir -p "$sb/src" "$sb/db/migrations" "$sb/workspace/p1/src" "$sb/workspace/p1/lib" "$sb/wt1/src"
+  # New layout markers, and an old-layout marker for a hook of the old layout.
+  printf 'repo=org/ops\nnumber=1\n' > "$sb/.git/apexyard-ticket"
+  printf 'repo=org/p1\nnumber=2\n' > "$sb/workspace/p1/.git/apexyard-ticket"
+  printf 'repo=org/p1\nnumber=3\n' > "$sb/workspace/p1/.git/worktrees/wt1/apexyard-ticket"
+  printf 'repo=org/ops\nnumber=1\n' > "$sb/.claude/session/current-ticket"
+
+  local names=(ops wt main exempt bash mig) payloads=() hooks=() i
+  payloads[0]=$(jq -nc --arg p "$sb/src/a.ts" '{tool_name:"Edit", tool_input:{file_path:$p}}')
+  payloads[1]=$(jq -nc --arg p "$sb/wt1/src/a.ts" '{tool_name:"Edit", tool_input:{file_path:$p}}')
+  payloads[2]=$(jq -nc --arg p "$sb/workspace/p1/src/a.ts" '{tool_name:"Edit", tool_input:{file_path:$p}}')
+  payloads[3]=$(jq -nc --arg p "$sb/README.md" '{tool_name:"Edit", tool_input:{file_path:$p}}')
+  payloads[4]=$(jq -nc --arg c "cat a > $sb/workspace/p1/src/a.ts; cat b > $sb/workspace/p1/src/b.ts; cat c > $sb/workspace/p1/lib/c.ts" '{tool_name:"Bash", tool_input:{command:$c}}')
+  payloads[5]=$(jq -nc --arg p "$sb/db/migrations/001_add.sql" '{tool_name:"Edit", tool_input:{file_path:$p}}')
+  hooks=(require-active-ticket.sh require-active-ticket.sh require-active-ticket.sh require-active-ticket.sh require-active-ticket.sh require-migration-ticket.sh)
+  local forks execs rc max_f max_e
+  # A Claude session caches the resolved workspace dir and registry path in
+  # files, so the traced runs use that cache, after one warm-up run. The
+  # config files must be older than the cache write guard allows.
+  touch -t 202001010000 "$sb/.claude/project-config.defaults.json" "$sb/.claude/project-config.json"
+  mkdir -p "$sb/pin"
+  for i in 0 1 2 3 4 5; do
+    printf '%s' "${payloads[$i]}" > "$sb/payload.json"
+    ( cd "$sb" && CLAUDE_CODE_SESSION_ID="budget-$$" APEXYARD_OPS_PIN_DIR="$sb/pin" APEXYARD_DISABLE_RESOLUTION_CACHE='' \
+        bash "$sb/.claude/hooks/${hooks[$i]}" < "$sb/payload.json" > /dev/null 2>&1 )
+    ( cd "$sb" && CLAUDE_CODE_SESSION_ID="budget-$$" APEXYARD_OPS_PIN_DIR="$sb/pin" APEXYARD_DISABLE_RESOLUTION_CACHE='' \
+        strace -f -qq -e trace=process -o "$sb/trace.$i" \
+        bash "$sb/.claude/hooks/${hooks[$i]}" < "$sb/payload.json" > /dev/null 2>&1 )
+    rc=$?
+    forks=$(awk '/^[0-9]+ +(clone3?|fork|vfork)\(/ && !/CLONE_THREAD/ && !/= -1/ {n++} END {print n+0}' "$sb/trace.$i")
+    execs=$(awk '/^[0-9]+ +execve\(/ && !/= -1/ {n++} END {print n+0}' "$sb/trace.$i")
+    if [ -n "${APEXYARD_BUDGET_MEASURE:-}" ]; then
+      echo "MEASURE ${names[$i]}: forks=$forks execs=$execs rc=$rc"
+      continue
+    fi
+    budget_limits "${names[$i]}"
+    if [ "$rc" != 0 ]; then bad "4 (${names[$i]}) the hook passes" "rc=$rc"; continue; fi
+    if [ "$forks" -le "$max_f" ] && [ "$execs" -le "$max_e" ]; then
+      ok "4 (${names[$i]}) forks=$forks (max $max_f) execs=$execs (max $max_e)"
+    else
+      bad "4 (${names[$i]})" "forks=$forks (max $max_f) execs=$execs (max $max_e)"
+    fi
+  done
+  rm -rf "$sb"
+}
+hook_count_case
 
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]

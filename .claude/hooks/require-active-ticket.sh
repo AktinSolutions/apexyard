@@ -3,23 +3,27 @@
 # This enforces the ticket-first rule instead of relying on prose in
 # CLAUDE.md, workflows/sdlc.md, or .claude/rules/workflow-gates.md.
 #
-# Active tickets are declared by the /start-ticket skill. The marker
-# layout is three-tier (apexyard#41 + #513):
+# Active tickets are declared by the /start-ticket skill. Each working tree
+# keeps its own marker in its git dir (docs/agdr/AgDR-0216):
 #
-#   ops_root/.claude/session/tickets/<project>/<branch>  ← per-worktree (#513)
-#   ops_root/.claude/session/tickets/<project>           ← per-project (#41)
-#   ops_root/.claude/session/current-ticket              ← ops-repo / fallback
+#   <repo>/.git/apexyard-ticket                   ← main clone
+#   <repo>/.git/worktrees/<id>/apexyard-ticket    ← linked worktree
 #
-# Resolution order for a given FILE_PATH under ops_root/workspace/<project>/:
-#   0. If the file's repo is on a git worktree branch (or CLAUDE_WORKTREE_BRANCH
-#      is set), look up tickets/<project>/<safe-branch>. If present → exempt.
-#      (Lets parallel agents on the SAME project hold independent tickets.)
-#   1. Look up tickets/<project> (a FILE). If present → exempt.
-#   2. Fall back to current-ticket. If present → exempt.
+# _lib-active-ticket.sh finds and validates that git dir. It runs no git
+# process. A tree that is not the ops fork or a registered workspace clone
+# has no marker, so its writes stay gated. Old-layout markers under
+# ops_root/.claude/session/ are honoured in a main clone only, and only
+# until the legacy reader is removed (AgDR-0216).
+#
+# Resolution for a given FILE_PATH:
+#   1. Validate the tree that holds FILE_PATH and read its marker. If present
+#      → exempt.
+#   2. Otherwise apply the legacy rule (main clone only). If it passes
+#      → exempt.
 #   3. Otherwise, block with instructions.
 #
-# tickets/<project> is a FILE in single-agent mode, a DIRECTORY in worktree
-# mode; the `-f` tests keep tiers 0 and 1 from conflicting.
+# The one write into a .git directory that this gate allows is the marker
+# itself and its temporary file (active_ticket_is_marker_target).
 #
 # Ops root is the apexyard fork root (has both onboarding.yaml and
 # apexyard.projects.yaml at the top level). It's discovered by walking
@@ -439,16 +443,20 @@ _ratc_evaluate_target() {
   # Resolve the workspace dir for the per-project marker resolution below.
   # Defaults to $OPS_ROOT/workspace; split-portfolio v2 adopters override
   # via portfolio.workspace_dir to point at their private sibling repo.
-  local WORKSPACE_DIR="$OPS_ROOT/workspace" resolved_ws
+  # portfolio_resolve_into_vars reads the config once per process, so a Bash
+  # command with several targets does not resolve the workspace dir again for
+  # each one.
+  local WORKSPACE_DIR="$OPS_ROOT/workspace"
   if [ -n "$OPS_ROOT" ] && [ -f "$HOOK_DIR/_lib-portfolio-paths.sh" ] && [ -f "$HOOK_DIR/_lib-read-config.sh" ]; then
     # shellcheck source=/dev/null
     . "$HOOK_DIR/_lib-read-config.sh"
     # shellcheck source=/dev/null
     . "$HOOK_DIR/_lib-portfolio-paths.sh"
-    resolved_ws=$(portfolio_workspace_dir 2>/dev/null)
-    if [ -n "$resolved_ws" ]; then
-      WORKSPACE_DIR="$resolved_ws"
-    fi
+    portfolio_resolve_into_vars
+    # A relative value means the hook runs outside the fork. Keep the default.
+    case "${_PP_WS:-}" in
+      /*) WORKSPACE_DIR="$_PP_WS" ;;
+    esac
   fi
 
   # --- Out-of-governance exemption (apexyard#883) -------------------------
@@ -662,34 +670,67 @@ _ratc_evaluate_target() {
     fi
   fi
 
-  # Marker resolution is shared with the migration gate. Keeping the project
-  # and tier-0/1/2 marker lookup in one implementation prevents the two gates
-  # from authorising the same path against different tickets.
+  # Marker resolution is shared with the migration gate and the other
+  # readers, so no two gates can authorise the same path against different
+  # tickets. The library validates the tree of the target and reads its
+  # marker with shell builtins only.
   local ACTIVE_TICKET_LIB="$HOOK_DIR/_lib-active-ticket.sh"
   if [ -f "$ACTIVE_TICKET_LIB" ]; then
     # shellcheck source=/dev/null
     . "$ACTIVE_TICKET_LIB"
   fi
-  local MARKER="" PER_WORKTREE_MARKER="" PER_PROJECT_MARKER=""
-  local FALLBACK_MARKER="${MARKER_HOME:-${OPS_ROOT:-${REPO_ROOT:-.}}}/.claude/session/current-ticket"
-  if command -v active_ticket_project_for_path >/dev/null 2>&1; then
-    MARKER=$(active_ticket_marker_for_path "$FILE_PATH")
+  local MARKER="" LOOKUP_RC=1
+  if command -v active_ticket_lookup >/dev/null 2>&1; then
+    active_ticket_set_context "$OPS_ROOT" "$WORKSPACE_DIR"
+    # The only write into a .git directory that needs no ticket is the
+    # marker itself and its temporary file. Each target must pass on its own.
+    case "$FILE_PATH" in
+      */.git/*|.git/*)
+        if active_ticket_is_marker_target "$FILE_PATH"; then
+          return 0
+        fi
+        ;;
+    esac
+    if [ -z "$FILE_PATH" ]; then
+      # An unextractable Bash target is judged against the working directory
+      # of the hook, which keeps an active session ticket effective for it.
+      active_ticket_lookup_cwd
+    else
+      active_ticket_lookup "$FILE_PATH"
+    fi
+    LOOKUP_RC=$?
+    [ "$LOOKUP_RC" != 0 ] || MARKER="$REPLY"
   fi
   if [ -n "$MARKER" ]; then
     return 0
   fi
 
-  # Nothing found — emit a guide that names both possibilities.
+  # Nothing found. Say whether the tree failed validation or only has no
+  # marker, and mention an old-layout file that was not used.
   #
   # The quoted-origin note, when present, sits between the Target line and
   # "Exempt paths" with a blank line on each side. A plain variable keeps the
   # trailing newline that a command substitution inside the heredoc would
   # strip. With no note, the variable is empty and the one blank line stays.
-  local QUOTED_HINT
+  local QUOTED_HINT WHY_LINE LEGACY_LINE="" CWD_HINT=""
   QUOTED_HINT=$(_ratc_quoted_origin_hint "$TOOL_NAME")
   [ -n "$QUOTED_HINT" ] && QUOTED_HINT=$'\n'"$QUOTED_HINT"$'\n'
+  if [ -n "${AT_REASON:-}" ]; then
+    WHY_LINE="BLOCKED: No active ticket set. ${FILE_PATH:-the hook working directory} is not inside the ops fork or a registered workspace clone, or its git dir failed validation ($AT_REASON). Ticket markers are not read from unregistered trees."
+  else
+    WHY_LINE="BLOCKED: No active ticket set for this working tree (${AT_TREE:-unknown}). Run /start-ticket <N> in this tree."
+  fi
+  if [ -n "${AT_LEGACY_FILE:-}" ]; then
+    LEGACY_LINE="apexyard: ticket markers moved to each working tree's git dir. Old markers are used only in a main clone and only for their own project. Run /start-ticket <N> in this tree. See AgDR-0216.
+Old marker found: $AT_LEGACY_FILE (not used: ${AT_LEGACY_WHY:-unknown reason})
+"
+  fi
+  if [ -z "$FILE_PATH" ]; then
+    CWD_HINT="Prefer an absolute target path. The gate checked the tree of the hook working directory ($PWD).
+"
+  fi
   cat >&2 <<MSG
-BLOCKED: No active ticket set for this session.
+$WHY_LINE
 
 ApexYard requires a ticket BEFORE any code changes (workflow-gates rule #3,
 pre-build gate, "one ticket at a time").
@@ -698,19 +739,13 @@ To unblock:
 
   1. Create or find the ticket (GitHub Issue in the project's own repo):
        gh issue create --repo <owner/repo> --title "..."
-  2. Declare it for this session — run the /start-ticket skill with the
-     issue number (or pass owner/repo#number to pin it). The skill writes
-     a per-project marker if the ticket's repo matches a registered
-     managed project, otherwise falls back to the ops-level marker.
+  2. Declare it for this working tree: run the /start-ticket skill from the
+     tree you edit, with the issue number (or pass owner/repo#number to pin
+     it). The skill writes the marker into that tree's git dir.
   3. Retry the edit
 
-Markers looked up for this path (in order):
-$([ -n "$PER_WORKTREE_MARKER" ] && echo "  per-worktree: $PER_WORKTREE_MARKER")
-$([ -n "$PER_PROJECT_MARKER" ] && echo "  per-project:  $PER_PROJECT_MARKER")
-  ops fallback: $FALLBACK_MARKER
-
-Target: ${FILE_PATH:-<unextractable Bash write target>}
-${QUOTED_HINT}
+${LEGACY_LINE}Target: ${FILE_PATH:-<unextractable Bash write target>}
+${CWD_HINT}${QUOTED_HINT}
 Exempt paths (no ticket required): .claude/, docs/, projects/*/docs/, *.md
 MSG
   return 2

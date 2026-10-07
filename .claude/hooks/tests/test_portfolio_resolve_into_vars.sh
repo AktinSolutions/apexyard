@@ -38,7 +38,7 @@ run_in() {
 # Single fork mode
 S="$B/single"
 mkfork "$S"
-out=$(run_in "$S" 'portfolio_resolve_into_vars; printf "%s|%s|%s|%s\n" "$_PP_WS" "$_PP_REG" "$(portfolio_workspace_dir)" "$(portfolio_registry)"')
+out=$(run_in "$S" 'portfolio_resolve_into_vars; portfolio_resolve_registry_into_var; printf "%s|%s|%s|%s\n" "$_PP_WS" "$_PP_REG" "$(portfolio_workspace_dir)" "$(portfolio_registry)"')
 IFS='|' read -r ws reg ws2 reg2 <<< "$out"
 if [ -n "$ws" ] && [ "$ws" = "$ws2" ] && [ -n "$reg" ] && [ "$reg" = "$reg2" ]; then ok "single fork: in-process values equal the command values"; else bad "single fork" "$out"; fi
 case "$ws" in "$S"/workspace) ok "single fork: workspace dir is under the fork" ;; *) bad "single fork workspace" "$ws" ;; esac
@@ -49,14 +49,18 @@ mkdir -p "$P/workspace"
 M="$B/split"
 mkfork "$M"
 printf '{"portfolio":{"registry":"%s/apexyard.projects.yaml","workspace_dir":"%s/workspace"}}\n' "$P" "$P" > "$M/.claude/project-config.json"
-out=$(run_in "$M" 'portfolio_resolve_into_vars; printf "%s|%s|%s|%s\n" "$_PP_WS" "$_PP_REG" "$(portfolio_workspace_dir)" "$(portfolio_registry)"')
+out=$(run_in "$M" 'portfolio_resolve_into_vars; portfolio_resolve_registry_into_var; printf "%s|%s|%s|%s\n" "$_PP_WS" "$_PP_REG" "$(portfolio_workspace_dir)" "$(portfolio_registry)"')
 IFS='|' read -r ws reg ws2 reg2 <<< "$out"
 if [ "$ws" = "$P/workspace" ] && [ "$ws" = "$ws2" ] && [ "$reg" = "$P/apexyard.projects.yaml" ] && [ "$reg" = "$reg2" ]; then ok "split mode: in-process values equal the command values"; else bad "split mode" "$out"; fi
+
+# The registry is resolved on demand, never by the workspace resolution alone
+out=$(run_in "$S" 'portfolio_resolve_into_vars; printf "[%s]" "$_PP_REG"; portfolio_resolve_registry_into_var; printf "[%s]" "$_PP_REG"')
+if [ "$out" = "[][$S/apexyard.projects.yaml]" ]; then ok "registry path is resolved only on demand"; else bad "registry on demand" "$out"; fi
 
 # The environment never supplies the paths
 out=$(env -i HOME="$HOME" PATH="$PATH" APEXYARD_OPS_DISABLE_PIN=1 APEXYARD_DISABLE_RESOLUTION_CACHE=1 \
   WORKSPACE_DIR=/evil PORTFOLIO_WORKSPACE_DIR=/evil PORTFOLIO_REGISTRY=/evil _PP_WS=/evil _PP_REG=/evil _PP_FP=forged \
-  bash -c "cd '$S' && . '$HOOKS/_lib-read-config.sh' && . '$HOOKS/_lib-portfolio-paths.sh' && portfolio_resolve_into_vars; printf '%s|%s' \"\$_PP_WS\" \"\$_PP_REG\"" 2>&1)
+  bash -c "cd '$S' && . '$HOOKS/_lib-read-config.sh' && . '$HOOKS/_lib-portfolio-paths.sh' && portfolio_resolve_into_vars; portfolio_resolve_registry_into_var; printf '%s|%s' \"\$_PP_WS\" \"\$_PP_REG\"" 2>&1)
 case "$out" in
   *evil*) bad "environment is not trusted" "$out" ;;
   "$S/workspace|$S/apexyard.projects.yaml") ok "environment is not trusted" ;;
