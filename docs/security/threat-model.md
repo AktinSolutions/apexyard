@@ -35,10 +35,10 @@ flowchart LR
         reviewer_agent["Reviewer sub-agent<br/>(Rex / Hakim / Tariq)"]
     end
 
-    subgraph local_state ["Local Session State (.claude/session/** — gitignored, filesystem-writable by any tool call)"]
+    subgraph local_state ["Local Session State (.claude/session/** and each tree's git dir — untracked, filesystem-writable by any tool call)"]
         review_markers[("Review markers<br/>*-rex/-security/-architecture/-ceo.approved")]
         active_reviewer[("active-reviewer marker<br/>owner/repo#pr:kind")]
-        ticket_markers[("Ticket markers<br/>current-ticket / tickets/&lt;project&gt;")]
+        ticket_markers[("Ticket markers<br/>apexyard-ticket in each tree's git dir")]
         proj_config[("project-config.json<br/>untracked, per-fork overrides")]
     end
 
@@ -116,8 +116,8 @@ flowchart LR
 - **Data stores (4 classes):** local session-state markers (`.claude/session/reviews/`,
   `.claude/session/active-reviewer.<session-id>` — session-scoped since me2resh/apexyard#1376,
   resolved through `active_reviewer_marker_path`, never the bare literal path —
-  `.claude/session/tickets/`) — gitignored, filesystem-writable by
-  any tool call in the session; the private portfolio registry (`apexyard.projects.yaml`) — git-tracked
+  and the per-tree ticket marker `apexyard-ticket` in each working tree's git dir) — untracked,
+  filesystem-writable by any tool call in the session; the private portfolio registry (`apexyard.projects.yaml`) — git-tracked
   but private-by-convention; per-fork config (`.claude/project-config.json`) — **untracked by design**,
   so edits leave no git trail; and the forge itself (GitHub/GitLab) — the only store in this diagram an
   agent cannot directly write to except through an authenticated, logged API call.

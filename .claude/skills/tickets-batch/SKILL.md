@@ -55,7 +55,7 @@ The prose menus below are fallbacks only when the harness lacks `AskUserQuestion
 
 ### 1. Resolve the target repo
 
-Read `.claude/session/current-ticket` to determine which repo we're working in. If absent:
+Read the active-ticket marker of the working tree you are in (the `apexyard-ticket` file in its git dir, see `/start-ticket` "Read the active ticket") to determine which repo we're working in. If absent:
 
 - Scan `apexyard.projects.yaml` for managed projects.
 - If only one project, use it.

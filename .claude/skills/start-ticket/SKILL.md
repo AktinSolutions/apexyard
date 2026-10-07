@@ -194,6 +194,16 @@ It refuses a tree that is not the ops fork or a registered clone, a symlink in t
 
 Do NOT write the marker with the Edit or Write tool. `.git` is a protected path for those tools.
 
+### Read the active ticket
+
+Other skills read the active ticket of the working tree through the same resolver. Run this from the tree you are in:
+
+```bash
+bash -c '. "$1/.claude/hooks/_lib-active-ticket.sh" && active_ticket_init "$PWD" && active_ticket_lookup_cwd && cat "$REPLY"' _ "$ops_root"
+```
+
+The command prints the marker (`repo=`, `number=`, `title=`, `url=`), or nothing when the tree has no marker.
+
 ### 6. Move the board card to "In progress" (opt-in)
 
 After writing the marker, call `board_move_card` so the GitHub Projects board
