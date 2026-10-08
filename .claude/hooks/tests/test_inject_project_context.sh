@@ -948,6 +948,37 @@ else
 fi
 rm -rf "$MARKER_DIR"
 
+# --- (reg10) a worktree root with a newline in its name is refused
+NLWT="$OUTSIDE/wtnl"$'\n'"FORGED_HEADER_TEXT"
+git -C "$WS" worktree add -q -b projctx-test-nl "$NLWT" 2>/dev/null
+if [ -d "$NLWT" ]; then
+  mkdir -p "$NLWT/src"
+  OUT=$(invoke "$(payload reg10 "" "" "$NLWT/src/a.ts")")
+  if ! printf '%s' "$OUT" | grep -q FORGED_HEADER_TEXT; then
+    pass_case "(reg10) worktree root with a newline is not echoed into the header"
+  else
+    fail_case "(reg10) newline worktree root" "forged text reached the output"
+  fi
+else
+  fail_case "(reg10) newline worktree root" "git worktree add failed"
+fi
+rm -rf "$MARKER_DIR"
+
+# --- (reg11) a gitdir line must be backed by the worktree's own back-link
+mkdir -p "$OUTSIDE/ghost" "$OUTSIDE/imposter"
+printf 'gitdir: %s\n' "$WS/.git/worktrees/ghost-id" > "$OUTSIDE/ghost/.git"
+printf 'gitdir: %s\n' "$WS/.git/worktrees/demo-worktree" > "$OUTSIDE/imposter/.git"
+: > "$OUTSIDE/ghost/x.txt"
+: > "$OUTSIDE/imposter/x.txt"
+OUT_GHOST=$(invoke "$(payload reg11a "" "" "$OUTSIDE/ghost/x.txt")")
+OUT_IMP=$(invoke "$(payload reg11b "" "" "$OUTSIDE/imposter/x.txt")")
+if [ -z "$OUT_GHOST" ] && [ -z "$OUT_IMP" ]; then
+  pass_case "(reg11) gitdir without a matching back-link does not resolve"
+else
+  fail_case "(reg11) gitdir back-link" "ghost_len=${#OUT_GHOST} imposter_len=${#OUT_IMP}"
+fi
+rm -rf "$MARKER_DIR"
+
 echo "===== test_inject_project_context.sh ====="
 echo "Passed: $PASS"
 echo "Failed: $FAIL"

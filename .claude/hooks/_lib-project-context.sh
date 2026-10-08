@@ -236,7 +236,8 @@ EOF
   # A linked worktree's .git file names its git dir: <main>/.git/worktrees/<id>.
   # Read that line instead of starting git on a path the registry does not
   # vouch for. A submodule or a planted gitdir does not match the shape.
-  local gd line main_root
+  _projctx_clean_path "$top" || return 1
+  local gd line main_root back
   IFS= read -r line < "$top/.git" 2>/dev/null || [ -n "$line" ] || return 1
   case "$line" in "gitdir: "*) gd=${line#gitdir: } ;; *) return 1 ;; esac
   case "$gd" in /*) ;; *) gd="$top/$gd" ;; esac
@@ -244,6 +245,12 @@ EOF
   case "${gd##*/.git/worktrees/}" in */*) return 1 ;; esac
   main_root=${gd%/.git/worktrees/*}
   [ -z "$main_root" ] && return 1
+  # git writes a back-link from the git dir to this worktree's .git file.
+  # Without it the line is planted or stale.
+  [ -d "$gd" ] && [ ! -L "$gd" ] || return 1
+  IFS= read -r back < "$gd/gitdir" 2>/dev/null || [ -n "$back" ] || return 1
+  case "$back" in /*) ;; *) back="$gd/$back" ;; esac
+  [ "$back" -ef "$top/.git" ] || return 1
 
   while IFS="$(printf '\t')" read -r name ws; do
     [ -z "$name" ] && continue
@@ -312,9 +319,15 @@ _projctx_rule_paths() {
 # Public: projctx_emit <name> <workspace>
 # ------------------------------------------------------------------------------
 # ponytail: refuses any symlinked file; hardlinks are not detected (same-fs only, needs attacker write to $HOME's fs).
-_projctx_safe_file() {  # $1=file $2=real workspace
-  local LC_ALL=C  # byte-wise brackets in every locale; restored on return
+# A path with control characters, C1 controls or U+2028/U+2029 is refused.
+_projctx_clean_path() {
+  local LC_ALL=C
   case "$1" in *[[:cntrl:]]*|*$'\302'[$'\200'-$'\237']*|*$'\342\200'[$'\250\251']*) return 1 ;; esac
+  return 0
+}
+
+_projctx_safe_file() {  # $1=file $2=real workspace
+  _projctx_clean_path "$1" || return 1
   [ -f "$1" ] && [ ! -L "$1" ] || return 1
   local d; d=$(cd "$(dirname "$1")" 2>/dev/null && pwd -P) || return 1
   case "$d/" in "$2"/*) return 0 ;; esac; return 1
@@ -323,6 +336,7 @@ _projctx_safe_file() {  # $1=file $2=real workspace
 projctx_emit() {
   local name="$1" ws="$2" wt="${3:-}"
   [ -z "$name" ] || [ -z "$ws" ] && return 1
+  if [ -n "$wt" ]; then _projctx_clean_path "$wt" || return 1; fi
   local ws_real; ws_real=$(cd "$ws" 2>/dev/null && pwd -P) || return 1
   # Random per injection: project text cannot know it, so it cannot close
   # the frame early.
