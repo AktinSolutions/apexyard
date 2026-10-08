@@ -529,7 +529,7 @@ A merged PR often leaves a linked worktree on disk. Removing it also removes its
    .claude/skills/approve-merge/remove-worktree.sh list "<source-tree>" "<head-branch>"
    ```
 
-   The helper takes candidates only from `git worktree list --porcelain`, run with `-C` on the validated common dir. It prints `ok` or `refused (<reason>)` for each worktree that holds the branch, and the ignored files of each `ok` worktree. It refuses the main worktree, a locked worktree, the session's own tree, and any path that equals or contains the ops root.
+   The helper takes candidates only from `git worktree list --porcelain -z`, run with `-C` on the validated common dir. The `-z` option needs git 2.36 or later. With an older git, the helper lists no worktree, prints an error and removes nothing. Tell the user that the worktree stays on disk. The helper prints `ok` or `refused (<reason>)` for each worktree that holds the branch, and the ignored files of each `ok` worktree. It refuses the main worktree, a locked worktree, the session's own tree, and any path that equals or contains the ops root.
 3. If there is an `ok` worktree, ask with `AskUserQuestion`. Show the path and the ignored files the helper listed, because `git worktree remove` deletes them. Offer "Remove it" and "Keep it".
 4. On "Remove it", run:
 

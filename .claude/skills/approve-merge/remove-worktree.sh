@@ -23,7 +23,9 @@
 #         leaves no ancestry that git can see. It runs `git worktree remove`
 #         with no --force, so a dirty worktree stops the step and is reported.
 #
-# Candidates come only from `git worktree list --porcelain -z`. The script
+# Candidates come only from `git worktree list --porcelain -z`, which needs
+# git 2.36 or later. An older git rejects -z. The list is then empty, so the
+# script exits 1 and removes nothing. The script
 # refuses the main worktree, a locked worktree, the session's own tree, and any
 # path that equals or contains the ops root. It never deletes a path itself.
 
@@ -91,6 +93,7 @@ flush() {
   cur_locked=0
 }
 # -z ends each field with a NUL, so a path with a newline stays one field.
+# git before 2.36 has no -z here and fails, which leaves the list empty.
 while IFS= read -r -d '' line; do
   case "$line" in
     "worktree "*) flush; cur_path="${line#worktree }" ;;
