@@ -193,7 +193,7 @@ This table is a snapshot at PR #1425 after the review-fix round for findings 1 t
 | 14. `AGENTS.md` layout | Not implemented. Follow-up. | Tariq S1 |
 | Frame and precedence header | Implemented. The frame comes before all project text. | Tests (n), (q) |
 | Opt-out | Partial. The kill switch is implemented. `context: off` is a follow-up. | Test (t). Tariq S3. Hakim M1. |
-| Worktree source | Not implemented (header line). Follow-up. The hook reads `$ws`. | Tariq S4 |
+| Worktree source | Implemented. The hook reads `$ws`. On a worktree hit the header names the worktree and says the text is the main checkout's version. | Tariq S4. Test (c). |
 | Reviewer label | Not implemented. Follow-up. | Tariq S2 |
 
 ## Consequences

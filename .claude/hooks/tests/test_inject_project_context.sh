@@ -134,7 +134,8 @@ if [ "$EXIT" = 0 ] && echo "$OUT" | grep -q "CANARY_CLAUDE_MD_MARKER" \
    && echo "$OUT" | grep -q "src/payments" \
    && echo "$OUT" | grep -q "CANARY_SKILL_DESCRIPTION" \
    && echo "$OUT" | grep -q "CANARY_AGENT_DESCRIPTION" \
-   && echo "$OUT" | grep -q "NOT registered slash commands"; then
+   && echo "$OUT" | grep -q "NOT registered slash commands" \
+   && ! printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext' | head -1 | grep -q "worktree at"; then
   pass_case "(a) matching path injects CLAUDE.md + full rule + scoped-rule index + skill/agent index"
 else
   fail_case "(a) matching path" "exit=$EXIT out=$(echo "$OUT" | head -c 400)"
@@ -174,8 +175,10 @@ git -C "$WS" worktree add -q -b projctx-test-wt "$WT" 2>/dev/null
 if [ -d "$WT" ]; then
   OUT=$(invoke "$(payload s3 "" "" "$WT/src/index.ts")")
   EXIT=$?
-  if [ "$EXIT" = 0 ] && echo "$OUT" | grep -q "CANARY_CLAUDE_MD_MARKER"; then
-    pass_case "(c) worktree path outside the workspace resolves to the project"
+  WT_HEAD=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // ""' 2>/dev/null | head -1)
+  if [ "$EXIT" = 0 ] && echo "$OUT" | grep -q "CANARY_CLAUDE_MD_MARKER" \
+     && printf '%s' "$WT_HEAD" | grep -qF "worktree at $WT"; then
+    pass_case "(c) worktree path outside the workspace resolves to the project and the header names the worktree"
   else
     fail_case "(c) worktree path" "exit=$EXIT out=$(echo "$OUT" | head -c 200)"
   fi

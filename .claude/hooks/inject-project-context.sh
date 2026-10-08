@@ -77,7 +77,10 @@ PROJECT_LINE=$(projctx_resolve "$ABS_PATH" 2>/dev/null) || exit 0
 [ -n "$PROJECT_LINE" ] || exit 0
 
 PROJECT_NAME="${PROJECT_LINE%%$'\t'*}"
-PROJECT_WS="${PROJECT_LINE#*$'\t'}"
+PROJECT_REST="${PROJECT_LINE#*$'\t'}"
+PROJECT_WS="${PROJECT_REST%%$'\t'*}"
+PROJECT_WT=""
+case "$PROJECT_REST" in *$'\t'*) PROJECT_WT="${PROJECT_REST#*$'\t'}" ;; esac
 [ -n "$PROJECT_NAME" ] && [ -n "$PROJECT_WS" ] || exit 0
 
 # Already inside the project's own tree → Claude Code loads its CLAUDE.md
@@ -158,7 +161,7 @@ _projctx_claim_marker || exit 0
 # stale recovery above covers that path).
 trap 'rm -rf "$MARKER" 2>/dev/null; exit 0' TERM INT HUP
 
-if ! CONTEXT=$(projctx_emit "$PROJECT_NAME" "$PROJECT_WS" 2>/dev/null) || [ -z "$CONTEXT" ]; then
+if ! CONTEXT=$(projctx_emit "$PROJECT_NAME" "$PROJECT_WS" "$PROJECT_WT" 2>/dev/null) || [ -z "$CONTEXT" ]; then
   rm -rf "$MARKER" 2>/dev/null
   exit 0
 fi
