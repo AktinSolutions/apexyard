@@ -165,25 +165,28 @@ Notes on the fallback:
 The marker goes into the tree that holds the code you will change.
 
 - Run the skill from inside the tree. The tree is the git top level of the working directory, so a subdirectory of the tree also works.
-- A ticket can map to a registered project (step 4b) while you run from the ops fork's main tree. Then use the project's workspace clone as the tree.
-- The workspace dir comes from `portfolio_workspace_dir`. A split-portfolio adopter keeps it outside the ops fork.
+- A ticket can map to a registered project (step 4b) while you run from the ops fork's main tree. Then use the project's clone as the tree. That is the `workspace:` path of its registry entry, or `<workspace dir>/<project>` when the entry has none.
+- The workspace dir comes from the portfolio paths. A split-portfolio adopter keeps it outside the ops fork.
 - A ticket on the ops fork itself uses the ops root, or the linked worktree of the ops fork you work in.
+- Stop when the tree is not an existing directory. Clone the project first, or run the skill from inside its clone.
 
 ```bash
-workspace_dir=$(portfolio_workspace_dir)
-if [ "${workspace_dir#/}" = "$workspace_dir" ]
-then
-  workspace_dir="$ops_root/${workspace_dir#./}"
-fi
 cwd_top=$(git rev-parse --show-toplevel 2>/dev/null || true)
 ops_top=$(cd "$ops_root" && pwd -P)
 if [ -n "$project" ] && [ "$cwd_top" = "$ops_top" ]
 then
-  tree="$workspace_dir/$project"
+  tree=$(cd "$ops_root" && bash -c '. "$1/.claude/hooks/_lib-active-ticket.sh" && active_ticket_init "$1" && active_ticket_project_clone "$2" && printf "%s" "$REPLY"' _ "$ops_root" "$project")
 else
   tree="${cwd_top:-$PWD}"
 fi
+if [ -z "$tree" ] || [ ! -d "$tree" ]
+then
+  echo "No clone of $project at ${tree:-an unknown path}. Clone it, or run /start-ticket from inside its clone." >&2
+  exit 1
+fi
 ```
+
+The writer in step 5 also checks the tree. It writes the marker only when the ticket's repo belongs to the tree's registry entry. In the ops fork, it writes no ticket of a registered project. A refused write is not an error, because the old-layout marker still covers the ticket.
 
 #### 4d. Old-layout markers
 

@@ -194,8 +194,16 @@ CWD_GITDIR="${AT_GITDIR:-}"
 CWD_PROJECT="${AT_PROJECT:-}"
 HAVE_LIB=0
 command -v active_ticket_project_markers >/dev/null 2>&1 && HAVE_LIB=1
-if [ "$HAVE_LIB" = 1 ] && [ -z "$CWD_GITDIR" ] && active_ticket_lookup "$OPS_ROOT"; then
-  if active_ticket_read_field "$REPLY" repo && [ -n "$REPLY" ]; then
+# The lookup does not trust a marker whose repo is not bound to its tree. This
+# guard only adds blocks, so it reads such a marker file directly as well.
+if [ -n "$CWD_GITDIR" ] && [ -f "$CWD_GITDIR/apexyard-ticket" ] && [ ! -L "$CWD_GITDIR/apexyard-ticket" ]; then
+  if active_ticket_read_field "$CWD_GITDIR/apexyard-ticket" repo && [ -n "$REPLY" ]; then
+    REPOS="${REPOS}${REPLY}"$'\n'
+  fi
+fi
+if [ "$HAVE_LIB" = 1 ] && [ -z "$CWD_GITDIR" ] && active_ticket_gitdir "$OPS_ROOT" \
+  && [ -f "$REPLY/apexyard-ticket" ] && [ ! -L "$REPLY/apexyard-ticket" ]; then
+  if active_ticket_read_field "$REPLY/apexyard-ticket" repo && [ -n "$REPLY" ]; then
     REPOS="${REPOS}${REPLY}"$'\n'
   fi
 fi

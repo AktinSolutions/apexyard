@@ -855,14 +855,44 @@ _atd_lookup() {
 # old-layout resolution above runs and may run git.
 # ---------------------------------------------------------------------------
 
+# True when <repo> belongs to the validated tree in AT_PROJECT and AT_GITDIR.
+# A project clone takes only a repo of its own registry entry (repo:, repos:
+# or primary:, compared without regard to case). The ops fork takes no repo of
+# a registered project. When the registry cannot be read, nothing is bound,
+# except in the ops fork of a portfolio with no registry file at all.
+# Builtins only.
+_at_bound() {
+  local repo="$1"
+  _at_fill_reg
+  if [ -n "$AT_PROJECT" ]; then
+    [ -n "$_AT_REG" ] && [ -r "$_AT_REG" ] || return 1
+    _at_reg_scan "$AT_PROJECT" || return 1
+    [ -n "$repo" ] || return 1
+    _at_member "$AT_REG_REPO_SET" "$repo"
+    return
+  fi
+  [ -n "$_AT_REG" ] || return 1
+  [ -e "$_AT_REG" ] || return 0
+  [ -r "$_AT_REG" ] || return 1
+  _at_reg_scan "" || true
+  [ -z "$repo" ] && return 0
+  ! _at_member "$AT_REG_REPOS" "$repo"
+}
+
 # $1 is the path to validate. $2 is the target as the caller gave it, for the
-# old-layout resolution.
+# old-layout resolution. A marker whose repo= is not bound to its tree, such
+# as one planted by hand or by an older writer, is not trusted.
 _at_lookup_inner() {
   AT_SOURCE=""
   if _at_resolve_g "$1" && [ -f "$AT_GITDIR/apexyard-ticket" ]; then
     REPLY="$AT_GITDIR/apexyard-ticket"
-    AT_SOURCE=tree
-    return 0
+    active_ticket_read_field "$REPLY" repo || REPLY=""
+    if _at_bound "$REPLY"; then
+      REPLY="$AT_GITDIR/apexyard-ticket"
+      AT_SOURCE=tree
+      return 0
+    fi
+    AT_REASON="marker repo is not bound to this tree"
   fi
   _atd_lookup "$2"
 }
@@ -902,6 +932,35 @@ active_ticket_gitdir() {
   return 1
 }
 
+
+# REPLY is the clone path of the registered project <name>: the workspace:
+# path of its registry entry (relative to the ops root when not absolute), or
+# <workspace dir>/<name>. Returns 1 when <name> is not a valid project name.
+# The path may not exist. The caller checks that. Builtins only.
+active_ticket_project_clone() {
+  local name="$1" lines en ew
+  REPLY=""
+  [[ $name =~ $_AT_NAME_RE ]] || return 1
+  _at_fill_reg
+  if [ -n "$_AT_REG" ] && [ -r "$_AT_REG" ]; then
+    _at_reg_scan "" || true
+    lines="$AT_REG_WS_ENTRIES"
+    while [ -n "$lines" ]; do
+      en="${lines%%$'\n'*}"
+      lines="${lines#*$'\n'}"
+      ew="${en#*$'\t'}"
+      en="${en%%$'\t'*}"
+      [ "$en" = "$name" ] || continue
+      case "$ew" in
+        /*) REPLY="${ew%/}"; return 0 ;;
+        ''|'~'*) ;;
+        *) [ -z "$_AT_OPS" ] || { REPLY="$_AT_OPS/${ew#./}"; REPLY="${REPLY%/}"; return 0; } ;;
+      esac
+    done
+  fi
+  [ -n "$_AT_WS" ] || return 1
+  REPLY="$_AT_WS/$name"
+}
 
 # REPLY holds the marker file of every registered workspace clone and of each
 # linked worktree of it, one path per line. A reader that must see every
@@ -1091,6 +1150,16 @@ active_ticket_write() {
   G="$REPLY"
   if [[ ! $repo =~ ^[A-Za-z0-9._/-]+$ ]]; then
     echo "apexyard: cannot write ticket marker in $G: repo must be an owner/repo slug" >&2
+    return 1
+  fi
+  # The marker must name a repo of the tree it lands in, or the lookup would
+  # let it cover edits that the old resolution blocks.
+  if ! _at_bound "$repo"; then
+    if [ -n "$AT_PROJECT" ]; then
+      echo "apexyard: cannot write ticket marker in $G: $repo is not a repo of project $AT_PROJECT. Run /start-ticket in that project's clone." >&2
+    else
+      echo "apexyard: cannot write ticket marker in $G: $repo belongs to a registered project, or the registry cannot be read. Run /start-ticket in that project's clone." >&2
+    fi
     return 1
   fi
   if [[ ! $num =~ ^[A-Za-z0-9_-]+$ ]]; then

@@ -201,6 +201,23 @@ for v in $VERSIONS; do
   new_start_ticket "$OPS" "$OPS" org/ops 82
   gate "$OPS" "$OPS" "$(edit "$OPS/src/a.ts")"
   expect "B8 ($v) the new /start-ticket covers an ops edit" 0
+
+  # P1: a project ticket aimed at a clone path that does not exist. The
+  # writer must not walk up and put it into the ops fork's git dir.
+  OPS=$(make_sb "$v" p1)
+  new_start_ticket "$OPS" "$OPS/workspace/p5" org/p5 91
+  gate "$OPS" "$OPS" "$(edit "$OPS/bin/tool.sh")"
+  expect "P1 ($v) a project ticket for a missing clone does not cover an ops edit" 2
+
+  # P2: a ticket for one project started from another project's clone.
+  OPS=$(make_sb "$v" p2)
+  new_start_ticket "$OPS" "$OPS/workspace/p1" org/p5 92
+  gate "$OPS" "$OPS" "$(edit "$OPS/workspace/p1/src/a.ts")"
+  expect "P2 ($v) another project's ticket does not cover the clone it was started from" 2
+  # The same, planted by hand or by an older writer, is not trusted either.
+  printf 'repo=org/p5\nnumber=93\n' > "$OPS/workspace/p1/.git/apexyard-ticket"
+  gate "$OPS" "$OPS" "$(edit "$OPS/workspace/p1/src/a.ts")"
+  expect "P2 ($v) a planted marker for another project is not trusted" 2
 done
 
 # B9: one sandbox, hooks swapped mid-task in both directions.

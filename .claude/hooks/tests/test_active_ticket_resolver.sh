@@ -446,6 +446,9 @@ _at_memo_clear
 active_ticket_gitdir "$EXT/src/a.ts"
 if [ "$AT_PROJECT" = p5 ]; then ok "29c the project name comes from the entry"; else bad "29c" "project=$AT_PROJECT"; fi
 expect_gd "29d a relative workspace: resolves against the ops root" "$OPS/other/p6/a.ts" "$OPS/other/p6/.git"
+clones=""
+for n in p5 p6 p1; do active_ticket_project_clone "$n"; clones="$clones $REPLY"; done
+if [ "$clones" = " $EXT $OPS/other/p6 $WS/p1" ]; then ok "29j the clone path of a project follows its workspace: entry"; else bad "29j" "$clones"; fi
 expect_refuse "29e a workspace: path that is a symlink is refused" "$B/real7/a.ts" "symlink in marker path"
 expect_refuse "29f two entries with the same workspace: are ambiguous" "$B/shared/a.ts" "ambiguous common dir"
 printf 'repo=org/p5\nnumber=29\n' > "$EXT/.git/apexyard-ticket"
@@ -463,6 +466,44 @@ _at_memo_clear
 active_ticket_lookup "$B/real7/a.ts"
 if [ "$?" = 0 ] && [ "$REPLY" = "$OPS/.claude/session/current-ticket" ] && [ "$AT_SOURCE" = legacy ]; then ok "29i a refused symlinked clone falls back to the old-layout marker"; else bad "29i" "REPLY=$REPLY source=$AT_SOURCE"; fi
 rm -f "$OPS/.claude/session/current-ticket" "$EXT/.git/apexyard-ticket" "$B/real7/.git/apexyard-ticket"
+write_registry "$OPS/apexyard.projects.yaml"
+ctx
+
+# 30. The writer binds the ticket's repo to the tree. A project tree takes
+# only a ticket of its own registry entry. The ops fork takes no ticket of a
+# registered project. A refused write leaves no marker.
+mkrepo "$WS/p2"
+write_registry "$OPS/apexyard.projects.yaml" '  - name: p2' '    repos: [org/p2a, org/p2b]'
+ctx
+rm -f "$P1G/apexyard-ticket" "$WS/p2/.git/apexyard-ticket" "$OPS/.git/apexyard-ticket"
+( _at_memo_clear; active_ticket_write "$WS/p2" org/p1 30 t u b ) 2> "$B/w30.err"
+if [ "$?" != 0 ] && [ ! -e "$WS/p2/.git/apexyard-ticket" ] && grep -q "not a repo of" "$B/w30.err"; then ok "30a another project's ticket is not written into a project clone"; else bad "30a" "$(cat "$B/w30.err")"; fi
+( _at_memo_clear; active_ticket_write "$WS/p2" ORG/P2B 31 t u b ) 2> "$B/w31.err"
+if [ "$?" = 0 ] && [ -f "$WS/p2/.git/apexyard-ticket" ]; then ok "30b a repos: slug of the entry is written, without regard to case"; else bad "30b" "$(cat "$B/w31.err")"; fi
+rm -f "$WS/p2/.git/apexyard-ticket"
+( _at_memo_clear; active_ticket_write "$OPS" org/p1 32 t u b ) 2> "$B/w32.err"
+if [ "$?" != 0 ] && [ ! -e "$OPS/.git/apexyard-ticket" ] && grep -q "registered project" "$B/w32.err"; then ok "30c a registered project's ticket is not written into the ops fork"; else bad "30c" "$(cat "$B/w32.err")"; fi
+( _at_memo_clear; active_ticket_write "$OPS" org/ops 33 t u b ) 2> "$B/w33.err"
+if [ "$?" = 0 ] && [ -f "$OPS/.git/apexyard-ticket" ]; then ok "30d an ops ticket is written into the ops fork"; else bad "30d" "$(cat "$B/w33.err")"; fi
+rm -f "$OPS/.git/apexyard-ticket"
+
+# 31. A marker that names a repo outside its tree's entry, planted by hand or
+# by an older writer, is not trusted. The old-layout resolution decides.
+printf 'repo=org/p1\nnumber=34\n' > "$WS/p2/.git/apexyard-ticket"
+_at_memo_clear
+active_ticket_lookup "$WS/p2/src/a.ts"
+if [ "$?" != 0 ] && [ -z "$REPLY" ] && [ "$AT_REASON" = "marker repo is not bound to this tree" ]; then ok "31a a mismatched project marker is not trusted"; else bad "31a" "REPLY=$REPLY reason=$AT_REASON"; fi
+printf 'repo=org/p1\nnumber=35\n' > "$OPS/.git/apexyard-ticket"
+_at_memo_clear
+active_ticket_lookup "$OPS/bin/tool.sh"
+if [ "$?" != 0 ] && [ -z "$REPLY" ]; then ok "31b a project ticket in the ops fork's git dir is not trusted"; else bad "31b" "REPLY=$REPLY reason=$AT_REASON"; fi
+mkdir -p "$OPS/.claude/session"
+printf 'repo=org/p2a\nnumber=36\n' > "$OPS/.claude/session/current-ticket"
+_at_memo_clear
+active_ticket_lookup "$WS/p2/src/a.ts"
+if [ "$?" = 0 ] && [ "$REPLY" = "$OPS/.claude/session/current-ticket" ] && [ "$AT_SOURCE" = legacy ]; then ok "31c the old-layout marker decides past a mismatched marker"; else bad "31c" "REPLY=$REPLY source=$AT_SOURCE"; fi
+rm -f "$OPS/.claude/session/current-ticket" "$WS/p2/.git/apexyard-ticket" "$OPS/.git/apexyard-ticket"
+rm -rf "$WS/p2"
 write_registry "$OPS/apexyard.projects.yaml"
 ctx
 
