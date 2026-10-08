@@ -21,13 +21,11 @@
 #     discards the output on a timeout and the tool call is unaffected
 #     either way (spike-verified: a hung hook body under `timeout: 3`
 #     never delayed the Read it was attached to).
-#   - `timeout 1` around the git worktree fallback call inside
-#     _lib-project-context.sh, so a stalled repo can't eat the budget.
+#   - The worktree fallback reads a `.git` file and starts no git process.
 #
 # DEDUPE: one injection per (session_id, agent_id-or-"main", project) —
-# a marker directory claimed atomically with mkdir (pending). After the
-# context is emitted the claim becomes done (a `done` file inside the
-# marker). A pending marker older than ~5 s (past the hook timeout) is
+# a marker file created exclusively (pending). After the context is
+# emitted the claim becomes done (the file then holds `done`). A pending marker older than ~5 s (past the hook timeout) is
 # treated as stale and reclaimed, so a SIGKILL mid-build cannot suppress
 # later injections forever. A subagent has its own agent_id
 # (spike-confirmed) and so gets its own injection.
@@ -107,70 +105,81 @@ _projctx_path_age_secs() {
   printf '%s' $((now - m))
 }
 
-# Try to claim MARKER as a pending directory. On conflict: done → give up;
-# fresh pending → give up (parallel caller owns it); stale pending → reclaim.
+# Create file $1 holding $2, failing when it already exists. The noclobber
+# redirect is an O_CREAT|O_EXCL open, which stays exclusive on hosts whose
+# mkdir is not.
+_projctx_create_excl() {
+  ( set -C; printf '%s\n' "$2" > "$1" ) 2>/dev/null
+}
+
+# True when regular file $1 is older than the stale threshold.
+_projctx_is_stale() {
+  local age
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  age=$(_projctx_path_age_secs "$1") || return 1
+  [ "$age" -ge "$PROJCTX_PENDING_STALE_SECS" ]
+}
+
+# Remove the reclaim lock only when it still holds this caller's token.
+_projctx_release_lock() {
+  local held=""
+  IFS= read -r held < "$MARKER.reclaim" 2>/dev/null
+  [ "$held" = "$PROJCTX_LOCK_TOKEN" ] && rm -f "$MARKER.reclaim" 2>/dev/null
+  return 0
+}
+
+# Try to claim MARKER as a pending file. On conflict: done → give up; fresh
+# pending → give up (a parallel caller owns it); stale pending → reclaim
+# under a short lock file.
 _projctx_claim_marker() {
-  local age reclaim_lock old_lock moved claimed=1
-  if mkdir "$MARKER" 2>/dev/null; then
-    return 0
+  local line="" lock old claimed=1
+  _projctx_create_excl "$MARKER" pending && return 0
+  [ -f "$MARKER" ] && [ ! -L "$MARKER" ] || return 1
+  IFS= read -r line < "$MARKER" 2>/dev/null
+  [ "$line" = 'done' ] && return 1
+  _projctx_is_stale "$MARKER" || return 1
+
+  PROJCTX_LOCK_TOKEN="$$.$RANDOM"
+  lock="$MARKER.reclaim"
+  if ! _projctx_create_excl "$lock" "$PROJCTX_LOCK_TOKEN"; then
+    # A stale lock belongs to a killed caller. Move it aside under a unique
+    # name so only one caller handles it. A moved lock that proves fresh
+    # has a live owner: drop it and give up.
+    _projctx_is_stale "$lock" || return 1
+    old="$lock.stale.$$"
+    mv "$lock" "$old" 2>/dev/null || return 1
+    if ! _projctx_is_stale "$old"; then
+      rm -f "$old" 2>/dev/null
+      return 1
+    fi
+    rm -f "$old" 2>/dev/null
+    _projctx_create_excl "$lock" "$PROJCTX_LOCK_TOKEN" || return 1
   fi
-  # Existing marker (or unusable path). A done file means already injected.
-  if [ -f "$MARKER/done" ]; then
-    return 1
-  fi
-  # Pending without done: reclaim only when older than the stale threshold.
-  # The short lock keeps a second stale observer from moving the new claim.
-  if [ -d "$MARKER" ] && [ ! -L "$MARKER" ]; then
-    age=$(_projctx_path_age_secs "$MARKER") || age=""
-    if [ -n "$age" ] && [ "$age" -ge "$PROJCTX_PENDING_STALE_SECS" ]; then
-      reclaim_lock="$MARKER.reclaim"
-      if ! mkdir "$reclaim_lock" 2>/dev/null; then
-        # A lock as old as a stale marker belongs to a killed caller. Move
-        # it aside under a unique name, so only the caller whose mv
-        # succeeds retakes it. If the moved lock turns out fresh (its owner
-        # replaced the stale one meanwhile), put it back and give up.
-        age=$(_projctx_path_age_secs "$reclaim_lock") || age=""
-        { [ -n "$age" ] && [ "$age" -ge "$PROJCTX_PENDING_STALE_SECS" ]; } || return 1
-        old_lock="$reclaim_lock.stale.$$"
-        mv "$reclaim_lock" "$old_lock" 2>/dev/null || return 1
-        age=$(_projctx_path_age_secs "$old_lock") || age=""
-        if ! { [ -n "$age" ] && [ "$age" -ge "$PROJCTX_PENDING_STALE_SECS" ]; }; then
-          mv "$old_lock" "$reclaim_lock" 2>/dev/null
-          return 1
-        fi
-        rmdir "$old_lock" 2>/dev/null
-        mkdir "$reclaim_lock" 2>/dev/null || return 1
-      fi
-      trap 'rmdir "$reclaim_lock" 2>/dev/null; exit 0' TERM INT HUP
-      # Recheck under the lock: a prior caller may have replaced the marker.
-      age=$(_projctx_path_age_secs "$MARKER") || age=""
-      if [ -d "$MARKER" ] && [ ! -L "$MARKER" ] && [ ! -f "$MARKER/done" ] \
-         && [ -n "$age" ] && [ "$age" -ge "$PROJCTX_PENDING_STALE_SECS" ]; then
-        moved=$(mktemp -d "$MARKER.stale.XXXXXX" 2>/dev/null) || moved=""
-        if [ -n "$moved" ]; then
-          # Only the caller that moves the stale directory may claim its path.
-          if mv "$MARKER" "$moved/pending" 2>/dev/null; then
-            mkdir "$MARKER" 2>/dev/null && claimed=0
-          fi
-          rm -rf "$moved" 2>/dev/null
-        fi
-      fi
-      rmdir "$reclaim_lock" 2>/dev/null || true
-      trap - TERM INT HUP
-      return "$claimed"
+  trap '_projctx_release_lock; exit 0' TERM INT HUP
+  # Recheck under the lock: a prior caller may have replaced the marker.
+  line=""
+  IFS= read -r line < "$MARKER" 2>/dev/null
+  if [ "$line" != 'done' ] && _projctx_is_stale "$MARKER"; then
+    old="$MARKER.stale.$$"
+    # Only the caller whose move succeeds may create the new claim.
+    if mv "$MARKER" "$old" 2>/dev/null; then
+      _projctx_create_excl "$MARKER" pending && claimed=0
+      rm -f "$old" 2>/dev/null
     fi
   fi
-  return 1
+  _projctx_release_lock
+  trap - TERM INT HUP
+  return "$claimed"
 }
 
 # Claim pending BEFORE building the text. Convert to done only after emit.
 _projctx_claim_marker || exit 0
 # Release a still-pending claim on TERM/INT/HUP (SIGKILL cannot be trapped;
 # stale recovery above covers that path).
-trap 'rm -rf "$MARKER" 2>/dev/null; exit 0' TERM INT HUP
+trap 'rm -f "$MARKER" 2>/dev/null; exit 0' TERM INT HUP
 
 if ! CONTEXT=$(projctx_emit "$PROJECT_NAME" "$PROJECT_WS" "$PROJECT_WT" 2>/dev/null) || [ -z "$CONTEXT" ]; then
-  rm -rf "$MARKER" 2>/dev/null
+  rm -f "$MARKER" 2>/dev/null
   exit 0
 fi
 
@@ -179,10 +188,10 @@ OUTPUT=$(jq -n --arg t "$CONTEXT" '{
     hookEventName: "PostToolUse",
     additionalContext: $t
   }
-}' 2>/dev/null) || { rm -rf "$MARKER" 2>/dev/null; exit 0; }
+}' 2>/dev/null) || { rm -f "$MARKER" 2>/dev/null; exit 0; }
 
 # Pending → done. A lost write still leaves a directory that becomes stale.
-printf 'done\n' > "$MARKER/done" 2>/dev/null || true
+printf 'done\n' > "$MARKER" 2>/dev/null || true
 trap - TERM INT HUP
 
 printf '%s\n' "$OUTPUT"

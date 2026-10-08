@@ -336,27 +336,6 @@ else
   fail_case "(k) symlink containment" "failed:$K_FAIL"
 fi
 
-# The single-winner claim relies on mkdir failing for all but one concurrent
-# caller. Some coreutils builds (uutils 0.10) let several callers succeed, so
-# probe the host before the cases that assert exactly one injection.
-mkdir_is_atomic() {
-  local r=0 i n
-  while [ "$r" -lt 30 ]; do
-    r=$((r + 1))
-    rm -rf "$SB/mkprobe" "$SB"/mkprobe.log*
-    for i in 1 2 3 4 5; do
-      ( mkdir "$SB/mkprobe" 2>/dev/null && : > "$SB/mkprobe.log.$i" ) &
-    done
-    wait
-    n=0
-    for i in 1 2 3 4 5; do [ -e "$SB/mkprobe.log.$i" ] && n=$((n + 1)); done
-    [ "$n" -le 1 ] || return 1
-  done
-  return 0
-}
-if mkdir_is_atomic; then MKDIR_ATOMIC=1; else MKDIR_ATOMIC=0; fi
-rm -rf "$SB/mkprobe" "$SB"/mkprobe.log*
-
 # --- (l) B1: five parallel first touches -> exactly one injection
 mkdir -p "$SB/par"
 PIN=$(payload l1 "" "" "$WS/src/a.ts")
@@ -366,9 +345,7 @@ done
 wait
 NONEMPTY=0
 for i in 1 2 3 4 5; do [ -s "$SB/par/out$i" ] && NONEMPTY=$((NONEMPTY + 1)); done
-if [ "$MKDIR_ATOMIC" = 0 ]; then
-  pass_case "(l) skipped: this host's mkdir is not atomic under concurrency (outputs: $NONEMPTY)"
-elif [ "$NONEMPTY" = 1 ]; then
+if [ "$NONEMPTY" = 1 ]; then
   pass_case "(l) five parallel first touches: exactly one injection"
 else
   fail_case "(l) parallel dedupe" "non-empty outputs: $NONEMPTY"
@@ -751,9 +728,9 @@ rm -rf "$MARKER_DIR"
 echo 'projctx_emit() { sleep 30; }' >> "$FORK/.claude/hooks/_lib-project-context.sh"
 ( invoke "$(payload reg2 "" "" "$WS/src/a.ts")" >"$SB/reg2.out" 2>/dev/null ) &
 BGPID=$!
-# Wait until the pending marker directory exists.
+# Wait until the pending marker file exists.
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  PENDING=$(find "$MARKER_DIR" -maxdepth 1 -type d -name 'injected-*' 2>/dev/null | head -1)
+  PENDING=$(find "$MARKER_DIR" -maxdepth 1 -type f -name 'injected-*' 2>/dev/null | head -1)
   [ -n "$PENDING" ] && break
   sleep 0.2
 done
@@ -771,8 +748,10 @@ else
   touch -t 200001010000 "$REF_OLD" 2>/dev/null || touch -d '2000-01-01' "$REF_OLD" 2>/dev/null
   touch -r "$REF_OLD" "$PENDING"
   rm -f "$REF_OLD"
-  # Ensure no done file.
-  rm -f "$PENDING/done" 2>/dev/null
+  # Make sure it still reads as pending, not done.
+  printf 'pending\n' > "$PENDING"
+  touch -r "$MARKER_DIR" "$PENDING" 2>/dev/null
+  touch -t 200001010000 "$PENDING" 2>/dev/null || touch -d '2000-01-01' "$PENDING" 2>/dev/null
   OUT=$(invoke "$(payload reg2 "" "" "$WS/src/a.ts")")
   if printf '%s' "$OUT" | grep -q CANARY_CLAUDE_MD_MARKER; then
     pass_case "(reg2) SIGKILL pending marker goes stale; retry injects"
@@ -820,7 +799,8 @@ RACE_SESS=reg2b
 RACE_SESS_KEY=$(printf '%s' "$RACE_SESS" | cksum | awk '{print $1}')
 RACE_MARKER_KEY=$(printf '%s' 'main|demo' | cksum | awk '{print $1}')
 RACE_MARKER="$MARKER_DIR/injected-$RACE_SESS_KEY-$RACE_MARKER_KEY"
-mkdir -p "$RACE_MARKER"
+mkdir -p "$MARKER_DIR"
+printf 'pending\n' > "$RACE_MARKER"
 touch -t 200001010000 "$RACE_MARKER" 2>/dev/null || touch -d '2000-01-01' "$RACE_MARKER" 2>/dev/null
 PIN=$(payload "$RACE_SESS" "" "" "$WS/src/a.ts")
 for slot in 0 1 2 3; do
@@ -831,9 +811,7 @@ done
 wait
 NONEMPTY=0
 for slot in 0 1 2 3; do [ -s "$SYNC/out$slot" ] && NONEMPTY=$((NONEMPTY + 1)); done
-if [ "$MKDIR_ATOMIC" = 0 ] && [ ! -e "$SYNC/barrier-timeout" ]; then
-  pass_case "(reg2b) skipped: this host's mkdir is not atomic under concurrency (outputs: $NONEMPTY)"
-elif [ "$NONEMPTY" = 1 ] && [ ! -e "$SYNC/barrier-timeout" ]; then
+if [ "$NONEMPTY" = 1 ] && [ ! -e "$SYNC/barrier-timeout" ]; then
   pass_case "(reg2b) four parallel stale-marker callers: exactly one injection"
 else
   fail_case "(reg2b) stale-marker race" "non-empty outputs: $NONEMPTY barrier_timeout=$([ -e "$SYNC/barrier-timeout" ] && echo yes || echo no)"
@@ -884,7 +862,8 @@ rm -rf "$MARKER_DIR"
 SK=$(printf '%s' reg6 | cksum | awk '{print $1}')
 MK=$(printf '%s' 'main|demo' | cksum | awk '{print $1}')
 LOCK_MARKER="$MARKER_DIR/injected-$SK-$MK"
-mkdir -p "$LOCK_MARKER" "$LOCK_MARKER.reclaim"
+mkdir -p "$MARKER_DIR"
+printf 'pending\n' > "$LOCK_MARKER"; printf 'dead.1\n' > "$LOCK_MARKER.reclaim"
 touch -t 200001010000 "$LOCK_MARKER" "$LOCK_MARKER.reclaim" 2>/dev/null \
   || touch -d '2000-01-01' "$LOCK_MARKER" "$LOCK_MARKER.reclaim" 2>/dev/null
 OUT=$(invoke "$(payload reg6 "" "" "$WS/src/a.ts")")
@@ -1027,8 +1006,8 @@ for arg do last=\$arg; done
 stamp=\$("$REAL_STAT" "\$@") || exit 1
 if [ "\$last" = "\$LOCK_TEST_PATH" ] && [ ! -e "\$LOCK_TEST_PATH.seen" ]; then
   : > "\$LOCK_TEST_PATH.seen"
-  /bin/rmdir "\$last"
-  /bin/mkdir "\$last"
+  /bin/rm -f "\$last"
+  printf 'other.1\\n' > "\$last"
 fi
 printf '%s\\n' "\$stamp"
 SH
@@ -1036,14 +1015,16 @@ chmod +x "$LSHIM/stat"
 SK=$(printf '%s' reg12 | cksum | awk '{print $1}')
 MK=$(printf '%s' 'main|demo' | cksum | awk '{print $1}')
 LM="$MARKER_DIR/injected-$SK-$MK"
-mkdir -p "$LM" "$LM.reclaim"
+mkdir -p "$MARKER_DIR"
+printf 'pending\n' > "$LM"; printf 'dead.1\n' > "$LM.reclaim"
 touch -t 200001010000 "$LM" "$LM.reclaim" 2>/dev/null \
   || touch -d '2000-01-01' "$LM" "$LM.reclaim" 2>/dev/null
 OUT=$(LOCK_TEST_PATH="$LM.reclaim" PATH="$LSHIM:$PATH" invoke "$(payload reg12 "" "" "$WS/src/a.ts")")
-if [ -z "$OUT" ] && [ -d "$LM.reclaim" ]; then
-  pass_case "(reg12) a fresh lock that replaced the stale one is left in place"
+LEFTOVER=$(find "$MARKER_DIR" -name 'injected-*.stale.*' 2>/dev/null | wc -l | tr -d ' ')
+if [ -z "$OUT" ] && [ "$LEFTOVER" = 0 ] && [ ! -e "$LM.reclaim" ]; then
+  pass_case "(reg12) a fresh lock that replaced the stale one is dropped, nothing is put back"
 else
-  fail_case "(reg12) lock takeover race" "out_len=${#OUT} lock=$([ -d "$LM.reclaim" ] && echo kept || echo removed)"
+  fail_case "(reg12) lock takeover race" "out_len=${#OUT} leftovers=$LEFTOVER lock=$([ -e "$LM.reclaim" ] && echo present || echo absent)"
 fi
 rm -rf "$MARKER_DIR"
 
