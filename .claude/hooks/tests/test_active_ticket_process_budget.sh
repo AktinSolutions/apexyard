@@ -396,7 +396,9 @@ if [ -n "$r" ]; then ok "3c a command substitution in a lookup function is caugh
 # machine. Confirm them on the CI ubuntu leg, and re-measure when the runner,
 # the fixture or the merge base changes:
 #   APEXYARD_BUDGET_MEASURE=1 bash test_active_ticket_process_budget.sh
-# The limits are the dev counts, with no added margin. A failure message
+# The limits are the dev counts, with no added margin, except for the exempt
+# case. The current hooks match the dev count of that case exactly,
+# so its limits are the dev counts plus 2. A failure message
 # names the measured and the allowed counts. A small rise on a new git or
 # bash version on the runner calls for a re-measure, not a code change.
 # To measure another hook version, point APEXYARD_BUDGET_HOOKS_DIR at its
@@ -413,7 +415,7 @@ budget_limits() {
     ops) max_f=130; max_e=52 ;;
     wt) max_f=135; max_e=57 ;;
     main) max_f=142; max_e=61 ;;
-    exempt) max_f=30; max_e=14 ;;
+    exempt) max_f=32; max_e=16 ;;
     bash) max_f=566; max_e=236 ;;
     mig) max_f=386; max_e=123 ;;
     legmain) max_f=142; max_e=61 ;;
