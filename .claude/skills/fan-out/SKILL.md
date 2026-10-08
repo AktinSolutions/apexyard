@@ -134,9 +134,9 @@ For every task with `isolation: worktree`, create the worktree and its marker **
 .claude/skills/fan-out/prepare-worktree.sh "<source-tree>" "<ops_root>/.claude/worktrees/<type>-<ticket>-<slug>" "<branch>"
 ```
 
-- **Known gap:** the ticket gate exempts every path under `.claude/`, so a worktree under `<ops_root>/.claude/worktrees/` passes the gate with or without a marker. The helper still writes the marker. A follow-up task tracks narrowing that exemption.
-- The helper runs `git -C <source-tree> worktree add <path> -b <branch>`. A managed-project task therefore gets a worktree of `workspace/<name>/`, not of the ops fork.
-- The helper writes `apexyard-ticket` into the git dir of the new worktree, with the ticket of the source tree. It also writes the old-layout per-worktree marker, so the hooks from before the move see the ticket. When the new worktree fails validation, it writes only the old marker and prints a note. Pass the ticket fields as extra arguments to give a task its own ticket (`--from-tickets`).
+- The ticket gates check source writes under `<ops_root>/.claude/worktrees/` (AgDR-0219). A writer there needs the markers that the helper writes.
+- The helper runs `git -C <source-tree> worktree add <path> -b <branch>`. A managed-project task therefore gets a worktree of its own clone, not of the ops fork.
+- The helper writes `apexyard-ticket` into the git dir of the new worktree, with the ticket of the source tree. The ticket's repo must belong to that clone's registry entry. Otherwise only the old-layout marker is written. It also writes the old-layout per-worktree marker, so the hooks from before the move see the ticket. When the new worktree fails validation, it writes only the old marker and prints a note. Pass the ticket fields as extra arguments to give a task its own ticket (`--from-tickets`).
 - The helper never uses `--force`. If it writes no marker at all, it removes the worktree and branch it created. Stop the whole fan-out and report its message.
 - Do not pass `isolation: worktree` to the `Agent` call for these tasks. The worktree exists already. Tell the agent to work only under the worktree path and to run `git` and every edit there.
 - If the spawn itself fails, remove each worktree this step created with `git -C <source-tree> worktree remove <path>` (no `--force`).
