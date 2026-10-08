@@ -1064,6 +1064,23 @@ else
 fi
 rm -rf "$MARKER_DIR"
 
+# --- (reg14) a symlinked .git does not make a worktree root; odd names stay out of the header
+mkdir -p "$OUTSIDE/FORGED_LINKED_ROOT_TEXT/src"
+ln -s "$WT/.git" "$OUTSIDE/FORGED_LINKED_ROOT_TEXT/.git"
+OUT_LNK=$(invoke "$(payload reg14a "" "" "$OUTSIDE/FORGED_LINKED_ROOT_TEXT/src/a.ts")")
+SPWT="$OUTSIDE/wt FORGED_SPACE_TEXT"
+git -C "$WS" worktree add -q -b projctx-test-sp "$SPWT" 2>/dev/null
+mkdir -p "$SPWT/src"
+OUT_SP=$(invoke "$(payload reg14b "" "" "$SPWT/src/a.ts")")
+if ! printf '%s' "$OUT_LNK" | grep -q FORGED_LINKED_ROOT_TEXT \
+   && printf '%s' "$OUT_SP" | grep -q CANARY_CLAUDE_MD_MARKER \
+   && ! printf '%s' "$OUT_SP" | grep -q FORGED_SPACE_TEXT; then
+  pass_case "(reg14) symlinked .git is refused and a non-conservative worktree path is not named"
+else
+  fail_case "(reg14) worktree root naming" "linked_leak=$(printf '%s' "$OUT_LNK" | grep -c FORGED_LINKED_ROOT_TEXT) space_len=${#OUT_SP} space_leak=$(printf '%s' "$OUT_SP" | grep -c FORGED_SPACE_TEXT)"
+fi
+rm -rf "$MARKER_DIR"
+
 echo "===== test_inject_project_context.sh ====="
 echo "Passed: $PASS"
 echo "Failed: $FAIL"
