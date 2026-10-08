@@ -157,9 +157,13 @@ OPS_ROOT=$(resolve_ops_root "$PWD")
 # The repo pins come from the marker of the working tree that runs the
 # command. A project tree is judged by its own marker only. From the ops fork,
 # which has no marker of its own for a project ticket, the markers of the
-# registered workspace clones and their linked worktrees count too. This guard
-# only adds blocks, so reading more markers is safe. A tree with no marker, or
-# a marker without repo=, cannot establish a managed-project target.
+# registered workspace clones and their linked worktrees count too.
+# A tree that fails validation, such as a scratch clone or an isolated build
+# clone outside the ops fork, has no marker that the resolver will read. The
+# session pin can still find the ops root from there, so that case reads the
+# ops fork's own marker and every project marker. This guard only adds
+# blocks, so reading more markers is safe. A tree with no marker, or a marker
+# without repo=, cannot establish a managed-project target.
 if [ -f "$HOOK_DIR/_lib-active-ticket.sh" ]; then
   # shellcheck source=/dev/null
   . "$HOOK_DIR/_lib-active-ticket.sh"
@@ -173,7 +177,14 @@ if active_ticket_lookup_cwd; then
     REPOS="${REPLY}"$'\n'
   fi
 fi
-if [ -n "$AT_GITDIR" ] && [ -z "$AT_PROJECT" ] && active_ticket_project_markers; then
+CWD_GITDIR="$AT_GITDIR"
+CWD_PROJECT="$AT_PROJECT"
+if [ -z "$CWD_GITDIR" ] && active_ticket_lookup "$OPS_ROOT"; then
+  if active_ticket_read_field "$REPLY" repo && [ -n "$REPLY" ]; then
+    REPOS="${REPOS}${REPLY}"$'\n'
+  fi
+fi
+if { [ -z "$CWD_GITDIR" ] || [ -z "$CWD_PROJECT" ]; } && active_ticket_project_markers; then
   while IFS= read -r marker; do
     [ -n "$marker" ] || continue
     if active_ticket_read_field "$marker" repo && [ -n "$REPLY" ]; then

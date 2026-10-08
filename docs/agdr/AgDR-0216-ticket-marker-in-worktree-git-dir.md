@@ -111,6 +111,7 @@ This AgDR partly supersedes AgDR-0066 and AgDR-0141, and amends AgDR-0168 and Ag
 - The hook-level process count test needs `strace`. It fails on a Linux CI runner without it and prints an `INFO:` line elsewhere, because the suite runner treats a line that starts with `SKIP` as a failure. The limits are the merge-base counts measured on a developer machine. Confirm them on the CI ubuntu leg.
 - `/fan-out` creates writer worktrees under `<ops>/.claude/worktrees/`. The ticket gate exempts every path under `.claude/`, so edits in those worktrees pass without a marker. This gap exists today. A follow-up task should narrow that exemption or move the worktrees. The marker is still written, so the gate works once the path is not exempt.
 - The ambient tracker guard reads the marker of the tree that runs the command. From the ops fork it also reads the markers of registered workspace clones and their linked worktrees, because `/start-ticket` run at the ops root writes into the project clone.
+- A tree that fails validation, such as a scratch clone outside the ops fork, has no marker of its own. When the session pin still resolves the ops root, the guard reads the ops fork's marker and every project marker. This keeps the old block for such a clone.
 
 ## Artifacts
 

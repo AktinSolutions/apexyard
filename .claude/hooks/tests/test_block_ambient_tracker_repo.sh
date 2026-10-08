@@ -273,5 +273,33 @@ mkdir -p "$oldl/.claude/session/tickets/p1"
 printf 'repo=owner/p1\nnumber=3\n' > "$oldl/.claude/session/tickets/p1/feature__x"
 run_case 'an old per-branch tickets/p1/feature__x file alone still pins the ops root' 2 'gh issue view 42' "$oldl"
 
+# A scratch clone or an isolated build clone outside the ops fork is not a
+# registered tree, so it has no marker of its own. The session pin still finds
+# the ops root. The guard must then read the ops fork's marker and every
+# project marker, so an unqualified tracker command stays blocked when the
+# active ticket names a different repo.
+pinops="$TMP/pinops"
+make_repo "$pinops" "git@github.com:owner/framework.git"
+mkdir -p "$pinops/.claude/hooks" "$TMP/pins"
+add_project "$pinops" demo owner/project
+printf '%s\n' "$pinops" > "$TMP/pins/ops-root-ambient-test"
+scratch="$TMP/scratch-clone"
+make_repo "$scratch" "git@github.com:owner/other.git"
+rm -f "$scratch/.apexyard-fork"
+scratch_match="$TMP/scratch-match"
+make_repo "$scratch_match" "git@github.com:owner/project.git"
+rm -f "$scratch_match/.apexyard-fork"
+pinned_case() {
+  APEXYARD_OPS_DISABLE_PIN='' CLAUDE_CODE_SESSION_ID=ambient-test APEXYARD_OPS_PIN_DIR="$TMP/pins" \
+    run_case "$@"
+}
+pinned_case 'unregistered clone sees a project marker through the pinned ops root' 2 'gh issue view 42' "$scratch"
+pinned_case 'unregistered clone with the explicit repo is allowed' 0 'gh issue view 42 --repo owner/project' "$scratch"
+pinned_case 'unregistered clone whose origin matches the ticket repo is allowed' 0 'gh issue view 42' "$scratch_match"
+rm -f "$pinops/workspace/demo/.git/apexyard-ticket"
+pinned_case 'unregistered clone with no ticket anywhere is not pinned' 0 'gh issue view 42' "$scratch"
+printf '%s\n' 'repo=owner/project' > "$pinops/.git/apexyard-ticket"
+pinned_case 'unregistered clone sees the ops fork marker through the pinned ops root' 2 'gh issue view 42' "$scratch"
+
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
