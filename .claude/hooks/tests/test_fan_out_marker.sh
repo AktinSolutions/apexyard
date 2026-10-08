@@ -93,6 +93,21 @@ rc=$?
 if [ "$rc" = 2 ]; then ok "a_worktree_with_no_marker_is_blocked"; else bad "a_worktree_with_no_marker_is_blocked" "rc=$rc"; fi
 rm -rf "$SB"
 
+# --- the caller's git environment does not redirect the worktree ----------
+SB=$(make_sb)
+mkrepo "$SB/elsewhere-repo"
+WT="$SB/.claude/worktrees/feature-GH-48-env"
+out=$(cd "$SB" && GIT_DIR="$SB/elsewhere-repo/.git" GIT_WORK_TREE="$SB/elsewhere-repo" \
+  "$SB/.claude/skills/fan-out/prepare-worktree.sh" "$SB/workspace/p1" "$WT" "feature/GH-48-env" 2>&1)
+rc=$?
+common=$(git -C "$WT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+if [ "$rc" = 0 ] && [ "$common" = "$SB/workspace/p1/.git" ] && [ -z "$(git -C "$SB/elsewhere-repo" worktree list --porcelain | grep "$WT")" ]; then
+  ok "prepare_worktree_ignores_the_callers_git_environment"
+else
+  bad "prepare_worktree_ignores_the_callers_git_environment" "rc=$rc common=$common out=$out"
+fi
+rm -rf "$SB"
+
 # --- an ops task is created from the ops fork -----------------------------
 SB=$(make_sb)
 WT="$SB/.claude/worktrees/chore-GH-7-ops"

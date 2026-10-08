@@ -25,6 +25,10 @@
 
 set -u
 
+# The caller's git environment must not choose the repository or the index
+# that the git calls below act on.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+
 SOURCE="${1:-}"
 WTPATH="${2:-}"
 BRANCH="${3:-}"

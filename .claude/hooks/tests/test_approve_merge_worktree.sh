@@ -69,6 +69,23 @@ case "$OUT" in
   ok$'\t'"$SB/wt-x"*"cache/blob.bin"*) ok "list_shows_the_worktree_and_its_ignored_files" ;;
   *) bad "list_shows_the_worktree_and_its_ignored_files" "$OUT" ;;
 esac
+# A git environment from the caller must not redirect the listing.
+mkrepo "$SB/elsewhere-repo"
+OUT=$(cd "$SB" && GIT_DIR="$SB/elsewhere-repo/.git" GIT_WORK_TREE="$SB/elsewhere-repo" \
+  "$SB/.claude/skills/approve-merge/remove-worktree.sh" list "$P1" feature/x 2>&1)
+case "$OUT" in
+  ok$'\t'"$SB/wt-x"*) ok "list_ignores_the_callers_git_environment" ;;
+  *) bad "list_ignores_the_callers_git_environment" "$OUT" ;;
+esac
+# A worktree path with a newline in it stays one candidate.
+NLWT="$SB/wt-nl"$'\n'"x"
+git -C "$P1" worktree add -q "$NLWT" -b feature/nl
+run "$SB" list "$P1" feature/nl
+case "$OUT" in
+  ok$'\t'"$NLWT"*) ok "list_keeps_a_path_with_a_newline_whole" ;;
+  *) bad "list_keeps_a_path_with_a_newline_whole" "$OUT" ;;
+esac
+git -C "$P1" worktree remove "$NLWT"
 run "$SB" list "$P1" feature/unknown
 case "$OUT" in none:*) ok "list_has_no_candidate_for_an_unknown_branch" ;; *) bad "list_has_no_candidate_for_an_unknown_branch" "$OUT" ;; esac
 mkdir -p "$SB/not-a-worktree"

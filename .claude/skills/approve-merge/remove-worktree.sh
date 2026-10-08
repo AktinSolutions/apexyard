@@ -23,11 +23,15 @@
 #         leaves no ancestry that git can see. It runs `git worktree remove`
 #         with no --force, so a dirty worktree stops the step and is reported.
 #
-# Candidates come only from `git worktree list --porcelain`. The script
+# Candidates come only from `git worktree list --porcelain -z`. The script
 # refuses the main worktree, a locked worktree, the session's own tree, and any
 # path that equals or contains the ops root. It never deletes a path itself.
 
 set -u
+
+# The caller's git environment must not choose the repository or the index
+# that the git calls below act on.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 
 MODE="${1:-}"
 SOURCE="${2:-}"
@@ -76,14 +80,15 @@ flush() {
   cur_branch=""
   cur_locked=0
 }
-while IFS= read -r line || [ -n "$line" ]; do
+# -z ends each field with a NUL, so a path with a newline stays one field.
+while IFS= read -r -d '' line; do
   case "$line" in
     "worktree "*) flush; cur_path="${line#worktree }" ;;
     "branch "*) cur_branch="${line#branch }" ;;
     "locked"*) cur_locked=1 ;;
     "") ;;
   esac
-done < <(git -C "$COMMON" worktree list --porcelain 2>/dev/null)
+done < <(git -C "$COMMON" worktree list --porcelain -z 2>/dev/null)
 flush
 
 if [ "${#WT_PATHS[@]}" -eq 0 ]; then
