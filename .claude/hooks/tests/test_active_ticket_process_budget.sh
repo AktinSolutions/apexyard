@@ -396,6 +396,9 @@ if [ -n "$r" ]; then ok "3c a command substitution in a lookup function is caugh
 # machine. Confirm them on the CI ubuntu leg, and re-measure when the runner,
 # the fixture or the merge base changes:
 #   APEXYARD_BUDGET_MEASURE=1 bash test_active_ticket_process_budget.sh
+# The limits are the dev counts, with no added margin. A failure message
+# names the measured and the allowed counts. A small rise on a new git or
+# bash version on the runner calls for a re-measure, not a code change.
 # To measure another hook version, point APEXYARD_BUDGET_HOOKS_DIR at its
 # .claude/hooks directory. That version needs an old-layout current-ticket to
 # pass.
@@ -489,7 +492,7 @@ hook_count_case() {
     if [ "$forks" -le "$max_f" ] && [ "$execs" -le "$max_e" ]; then
       ok "4 (${names[$i]}) forks=$forks (max $max_f) execs=$execs (max $max_e)"
     else
-      bad "4 (${names[$i]})" "forks=$forks (max $max_f) execs=$execs (max $max_e)"
+      bad "4 (${names[$i]})" "forks=$forks (max $max_f) execs=$execs (max $max_e); if the runner, the fixture or the merge base changed, re-measure with APEXYARD_BUDGET_MEASURE=1"
     fi
   done
   rm -rf "$sb"
@@ -552,7 +555,7 @@ legacy_count_case() {
     if [ "$forks" -le "$max_f" ] && [ "$execs" -le "$max_e" ]; then
       ok "4b (${names[$i]}) forks=$forks (max $max_f) execs=$execs (max $max_e)"
     else
-      bad "4b (${names[$i]})" "forks=$forks (max $max_f) execs=$execs (max $max_e)"
+      bad "4b (${names[$i]})" "forks=$forks (max $max_f) execs=$execs (max $max_e); if the runner, the fixture or the merge base changed, re-measure with APEXYARD_BUDGET_MEASURE=1"
     fi
   done
   rm -rf "$sb"

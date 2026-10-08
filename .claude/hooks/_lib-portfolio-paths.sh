@@ -48,6 +48,11 @@
 # _lib-resolution-cache.sh's header for the full design. Falls through to
 # the unchanged per-process logic on any miss; never changes what gets
 # computed, only how often.
+#
+# The per-process caches reset only on the first source in a process, not
+# on every source. A long-lived interactive shell that re-sources this
+# library after a config change keeps the old values. Call
+# _portfolio_reset_caches, or start a new shell, to pick up the change.
 
 # ------------------------------------------------------------------------------
 # Load _lib-ops-root.sh (for resolve_ops_root, consulted by _portfolio_root
