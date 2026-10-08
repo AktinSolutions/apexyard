@@ -57,7 +57,12 @@ for f in "$COMPAT"/*.sh.dev; do
   t="${f##*/}"
   t="${t%.dev}"
   cp "$f" "$M/.claude/hooks/tests/$t"
-  out=$(cd "$M" && timeout 600 bash "$M/.claude/hooks/tests/$t" </dev/null 2>&1)
+  # macOS has no timeout command, so the limit applies only where it exists.
+  if command -v timeout >/dev/null 2>&1; then
+    out=$(cd "$M" && timeout 600 bash "$M/.claude/hooks/tests/$t" </dev/null 2>&1)
+  else
+    out=$(cd "$M" && bash "$M/.claude/hooks/tests/$t" </dev/null 2>&1)
+  fi
   rc=$?
   ran=$((ran + 1))
   if [ "$rc" = 0 ]; then
