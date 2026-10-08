@@ -110,7 +110,9 @@ This AgDR partly supersedes AgDR-0066 and AgDR-0141, and amends AgDR-0168 and Ag
 
 ## Backward compatibility
 
-On 2026-10-08 Nagy reversed D1 and chose full backward compatibility. The first build replaced the old lookup instead of extending it, and real sessions broke. Linked worktrees, unregistered repos, nested repos and forks without the portfolio library lost their ticket.
+On 2026-10-08 Nagy, the issue author, reversed D1 and chose full backward compatibility. The upstream maintainer has not confirmed this decision yet. The review of the PR asks for that confirmation on me2resh/apexyard#1576. Until it comes, the amended rows below are the issue author's proposal.
+
+The first build replaced the old lookup instead of extending it, and real sessions broke. Linked worktrees, unregistered repos, nested repos and forks without the portfolio library lost their ticket.
 
 The breakage had two kinds of cause.
 
@@ -119,7 +121,7 @@ The breakage had two kinds of cause.
 
 ### Amended acceptance criteria
 
-The decision amends four acceptance-criteria rows of me2resh/apexyard#1576. The amended rows are posted on the issue. QA verifies against them.
+The decision amends four acceptance-criteria rows of me2resh/apexyard#1576. The issue author posted the amended rows on the issue. QA verifies against them after the upstream maintainer confirms them.
 
 | Original row | Amended row |
 |---|---|
@@ -150,7 +152,43 @@ The fix for both is to run `/start-ticket` again in each tree, or to delete the 
 
 ### Removal
 
-The old resolution and the old-layout writer go away only in an explicit breaking release (D6). That release states it in the CHANGELOG upgrade notes.
+The old resolution and the old-layout writer go away only in an explicit breaking release (D6). That release states it in the CHANGELOG upgrade notes. A follow-up task tracks the release (follow-up: to be filed).
+
+The removal release can start when all of these conditions are true:
+
+- At least one release after this one has shipped the dual read and the dual write.
+- The upstream maintainer agrees to drop rollback support across the move.
+- The removal task has a decision for each shape in the risk table below.
+
+Removal brings back the break of the first build for every shape that cannot validate. The removal task must decide, for each shape, between a supported new-marker path and an explicit, documented block.
+
+| Shape | Risk after removal |
+|---|---|
+| Unregistered repo outside the ops fork | It has no trusted new marker, so every gated write blocks. |
+| Nested repo or submodule | It is not a tree for the new marker, so writes inside it block. |
+| Symlinked root | Validation refuses the tree, so its writes block. |
+| Repo owned by another user, such as a devcontainer or a bind mount | The ownership check refuses the tree, so its writes block. |
+| Fork without the portfolio library | The registry path is unknown, so a workspace lookup fails closed. |
+| Linked worktree with only an old per-branch marker | The tree loses its ticket until `/start-ticket` runs again in it. |
+| Bash write whose target the gate cannot extract | `current-ticket` no longer counts, so the write needs a marker in the hook cwd's tree. |
+| Session that follows the old `/start-ticket` text | It writes only the old marker, and no hook reads that marker. |
+
+The removal release deletes these items:
+
+- The `_atd_*` functions in `_lib-active-ticket.sh`, and the fallback call to them in `_at_lookup_inner`.
+- `active_ticket_legacy_path`, `active_ticket_legacy_markers`, `active_ticket_legacy_fallback` and `active_ticket_write_legacy`.
+- The old-layout part of `active_ticket_project_markers`.
+- The old-layout write in `active_ticket_write_from_file`, in `prepare-worktree.sh` and in the `/start-ticket` and `/fan-out` skill text.
+- The inline old-marker loop in `block-ambient-tracker-repo.sh`.
+- The `status/briefing.sh` display reader and its entry on the allowlist of `test_ticket_marker_readers.sh`.
+- `warn-legacy-ticket-markers.sh`. The release can change it into a notice that the old files can be deleted.
+- `test_dev_compat_rows.sh`, and the old-layout cases of `test_legacy_ticket_markers.sh`.
+- The four amended acceptance-criteria rows. The original rows apply again.
+
+Two other follow-up tasks relate to the transition (follow-up: to be filed):
+
+- Block a `cd <tree> && write` command (see "Decisions inside this AgDR").
+- Check for a stale new marker (see "Dual write").
 
 ### Places where the new hooks differ from the old ones
 
@@ -164,10 +202,12 @@ The old resolution and the old-layout writer go away only in an explicit breakin
 
 ### Proof
 
-The proof uses the `dev` merge base named in `.claude/hooks/tests/compat/dev-base/BASE`, now b312ca8. Each merge of `dev` refreshes it.
+The one-time proof ran the unchanged test files of the `dev` merge base b312ca8 against the new hooks. The results are in the PR body. The frozen copies of those tests are not part of the suite, because `dev` keeps changing the behaviour that they pin.
 
-- One `test_dev_marker_compat_<name>.sh` per edited test runs the merge-base file, unchanged, against the new hooks. The only expected difference is the dispatcher test, which pins the list of SessionStart hooks.
-- `test_dev_compat_rows.sh` runs one row per broken session shape, B1 to B9, against both hook versions. Rows P1 and P2 show that a ticket written into the wrong tree passes neither version.
+- The only expected difference was the dispatcher test, which pins the list of SessionStart hooks.
+- `test_dev_compat_rows.sh` stays in the suite. It runs one row per broken session shape, B1 to B9, against the current hooks. Each row has the fixed verdict that the old hooks gave for the same shape.
+- Rows P1 and P2 show that a ticket written into the wrong tree does not pass.
+- Rows B8 and B9 check the old-layout marker that the new `/start-ticket` writes. Its path and format are the ones that the old hooks read.
 
 ## Build notes
 
@@ -189,6 +229,11 @@ The proof uses the `dev` merge base named in `.claude/hooks/tests/compat/dev-bas
 - `.claude/hooks/tests/test_active_ticket_process_budget.sh`
 - `.claude/hooks/tests/test_agdr_marker_supersession.sh`
 - `.claude/hooks/tests/test_legacy_ticket_markers.sh`
-- `.claude/hooks/tests/test_dev_marker_compat.sh`, the `test_dev_marker_compat_*.sh` wrappers and `.claude/hooks/tests/compat/`
 - `.claude/hooks/tests/test_dev_compat_rows.sh`
+- `.claude/hooks/tests/test_start_ticket_step5.sh`
+- `.claude/hooks/tests/test_fan_out_marker.sh`
+- `.claude/hooks/block-ambient-tracker-repo.sh` and `.claude/hooks/tests/test_block_ambient_tracker_repo.sh`
+- `.claude/hooks/warn-legacy-ticket-markers.sh`
+- `.claude/skills/start-ticket/SKILL.md`
+- `.claude/skills/fan-out/prepare-worktree.sh`
 - me2resh/apexyard#1576
