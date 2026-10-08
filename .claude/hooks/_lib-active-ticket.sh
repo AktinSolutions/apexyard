@@ -12,19 +12,29 @@
 # and every other reader call this library, so no two readers can disagree
 # about which marker governs a path.
 #
+# TRANSITION (dual read). A regular apexyard-ticket file in the git dir of a
+# validated tree decides. When there is none, or the tree fails validation,
+# the lookup runs the old-layout resolution from before the move (the _atd_
+# functions below). That resolution reads <ops>/.claude/session/tickets/ and
+# current-ticket with the old rules, so every target that had a ticket before
+# still has one. A failed validation only stops the new marker from being
+# trusted. It is never a block on its own.
+#
 # DISCOVERY RUNS NO GIT PROCESS. The lookup reads the same files git reads
 # (.git, <gitdir>/commondir, <gitdir>/gitdir) with shell builtins only. No
 # GIT_* variable and no git config can steer it. Once the context is filled,
-# the lookup makes 0 forks and 0 execs. The first lookup in a workspace clone
+# the lookup of a new marker makes 0 forks and 0 execs. The first lookup in a workspace clone
 # may resolve the registry path once per process, and that step can fork. A
 # static test (test_active_ticket_process_budget.sh) fails when a
 # lookup function gains a command substitution, a pipe, a subshell or an
 # external command. The functions that fork on purpose are
-# active_ticket_init and active_ticket_write.
+# active_ticket_init, the writers and the old-layout resolution (_atd_*).
 #
 # VALIDATION (docs/agdr/AgDR-0216-ticket-marker-in-worktree-git-dir.md):
-#   - the git dir must belong to the ops fork or to a registered workspace
-#     clone, matched fresh on every validated path
+#   - the git dir must belong to the ops fork or to a registered clone, matched
+#     fresh on every validated path. A registered clone sits under the
+#     workspace dir with its registry name, or at the workspace: path of its
+#     registry entry
 #   - a linked worktree must be listed by its common dir, and both back
 #     pointers must agree
 #   - no symlink may sit between the target and the tree root
@@ -218,8 +228,15 @@ _at_reg_flush() {
     AT_REG_REPO="$ent_repo"
     AT_REG_REPO_SET="$ent_set"
   fi
+  if [ -n "$ent_name" ] && [ -n "$ent_ws" ]; then
+    AT_REG_WS_ENTRIES="$AT_REG_WS_ENTRIES$ent_name"$'\t'"$ent_ws"$'\n'
+  fi
+  if [ -n "$want_repo" ] && [ -z "$AT_REG_NAME_FOR_REPO" ] && [ -n "$ent_repo" ] && [ "$ent_repo" = "$want_repo" ]; then
+    AT_REG_NAME_FOR_REPO="$ent_name"
+  fi
   ent_name=""
   ent_repo=""
+  ent_ws=""
   ent_set=" "
   in_repos=0
 }
@@ -230,12 +247,18 @@ _at_reg_flush() {
 # by a space. Keys count only at the indent of an entry's first key, so a
 # nested repo: key in a sub-map never matches. Returns 0 when <name> is
 # registered. An empty <name> only collects AT_REG_REPOS and returns 1.
+# AT_REG_WS_ENTRIES holds one "<name><TAB><workspace>" line for each entry
+# with a workspace: key, as written in the registry. With a second argument,
+# AT_REG_NAME_FOR_REPO is the name of the first entry whose repo: value
+# equals it exactly.
 _at_reg_scan() {
-  local want="$1" raw line lead rest sp k v item eind="" eset=0 kind="" in_proj=0 found=1
-  local ent_name="" ent_repo="" ent_set=" " in_repos=0
+  local want="$1" want_repo="${2:-}" raw line lead rest sp k v item eind="" eset=0 kind="" in_proj=0 found=1
+  local ent_name="" ent_repo="" ent_ws="" ent_set=" " in_repos=0
   AT_REG_REPO=""
   AT_REG_REPO_SET=" "
   AT_REG_REPOS=" "
+  AT_REG_WS_ENTRIES=""
+  AT_REG_NAME_FOR_REPO=""
   [ -n "${_AT_REG:-}" ] && [ -r "$_AT_REG" ] || return 1
   while IFS= read -r raw || [ -n "$raw" ]; do
     raw="${raw%$'\r'}"
@@ -297,6 +320,11 @@ _at_reg_scan() {
         _at_reg_add "$v"
         ;;
       primary) _at_reg_add "$v" ;;
+      workspace)
+        v="${v#[\"\']}"
+        v="${v%[\"\']}"
+        ent_ws="$v"
+        ;;
       repos)
         if [ -z "$v" ]; then
           in_repos=1
@@ -340,7 +368,12 @@ _at_reset_state() {
   _AT_OPS=""
   _AT_WS=""
   _AT_REG=""
-  export -n _AT_OPS _AT_WS _AT_REG
+  _AT_HOME=""
+  _AT_DWS=""
+  export -n _AT_OPS _AT_WS _AT_REG _AT_HOME _AT_DWS
+  AT_SOURCE=""
+  AT_REG_WS_ENTRIES=""
+  AT_REG_NAME_FOR_REPO=""
   AT_VALIDATIONS=0
   AT_REASON=""
   AT_GITDIR=""
@@ -373,9 +406,14 @@ case "${_AT_GUARD[1]:-}" in
 esac
 
 # Context for a caller that already resolved the ops root and workspace dir.
+# The optional third and fourth values serve the old-layout resolution: the
+# directory that holds .claude/session/ (default: the ops root) and the
+# workspace dir as the hook resolved it before (default: the second value).
 active_ticket_set_context() {
   _AT_OPS="${1:-}"
   _AT_WS="${2:-}"
+  _AT_HOME="${3:-}"
+  _AT_DWS="${4:-}"
   return 0
 }
 
@@ -445,24 +483,42 @@ _at_validate_w_body() {
       "$ws"/*/.git)
         name="${C#"$ws"/}"
         name="${name%/.git}"
+        # A name that fails a check here is not a match. A registry entry's
+        # workspace: path may still claim the clone below.
         case "$name" in
-          */*|.|..|'') _at_fail "unregistered common dir"; return 1 ;;
+          */*|.|..|'') name="" ;;
         esac
-        if [ "$wslink" = 1 ]; then _at_fail "symlink in marker path: $_AT_WS"; return 1; fi
-        [[ $name =~ $_AT_NAME_RE ]] || { _at_fail "unregistered common dir"; return 1; }
-        _at_fill_reg
-        _at_reg_scan "$name" || { _at_fail "unregistered common dir"; return 1; }
-        if [ -L "$_AT_WS/$name" ] || [ -L "$_AT_WS/$name/.git" ]; then
-          _at_fail "symlink in marker path: $_AT_WS/$name"
-          return 1
+        if [ -n "$name" ] && [ "$wslink" = 1 ]; then _at_fail "symlink in marker path: $_AT_WS"; return 1; fi
+        [ -z "$name" ] || [[ $name =~ $_AT_NAME_RE ]] || name=""
+        if [ -n "$name" ]; then
+          _at_fill_reg
+          _at_reg_scan "$name" || name=""
         fi
-        _at_rp "$_AT_WS/$name/.git" || return 1
-        [ "$REPLY" = "$C" ] || { _at_fail "unregistered common dir"; return 1; }
-        _at_rp "$_AT_WS/$name" || return 1
-        [ "${REPLY%/*}" = "$ws" ] || { _at_fail "unregistered common dir"; return 1; }
-        wsm=1
+        if [ -n "$name" ]; then
+          if [ -L "$_AT_WS/$name" ] || [ -L "$_AT_WS/$name/.git" ]; then
+            _at_fail "symlink in marker path: $_AT_WS/$name"
+            return 1
+          fi
+          _at_rp "$_AT_WS/$name/.git" || return 1
+          [ "$REPLY" = "$C" ] || name=""
+        fi
+        if [ -n "$name" ]; then
+          _at_rp "$_AT_WS/$name" || return 1
+          [ "${REPLY%/*}" = "$ws" ] || name=""
+        fi
+        [ -z "$name" ] || wsm=1
         ;;
     esac
+  fi
+  # A registry entry may name its clone with a workspace: path, absolute or
+  # relative to the ops root. Its .git must resolve to C. The same link and
+  # name rules apply as for a clone under the workspace dir.
+  _at_entry_match "$C" || return 1
+  if [ -n "$REPLY" ]; then
+    if [ "$ops" = 1 ]; then _at_fail "ambiguous common dir"; return 1; fi
+    if [ "$wsm" = 1 ] && [ "$REPLY" != "$name" ]; then _at_fail "ambiguous common dir"; return 1; fi
+    name="$REPLY"
+    wsm=1
   fi
   if [ $((ops + wsm)) = 2 ]; then _at_fail "ambiguous common dir"; return 1; fi
   if [ $((ops + wsm)) = 0 ]; then
@@ -503,6 +559,48 @@ _at_validate_w_body() {
 }
 
 _AT_NAME_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+
+# Sets REPLY to the name of the registry entry whose workspace: path holds the
+# common dir C, or to empty when no entry does. Returns 1, with AT_REASON set,
+# when the match is reached through a link or when two entries match.
+_at_entry_match() {
+  local C="$1" en ew p hit="" lines
+  REPLY=""
+  _at_fill_reg
+  [ -n "$_AT_REG" ] || return 0
+  _at_reg_scan "" || true
+  lines="$AT_REG_WS_ENTRIES"
+  while [ -n "$lines" ]; do
+    en="${lines%%$'\n'*}"
+    lines="${lines#*$'\n'}"
+    ew="${en#*$'\t'}"
+    en="${en%%$'\t'*}"
+    [[ $en =~ $_AT_NAME_RE ]] || continue
+    case "$ew" in
+      '') continue ;;
+      '~'*) continue ;;
+      /*) p="$ew" ;;
+      *) [ -n "$_AT_OPS" ] || continue; p="$_AT_OPS/${ew#./}" ;;
+    esac
+    p="${p%/}"
+    [ -n "$p" ] || continue
+    _at_rp "$p/.git" || continue
+    [ "$REPLY" = "$C" ] || continue
+    if [ -L "$p" ] || [ -L "$p/.git" ]; then
+      REPLY=""
+      _at_fail "symlink in marker path: $p"
+      return 1
+    fi
+    if [ -n "$hit" ] && [ "$hit" != "$en" ]; then
+      REPLY=""
+      _at_fail "ambiguous common dir"
+      return 1
+    fi
+    hit="$en"
+  done
+  REPLY="$hit"
+  return 0
+}
 
 # Memoised wrapper. The memo key covers the tree and the context.
 _at_validate_w() {
@@ -574,92 +672,227 @@ _at_resolve_g() {
 }
 
 # ---------------------------------------------------------------------------
-# Old-layout markers (honoured in a main clone only, until they are removed)
+# The old-layout resolution (the floor during the transition)
 # ---------------------------------------------------------------------------
+#
+# When no validated tree holds an apexyard-ticket file, the lookup runs the
+# resolution that the hooks used before markers moved into the git dir. It
+# reads, in order:
+#
+#   <home>/.claude/session/tickets/<project>/<safe-branch>   linked worktree
+#   <home>/.claude/session/tickets/<project>
+#   <home>/.claude/session/current-ticket
+#
+# <project> comes from the path under the workspace dir (or <ops>/workspace).
+# The branch tier applies when CLAUDE_WORKTREE_BRANCH is set or git reports a
+# linked worktree. An empty target reads current-ticket only. A target that
+# is not empty but cannot be resolved, such as ~user/x, reads no marker.
+#
+# These functions keep the old cost: they may run git and the path resolver.
+# They run only when the new marker is absent or not trusted, so the lookup of
+# a new marker makes no fork. Their names start with _atd_, so the static fork
+# scan of the lookup path does not cover them.
 
-# Sets REPLY to a legacy marker file that may govern the validated tree.
-# Records AT_LEGACY_FILE and AT_LEGACY_WHY when a file exists and is not used.
-_at_legacy() {
-  local s="$_AT_OPS/.claude/session" cand="" l repo="" num=""
-  REPLY=""
-  if [ -n "$_AT_MN" ]; then
-    cand="$s/tickets/$_AT_MN"
-    if [ ! -e "$cand" ] && [ ! -L "$cand" ]; then
-      if [ -e "$s/current-ticket" ] || [ -L "$s/current-ticket" ]; then
-        AT_LEGACY_FILE="$s/current-ticket"
-        AT_LEGACY_WHY="current-ticket is not used for a managed project"
-      fi
-      return 1
-    fi
-  else
-    cand="$s/current-ticket"
-    if [ ! -e "$cand" ] && [ ! -L "$cand" ]; then return 1; fi
-  fi
-  AT_LEGACY_FILE="$cand"
-  if [ "$_AT_MK" != main ]; then AT_LEGACY_WHY="linked worktree"; return 1; fi
-  if [ -L "$s" ] || [ -L "$s/tickets" ] || [ -L "$cand" ] || [ ! -f "$cand" ]; then
-    AT_LEGACY_WHY="not a regular file"
-    return 1
-  fi
-  while IFS= read -r l || [ -n "$l" ]; do
-    l="${l%$'\r'}"
-    case "$l" in
-      repo=*) [ -n "$repo" ] || repo="${l#repo=}" ;;
-      number=*) [ -n "$num" ] || num="${l#number=}" ;;
+# The old lexical normalisation: drop empty and "." segments, pop on "..".
+_atd_lexical() {
+  local rest="$1" seg out=""
+  while [ -n "$rest" ]; do
+    seg="${rest%%/*}"
+    case "$rest" in
+      */*) rest="${rest#*/}" ;;
+      *) rest="" ;;
     esac
-  done < "$cand"
-  if [ -z "$repo" ] || [ -z "$num" ]; then AT_LEGACY_WHY="missing repo= or number="; return 1; fi
-  # The same ticket-id shape that the writer and the migration gate accept.
-  num="${num#\#}"
-  case "$num" in
-    ''|*[!A-Za-z0-9_-]*) AT_LEGACY_WHY="number= is not a ticket id"; return 1 ;;
-  esac
-  _at_fill_reg
-  if [ -n "$_AT_MN" ]; then
-    _at_reg_scan "$_AT_MN" || { AT_LEGACY_WHY="project not in the registry"; return 1; }
-    _at_member "$AT_REG_REPO_SET" "$repo" || { AT_LEGACY_WHY="repo mismatch"; return 1; }
-  else
-    # No registry file means no managed project can own the repo. A registry
-    # that exists but cannot be read, or an unknown path, fails closed.
-    if [ -z "$_AT_REG" ] || { [ -e "$_AT_REG" ] && [ ! -r "$_AT_REG" ]; }; then
-      AT_LEGACY_WHY="registry unreadable"
-      return 1
-    fi
-    _at_reg_scan ""
-    if _at_member "$AT_REG_REPOS" "$repo"; then
-      AT_LEGACY_WHY="current-ticket names a managed project"
-      return 1
-    fi
-  fi
-  REPLY="$cand"
+    case "$seg" in
+      ''|.) ;;
+      ..) out="${out%/*}" ;;
+      *) out="$out/$seg" ;;
+    esac
+  done
+  REPLY="${out:-/}"
 }
 
-# ---------------------------------------------------------------------------
-# Public lookup API. These functions set REPLY, write nothing to stderr and
-# make no fork.
-# ---------------------------------------------------------------------------
+_atd_resolve_path() {
+  local target="$1" resolved=""
+  REPLY=""
+  [ -n "$target" ] || return 0
+  case "$target" in
+    '~') target="$HOME" ;;
+    '~/'*) target="$HOME/${target#\~/}" ;;
+    '~'*) return 0 ;;
+  esac
+  case "$target" in
+    /*) ;;
+    *)
+      _at_rp "$PWD" || { REPLY=""; return 0; }
+      target="$REPLY/$target"
+      ;;
+  esac
+  _atd_lexical "$target"
+  if command -v _resolve_real_path >/dev/null 2>&1; then
+    resolved=$(_resolve_real_path "$REPLY")
+  fi
+  [ -n "$resolved" ] || resolved="$REPLY"
+  case "$resolved" in
+    //*) resolved="/${resolved#//}" ;;
+  esac
+  REPLY="$resolved"
+}
 
-_at_lookup_inner() {
-  _at_resolve_g "$1" || return 1
-  if [ -f "$AT_GITDIR/apexyard-ticket" ]; then
-    REPLY="$AT_GITDIR/apexyard-ticket"
+_atd_anchor() {
+  local raw="$1" resolved=""
+  REPLY=""
+  [ -n "$raw" ] || return 0
+  if command -v _resolve_real_path >/dev/null 2>&1; then
+    resolved=$(_resolve_real_path "$raw")
+  fi
+  REPLY="${resolved:-$raw}"
+}
+
+_atd_project_for_resolved_path() {
+  local path="$1" project="" tail ws ops
+  _atd_anchor "${_AT_DWS:-$_AT_WS}"
+  ws="$REPLY"
+  _atd_anchor "$_AT_OPS"
+  ops="$REPLY"
+  if [ -n "$ws" ]; then
+    case "$path" in
+      "$ws"/*) tail="${path#"$ws"/}"; project="${tail%%/*}" ;;
+    esac
+  fi
+  if [ -z "$project" ] && [ -n "$ops" ]; then
+    case "$path" in
+      "$ops"/workspace/*) tail="${path#"$ops"/workspace/}"; project="${tail%%/*}" ;;
+    esac
+  fi
+  REPLY="$project"
+}
+
+# dirname for an absolute, normalised path.
+_atd_dirname() {
+  case "$1" in
+    /) REPLY=/ ;;
+    */*) REPLY="${1%/*}"; [ -n "$REPLY" ] || REPLY=/ ;;
+    *) REPLY=. ;;
+  esac
+}
+
+# The marker path for <raw>, or empty, in REPLY.
+_atd_marker_for_path() {
+  local raw="$1" resolved="" project="" marker="" wt="" safe dir gd gcd
+  local home="${_AT_HOME:-$_AT_OPS}"
+  REPLY=""
+  [ -n "$home" ] || return 0
+  _atd_resolve_path "$raw"
+  resolved="$REPLY"
+  if [ -n "$resolved" ]; then
+    _atd_project_for_resolved_path "$resolved"
+    project="$REPLY"
+  fi
+  if [ -n "$project" ]; then
+    wt="${CLAUDE_WORKTREE_BRANCH:-}"
+    if [ -z "$wt" ]; then
+      _atd_dirname "$resolved"
+      dir="$REPLY"
+      while [ -n "$dir" ] && [ "$dir" != "/" ] && [ ! -d "$dir" ]; do
+        _atd_dirname "$dir"
+        dir="$REPLY"
+      done
+      [ -d "$dir" ] || dir=""
+      gd=$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null)
+      gcd=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+      if [ -n "$gd" ] && [ "$gd" != "$gcd" ]; then
+        wt=$(git -C "$dir" branch --show-current 2>/dev/null)
+      fi
+    fi
+    if [ -n "$wt" ]; then
+      safe="${wt//\//__}"
+      marker="$home/.claude/session/tickets/$project/$safe"
+      [ -f "$marker" ] || marker=""
+    fi
+  fi
+  if [ -z "$marker" ] && [ -n "$project" ] && [ -f "$home/.claude/session/tickets/$project" ]; then
+    marker="$home/.claude/session/tickets/$project"
+  elif [ -z "$marker" ] && { [ -n "$resolved" ] || [ -z "$raw" ]; } \
+    && [ -f "$home/.claude/session/current-ticket" ]; then
+    marker="$home/.claude/session/current-ticket"
+  fi
+  REPLY="$marker"
+}
+
+# Runs the old-layout resolution for <raw>. Keeps AT_REASON and the tree
+# fields that the validation set. On a miss, AT_LEGACY_FILE names an old file
+# that exists but does not cover the target, for the block message.
+_atd_lookup() {
+  local why="$AT_REASON" home="${_AT_HOME:-$_AT_OPS}" f
+  _atd_marker_for_path "$1"
+  AT_REASON="$why"
+  if [ -n "$REPLY" ]; then
+    AT_SOURCE=legacy
+    AT_LEGACY_FILE="$REPLY"
+    AT_LEGACY_WHY=""
     return 0
   fi
-  _at_legacy
-}
-
-# REPLY is the marker path, or empty. Return 0 only when a marker governs the
-# path. AT_REASON is empty when the tree is valid and holds no marker.
-active_ticket_lookup() {
-  _at_lookup_inner "$1" && return 0
+  AT_SOURCE=""
+  AT_LEGACY_FILE=""
+  AT_LEGACY_WHY=""
+  if [ -n "$home" ]; then
+    if [ -f "$home/.claude/session/current-ticket" ]; then
+      AT_LEGACY_FILE="$home/.claude/session/current-ticket"
+    else
+      for f in "$home/.claude/session/tickets"/*; do
+        if [ -e "$f" ]; then AT_LEGACY_FILE="$f"; break; fi
+      done
+    fi
+    [ -z "$AT_LEGACY_FILE" ] || AT_LEGACY_WHY="it does not cover this target"
+  fi
   REPLY=""
   return 1
 }
 
-# The lookup for the physical working directory.
+# ---------------------------------------------------------------------------
+# Public lookup API. These functions set REPLY and write nothing to stderr.
+# A marker in a validated tree is found with no fork. When there is none, the
+# old-layout resolution above runs and may run git.
+# ---------------------------------------------------------------------------
+
+# $1 is the path to validate. $2 is the target as the caller gave it, for the
+# old-layout resolution.
+_at_lookup_inner() {
+  AT_SOURCE=""
+  if _at_resolve_g "$1" && [ -f "$AT_GITDIR/apexyard-ticket" ]; then
+    REPLY="$AT_GITDIR/apexyard-ticket"
+    AT_SOURCE=tree
+    return 0
+  fi
+  _atd_lookup "$2"
+}
+
+# REPLY is the marker path, or empty. Return 0 only when a marker governs the
+# path. AT_SOURCE is "tree" for a marker in the git dir of a validated tree and
+# "legacy" for an old-layout file. AT_REASON is empty when the tree is valid.
+active_ticket_lookup() {
+  _at_lookup_inner "$1" "$1" && return 0
+  REPLY=""
+  return 1
+}
+
+# The lookup for the physical working directory. It stands for a target that
+# could not be extracted, so the old-layout resolution reads current-ticket
+# only.
 active_ticket_lookup_cwd() {
-  _at_rp "$PWD" || { REPLY=""; AT_REASON="cwd unavailable"; return 1; }
-  active_ticket_lookup "$REPLY"
+  if ! _at_rp "$PWD"; then
+    AT_GITDIR=""
+    AT_TREE=""
+    AT_PROJECT=""
+    AT_SOURCE=""
+    AT_REASON="cwd unavailable"
+    _atd_lookup "" && return 0
+    REPLY=""
+    return 1
+  fi
+  _at_lookup_inner "$REPLY" "" && return 0
+  REPLY=""
+  return 1
 }
 
 # REPLY is the validated git dir of the tree that holds <dir>, or empty.
@@ -676,20 +909,44 @@ active_ticket_gitdir() {
 # from the ops fork. Each clone is validated, so an unregistered repo is never
 # read. Builtins only.
 active_ticket_project_markers() {
-  local d g m t s name out=""
+  local d g m t s name out="" seen=$'\n' cands="" lines ew
   REPLY=""
   if [ -n "$_AT_WS" ] && [ -d "$_AT_WS" ]; then
     for d in "$_AT_WS"/*/; do
       d="${d%/}"
       [ -d "$d" ] || continue
-      active_ticket_gitdir "$d" || continue
-      g="$AT_GITDIR"
-      if [ -f "$g/apexyard-ticket" ] && [ ! -L "$g/apexyard-ticket" ]; then out="$out$g/apexyard-ticket"$'\n'; fi
-      for m in "$g"/worktrees/*/apexyard-ticket; do
-        if [ -f "$m" ] && [ ! -L "$m" ]; then out="$out$m"$'\n'; fi
-      done
+      cands="$cands$d"$'\n'
     done
   fi
+  # The clones that registry entries name with a workspace: path.
+  _at_fill_reg
+  if [ -n "$_AT_REG" ]; then
+    _at_reg_scan "" || true
+    lines="$AT_REG_WS_ENTRIES"
+    while [ -n "$lines" ]; do
+      ew="${lines%%$'\n'*}"
+      lines="${lines#*$'\n'}"
+      ew="${ew#*$'\t'}"
+      case "$ew" in
+        /*) cands="$cands$ew"$'\n' ;;
+        ''|'~'*) ;;
+        *) [ -z "$_AT_OPS" ] || cands="$cands$_AT_OPS/${ew#./}"$'\n' ;;
+      esac
+    done
+  fi
+  while [ -n "$cands" ]; do
+    d="${cands%%$'\n'*}"
+    cands="${cands#*$'\n'}"
+    [ -d "$d" ] || continue
+    active_ticket_gitdir "$d" || continue
+    g="$AT_GITDIR"
+    case "$seen" in *$'\n'"$g"$'\n'*) continue ;; esac
+    seen="$seen$g"$'\n'
+    if [ -f "$g/apexyard-ticket" ] && [ ! -L "$g/apexyard-ticket" ]; then out="$out$g/apexyard-ticket"$'\n'; fi
+    for m in "$g"/worktrees/*/apexyard-ticket; do
+      if [ -f "$m" ] && [ ! -L "$m" ]; then out="$out$m"$'\n'; fi
+    done
+  done
   # Old-layout files, until the legacy reader is removed. After an update,
   # every adopter has these and no new marker yet. They are returned even
   # where the legacy rule would refuse them for an edit, because a reader that
@@ -886,87 +1143,146 @@ active_ticket_write() {
   return 0
 }
 
-# ---------------------------------------------------------------------------
-# Path helpers for display only (project name for a path). These fork. They
-# do not decide which marker governs a path.
-# ---------------------------------------------------------------------------
-
-_atl_resolve_path() {
-  local target="$1" base lexical resolved
-  [ -n "$target" ] || return 0
-
-  case "$target" in
-    '~')    target="$HOME" ;;
-    '~/'*)  target="$HOME/${target#\~/}" ;;
-    '~'*)   return 0 ;;
+# The old-layout writer. During the transition /start-ticket and /fan-out
+# write the old marker too, so a hook from before the move (after a rollback,
+# or in a session that still runs the old hooks) sees the ticket. The path is
+# the one the old /start-ticket chose:
+#
+#   tickets/<project>/<safe-branch>   the repo is registered, linked worktree
+#   tickets/<project>                 the repo is registered
+#   current-ticket                    otherwise
+#
+# <project> is the first registry entry whose repo: value equals <repo>. The
+# worktree test is the old one: CLAUDE_WORKTREE_BRANCH, else git reports a
+# linked worktree for <dir>. Prints a one-line note to stderr and returns 1
+# when it cannot write. It never removes a file.
+# REPLY is the old-layout marker path that the old /start-ticket would write
+# for <repo> from the tree at <dir>. See active_ticket_write_legacy.
+active_ticket_legacy_path() {
+  local dir="$1" repo="$2" home project="" wt="" gd gcd
+  REPLY=""
+  AT_LEGACY_KIND=""
+  if ! active_ticket_init "$dir"; then
+    echo "apexyard: old-layout marker not written: no ops root for $dir" >&2
+    return 1
+  fi
+  home="${_AT_HOME:-$_AT_OPS}"
+  _at_fill_reg
+  if [ -n "$_AT_REG" ]; then
+    _at_reg_scan "" "$repo" || true
+    project="$AT_REG_NAME_FOR_REPO"
+  fi
+  case "$project" in
+    */*|.|..) project="" ;;
   esac
-
-  case "$target" in
-    /*) ;;
-    *)
-      base=$(pwd -P 2>/dev/null) || return 0
-      target="$base/$target"
-      ;;
-  esac
-
-  lexical=$(printf '%s' "$target" | awk -F/ '{
-    n = 0
-    for (i = 1; i <= NF; i++) {
-      if ($i == "" || $i == ".") continue
-      if ($i == "..") { if (n > 0) n--; continue }
-      out[++n] = $i
-    }
-    s = ""
-    for (i = 1; i <= n; i++) s = s "/" out[i]
-    print (s == "" ? "/" : s)
-  }')
-
-  if command -v _resolve_real_path >/dev/null 2>&1; then
-    resolved=$(_resolve_real_path "$lexical")
+  if [ -n "$project" ]; then
+    wt="${CLAUDE_WORKTREE_BRANCH:-}"
+    if [ -z "$wt" ]; then
+      gd=$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null)
+      gcd=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+      if [ -n "$gd" ] && [ "$gd" != "$gcd" ]; then
+        wt=$(git -C "$dir" branch --show-current 2>/dev/null)
+      fi
+    fi
+    if [ -n "$wt" ]; then
+      REPLY="$home/.claude/session/tickets/$project/${wt//\//__}"
+      AT_LEGACY_KIND=worktree
+    else
+      REPLY="$home/.claude/session/tickets/$project"
+      AT_LEGACY_KIND=project
+    fi
   else
-    resolved="$lexical"
+    REPLY="$home/.claude/session/current-ticket"
+    AT_LEGACY_KIND=session
   fi
-  [ -n "$resolved" ] || resolved="$lexical"
-  case "$resolved" in
-    //*) resolved="/${resolved#//}" ;;
-  esac
-  printf '%s' "$resolved"
+  return 0
 }
 
-_atl_anchor() {
-  local raw="$1" resolved=""
-  [ -n "$raw" ] || return 0
-  if command -v _resolve_real_path >/dev/null 2>&1; then
-    resolved=$(_resolve_real_path "$raw")
-  fi
-  [ -n "$resolved" ] || resolved="$raw"
-  printf '%s' "$resolved"
+# REPLY holds every old-layout marker file under <home>/.claude/session/, one
+# path per line: current-ticket, each tickets/<name> file and each
+# tickets/<name>/<branch> file. A reader that only adds blocks uses this to see
+# every ticket the old layout knew about. Builtins only.
+active_ticket_legacy_markers() {
+  local home="${_AT_HOME:-$_AT_OPS}" f out=""
+  REPLY=""
+  [ -n "$home" ] || return 1
+  for f in "$home/.claude/session/current-ticket" "$home/.claude/session/tickets"/* "$home/.claude/session/tickets"/*/*; do
+    [ -f "$f" ] || continue
+    out="$out$f"$'\n'
+  done
+  REPLY="$out"
+  [ -n "$out" ]
 }
 
-_atl_project_for_resolved_path() {
-  local path="$1" project="" tail ws ops
-  ws=$(_atl_anchor "${_AT_WS:-}")
-  ops=$(_atl_anchor "${_AT_OPS:-}")
-  if [ -n "$ws" ]; then
-    case "$path" in
-      "$ws"/*) tail="${path#"$ws"/}"; project="${tail%%/*}" ;;
-    esac
-  fi
-  if [ -z "$project" ] && [ -n "$ops" ]; then
-    case "$path" in
-      "$ops"/workspace/*) tail="${path#"$ops"/workspace/}"; project="${tail%%/*}" ;;
-    esac
-  fi
-  printf '%s' "$project"
+# REPLY is the session-level old-layout marker path, for messages.
+active_ticket_legacy_fallback() {
+  REPLY="${_AT_HOME:-${_AT_OPS:-.}}/.claude/session/current-ticket"
 }
+
+active_ticket_write_legacy() {
+  local dir="$1" repo="$2" num="$3" title="$4" url="$5" branch="$6"
+  local marker parent tmp ts=""
+  if [[ ! $repo =~ ^[A-Za-z0-9._/-]+$ ]] || [[ ! $num =~ ^#?[A-Za-z0-9_-]+$ ]]; then
+    echo "apexyard: old-layout marker not written: repo or number has an unexpected shape" >&2
+    return 1
+  fi
+  active_ticket_legacy_path "$dir" "$repo" || return 1
+  marker="$REPLY"
+  parent="${marker%/*}"
+  if [ -e "$parent" ] && [ ! -d "$parent" ]; then
+    echo "apexyard: old-layout marker not written: $parent is a file, and the per-worktree marker needs a directory there" >&2
+    return 1
+  fi
+  if [ -L "$marker" ] || { [ -e "$marker" ] && [ ! -f "$marker" ]; }; then
+    echo "apexyard: old-layout marker not written: $marker exists and is not a regular file" >&2
+    return 1
+  fi
+  if ! mkdir -p "$parent" 2>/dev/null; then
+    echo "apexyard: old-layout marker not written: cannot create $parent" >&2
+    return 1
+  fi
+  title="${title//$'\r'/ }"; title="${title//$'\n'/ }"
+  url="${url//$'\r'/ }"; url="${url//$'\n'/ }"
+  branch="${branch//$'\r'/ }"; branch="${branch//$'\n'/ }"
+  if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" = 4 ] && [ "${BASH_VERSINFO[1]}" -ge 2 ]; }; then
+    TZ=UTC printf -v ts '%(%Y-%m-%dT%H:%M:%SZ)T' -1
+  else
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  fi
+  tmp=$(mktemp "$parent/.apexyard-ticket.tmp.XXXXXX" 2>/dev/null) || {
+    echo "apexyard: old-layout marker not written: mktemp failed in $parent" >&2
+    return 1
+  }
+  if ! {
+    printf 'repo=%s\n' "$repo"
+    printf 'number=%s\n' "${num#\#}"
+    printf 'title=%s\n' "$title"
+    printf 'url=%s\n' "$url"
+    printf 'suggested_branch=%s\n' "$branch"
+    printf 'started_at=%s\n' "$ts"
+  } > "$tmp" 2>/dev/null || ! chmod 0644 "$tmp" 2>/dev/null || ! mv -f "$tmp" "$marker" 2>/dev/null; then
+    rm -f "$tmp"
+    echo "apexyard: old-layout marker not written: write failed for $marker" >&2
+    return 1
+  fi
+  REPLY="$marker"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Path helpers for display only (project name for a path). They use the
+# old-layout resolution and fork like it. They do not decide which marker
+# governs a path.
+# ---------------------------------------------------------------------------
 
 active_ticket_resolve_path() {
-  _atl_resolve_path "$1"
+  _atd_resolve_path "$1"
+  printf '%s' "$REPLY"
 }
 
 active_ticket_project_for_path() {
-  local resolved
-  resolved=$(_atl_resolve_path "$1")
-  [ -n "$resolved" ] || return 0
-  _atl_project_for_resolved_path "$resolved"
+  _atd_resolve_path "$1"
+  [ -n "$REPLY" ] || return 0
+  _atd_project_for_resolved_path "$REPLY"
+  printf '%s' "$REPLY"
 }

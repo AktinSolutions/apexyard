@@ -350,17 +350,25 @@ spike_cross_project_setup() {
   case "$mode" in
     old-tickets) printf 'repo=test/a\nnumber=1\ntitle=[Spike] other project\n' > "$ops/.claude/session/tickets/a" ;;
     old-current) printf 'repo=test/a\nnumber=1\ntitle=[Spike] other project\n' > "$ops/.claude/session/current-ticket" ;;
+    old-current-b) printf 'repo=test/a\nnumber=1\ntitle=[Spike] other project\n' > "$ops/.claude/session/current-ticket"
+      printf 'repo=test/b\nnumber=2\ntitle=Plain b ticket\n' > "$ops/.claude/session/tickets/b" ;;
     *) printf 'repo=test/a\nnumber=1\ntitle=[Spike] other project\n' > "$a/.git/apexyard-ticket" ;;
   esac
   echo "$ops/workspace/b"
 }
 
-for mode in new old-tickets old-current; do
+for mode in new old-tickets old-current-b; do
   DIR=$(spike_cross_project_setup "$mode")
   run_case "spike_marker_in_project_a_does_not_exempt_project_b ($mode marker, arch change in b) → BLOCK" \
     "$DIR" 2 "AgDR" \
     "gh pr create --base main --title 'feat(#180): tweak domain' --body 'no AgDR'"
 done
+# The old current-ticket is the marker that governs b when b has no marker
+# of its own, as in the ticket gate. Its spike title then exempts b.
+DIR=$(spike_cross_project_setup old-current)
+run_case "an old current-ticket that governs b exempts b → PASS" \
+  "$DIR" 0 "spike/prototype PR detected" \
+  "gh pr create --base main --title 'feat(#180): tweak domain' --body 'no AgDR'"
 DIR=$(spike_cross_project_setup)
 printf 'repo=test/b\nnumber=2\ntitle=[Spike] own marker\n' > "$DIR/.git/apexyard-ticket"
 run_case "project b with its own spike marker → PASS" \

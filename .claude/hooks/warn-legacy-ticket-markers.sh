@@ -1,10 +1,11 @@
 #!/bin/bash
 # SessionStart hook: tell the agent that old-layout ticket markers exist.
 #
-# Ticket markers moved to each working tree's git dir (AgDR-0216). Old files
-# under <ops_root>/.claude/session/ still work in a main clone, for their own
-# project only, until the legacy reader is removed. This hook prints one
-# notice at session start when any old file exists. SessionStart stdout goes
+# Ticket markers are moving to each working tree's git dir (AgDR-0216). During
+# the move, old files under <ops_root>/.claude/session/ are still read wherever
+# they were read before, and /start-ticket still writes them. This hook prints
+# one informational notice at session start when any old file exists, so the
+# agent knows both layouts are live. SessionStart stdout goes
 # into the agent's context, so the notice reaches the agent whether or not a
 # later edit is blocked.
 #
@@ -37,5 +38,5 @@ if [ -d "$SESSION_DIR/tickets" ]; then
 fi
 [ -n "$found" ] || exit 0
 
-printf "apexyard: ticket markers moved to each working tree's git dir. Old markers are used only in a main clone and only for their own project, until you run /start-ticket <N> in that tree. Found: %s. See AgDR-0216.\n" "$found"
+printf "apexyard: ticket markers are moving to each working tree's git dir. Old markers under .claude/session/ are still read and written during the move. A marker in a tree's git dir wins over an old one. Found: %s. See AgDR-0216.\n" "$found"
 exit 0

@@ -266,7 +266,9 @@ printf 'repo=owner/p1\nnumber=3\n' > "$oldl/.claude/session/current-ticket"
 run_case 'old current-ticket naming owner/p1 alone still pins the ops root' 2 'gh issue view 42' "$oldl"
 rm -f "$oldl/.claude/session/current-ticket"
 printf 'repo=owner/unregistered\nnumber=3\n' > "$oldl/.claude/session/tickets/zzz"
-run_case 'an old tickets file for an unregistered name does not pin' 0 'gh issue view 42' "$oldl"
+# Every old-layout file pins its repo, as before markers moved, so the guard
+# blocks at least what it blocked before.
+run_case 'an old tickets file for an unregistered name still pins, as before' 2 'gh issue view 42' "$oldl"
 rm -f "$oldl/.claude/session/tickets/zzz"
 # The old per-branch form: tickets/<name>/<branch>.
 mkdir -p "$oldl/.claude/session/tickets/p1"

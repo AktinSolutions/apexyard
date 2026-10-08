@@ -100,16 +100,18 @@ if [ -z "$TOUCHED_ARCH" ]; then
   exit 0
 fi
 
-# True when the marker of the working tree at REPO_ROOT names a [Spike] or
-# [Prototype] ticket. Only the tree's own marker counts, so a spike in one
-# project cannot exempt a change in another project or tree.
+# True when the marker that governs REPO_ROOT names a [Spike] or [Prototype]
+# ticket: the marker in its tree's git dir, else the old-layout marker for
+# that path. A spike in one project cannot exempt a change in another project
+# or tree.
 spike_marker_exempt() {
   local hook_dir
   hook_dir="$(cd "$(dirname "$0")" && pwd)"
   [ -n "${REPO_ROOT:-}" ] && [ -f "$hook_dir/_lib-active-ticket.sh" ] || return 1
   # shellcheck source=/dev/null
   . "$hook_dir/_lib-active-ticket.sh"
-  active_ticket_init "$REPO_ROOT" || return 1
+  # Without an ops root, the old-layout markers under REPO_ROOT still count.
+  active_ticket_init "$REPO_ROOT" || active_ticket_set_context "" "" "$REPO_ROOT"
   active_ticket_lookup "$REPO_ROOT" || return 1
   active_ticket_read_field "$REPLY" title || return 1
   case "$REPLY" in

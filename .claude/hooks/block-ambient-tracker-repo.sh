@@ -154,7 +154,28 @@ fi
 OPS_ROOT=$(resolve_ops_root "$PWD")
 [ -n "$OPS_ROOT" ] || exit 0
 
-# The repo pins come from the marker of the working tree that runs the
+if [ -f "$HOOK_DIR/_lib-active-ticket.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$HOOK_DIR/_lib-active-ticket.sh"
+fi
+
+# Every old-layout marker under <ops_root>/.claude/session/ pins its repo, as
+# before markers moved into the git dir. The new markers add to that set, so
+# this guard blocks at least everything it blocked before.
+REPOS=""
+if command -v active_ticket_legacy_markers >/dev/null 2>&1; then
+  active_ticket_set_context "$OPS_ROOT" "" "$OPS_ROOT"
+  if active_ticket_legacy_markers; then
+    while IFS= read -r marker; do
+      [ -n "$marker" ] || continue
+      repo=$(sed -n 's/^repo=//p' "$marker" | head -1)
+      [ -n "$repo" ] && REPOS="${REPOS}${repo}"$'\n'
+    done <<< "$REPLY"
+  fi
+  active_ticket_set_context "" ""
+fi
+
+# The new repo pins come from the marker of the working tree that runs the
 # command. A project tree is judged by its own marker only. From the ops fork,
 # which has no marker of its own for a project ticket, the markers of the
 # registered workspace clones and their linked worktrees count too.
@@ -164,27 +185,21 @@ OPS_ROOT=$(resolve_ops_root "$PWD")
 # ops fork's own marker and every project marker. This guard only adds
 # blocks, so reading more markers is safe. A tree with no marker, or a marker
 # without repo=, cannot establish a managed-project target.
-if [ -f "$HOOK_DIR/_lib-active-ticket.sh" ]; then
-  # shellcheck source=/dev/null
-  . "$HOOK_DIR/_lib-active-ticket.sh"
-else
-  exit 0
-fi
-active_ticket_init "$PWD" || exit 0
-REPOS=""
-if active_ticket_lookup_cwd; then
-  if active_ticket_read_field "$REPLY" repo && [ -n "$REPLY" ]; then
-    REPOS="${REPLY}"$'\n'
-  fi
-fi
-CWD_GITDIR="$AT_GITDIR"
-CWD_PROJECT="$AT_PROJECT"
-if [ -z "$CWD_GITDIR" ] && active_ticket_lookup "$OPS_ROOT"; then
+if command -v active_ticket_init >/dev/null 2>&1 && active_ticket_init "$PWD" && active_ticket_lookup_cwd; then
   if active_ticket_read_field "$REPLY" repo && [ -n "$REPLY" ]; then
     REPOS="${REPOS}${REPLY}"$'\n'
   fi
 fi
-if { [ -z "$CWD_GITDIR" ] || [ -z "$CWD_PROJECT" ]; } && active_ticket_project_markers; then
+CWD_GITDIR="${AT_GITDIR:-}"
+CWD_PROJECT="${AT_PROJECT:-}"
+HAVE_LIB=0
+command -v active_ticket_project_markers >/dev/null 2>&1 && HAVE_LIB=1
+if [ "$HAVE_LIB" = 1 ] && [ -z "$CWD_GITDIR" ] && active_ticket_lookup "$OPS_ROOT"; then
+  if active_ticket_read_field "$REPLY" repo && [ -n "$REPLY" ]; then
+    REPOS="${REPOS}${REPLY}"$'\n'
+  fi
+fi
+if [ "$HAVE_LIB" = 1 ] && { [ -z "$CWD_GITDIR" ] || [ -z "$CWD_PROJECT" ]; } && active_ticket_project_markers; then
   while IFS= read -r marker; do
     [ -n "$marker" ] || continue
     if active_ticket_read_field "$marker" repo && [ -n "$REPLY" ]; then

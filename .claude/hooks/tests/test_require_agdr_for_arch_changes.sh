@@ -49,6 +49,8 @@ setup() {
     a-new) printf 'repo=test/a\nnumber=1\ntitle=[Spike] other project\n' > "$a/.git/apexyard-ticket" ;;
     a-old-tickets) printf 'repo=test/a\nnumber=1\ntitle=[Spike] other project\n' > "$ops/.claude/session/tickets/a" ;;
     a-old-current) printf 'repo=test/a\nnumber=1\ntitle=[Spike] other project\n' > "$ops/.claude/session/current-ticket" ;;
+    a-old-current-b) printf 'repo=test/a\nnumber=1\ntitle=[Spike] other project\n' > "$ops/.claude/session/current-ticket"
+      printf 'repo=test/b\nnumber=2\ntitle=Plain b ticket\n' > "$ops/.claude/session/tickets/b" ;;
     b-old-tickets) printf 'repo=test/b\nnumber=2\ntitle=[Spike] own old ticket\n' > "$ops/.claude/session/tickets/b" ;;
   esac
   printf 'FROM scratch\n' > "$b/Dockerfile"
@@ -69,7 +71,11 @@ run_case "no marker: the architecture commit is blocked" none 2
 run_case "the tree's own spike marker exempts the commit" own 0
 run_case "spike_marker_in_project_a_does_not_exempt_project_b (new marker)" a-new 2
 run_case "spike_marker_in_project_a_does_not_exempt_project_b (old tickets/a)" a-old-tickets 2
-run_case "spike_marker_in_project_a_does_not_exempt_project_b (old current-ticket)" a-old-current 2
+# The old current-ticket governs b when b has no marker of its own, as in the
+# ticket gate, so its spike title exempts b. With a plain tickets/b file, the
+# spike current-ticket does not govern b.
+run_case "an old current-ticket that governs b exempts b" a-old-current 0
+run_case "spike_marker_in_project_a_does_not_exempt_project_b (old current-ticket, plain tickets/b)" a-old-current-b 2
 run_case "an old tickets/b spike file still exempts b's main clone" b-old-tickets 0
 
 echo "PASS=$PASS FAIL=$FAIL"

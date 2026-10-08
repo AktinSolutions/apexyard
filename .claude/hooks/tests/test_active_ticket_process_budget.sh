@@ -164,7 +164,9 @@ case "$NOPATH" in
   *) bad "1c" "$NOPATH" ;;
 esac
 
-# Legacy pass and legacy mismatch, also under an empty PATH.
+# The old-layout resolution, also under an empty PATH. It may run git, which
+# then fails quietly, and it must still give the same answer: for a main clone
+# git reports no linked worktree either way.
 rm -f "$WS/p1/.git/apexyard-ticket"
 printf 'repo=org/p1\nnumber=9\n' > "$OPS/.claude/session/tickets/p1"
 _at_memo_clear
@@ -178,7 +180,7 @@ active_ticket_lookup "$WS/p1/a.ts" 2> "$B/err"
 legacy_nopath="rc=$?:$REPLY"
 PATH="$REAL_PATH"
 hash -r
-if [ "$legacy_normal" = "$legacy_nopath" ] && [ "$legacy_normal" = "rc=0:$OPS/.claude/session/tickets/p1" ]; then ok "1d legacy pass needs no external command"; else bad "1d" "$legacy_normal vs $legacy_nopath"; fi
+if [ "$legacy_normal" = "$legacy_nopath" ] && [ "$legacy_normal" = "rc=0:$OPS/.claude/session/tickets/p1" ]; then ok "1d the old-layout pass gives the same answer under an empty PATH"; else bad "1d" "$legacy_normal vs $legacy_nopath"; fi
 printf 'repo=org/other\nnumber=9\n' > "$OPS/.claude/session/tickets/p1"
 # shellcheck disable=SC2123
 PATH=/nonexistent
@@ -188,7 +190,7 @@ active_ticket_lookup "$WS/p1/a.ts" 2> "$B/err"
 legacy_mismatch="rc=$?:$REPLY"
 PATH="$REAL_PATH"
 hash -r
-if [ "$legacy_mismatch" = "rc=1:" ]; then ok "1e legacy mismatch needs no external command"; else bad "1e" "$legacy_mismatch"; fi
+if [ "$legacy_mismatch" = "rc=0:$OPS/.claude/session/tickets/p1" ]; then ok "1e an old file naming another repo still passes, as before, under an empty PATH"; else bad "1e" "$legacy_mismatch"; fi
 rm -f "$OPS/.claude/session/tickets/p1"
 printf 'repo=org/p1\nnumber=5\n' > "$WS/p1/.git/apexyard-ticket"
 
@@ -210,6 +212,21 @@ hash -r
 _AT_REG="$SAVED_REG"
 _at_memo_clear
 if [ "$noreg_rc" = 1 ] && [ -z "$REPLY" ] && [ "$noreg_reason" = "unregistered common dir" ] && [ -z "$noreg_err" ]; then ok "1f an unknown registry path fails closed with empty stderr"; else bad "1f" "rc=$noreg_rc reason=$noreg_reason err=$noreg_err"; fi
+
+# 1g. A lookup that finds a new marker never enters the old-layout resolution,
+# so the old cost never applies to it.
+ATD_CALLS=0
+_atd_lookup() { ATD_CALLS=$((ATD_CALLS + 1)); REPLY=""; return 1; }
+for p in "$WS/p1/src/a.ts" "$B/wt1/src/a.ts" "$OPS/src/a.ts"; do
+  _at_memo_clear
+  active_ticket_lookup "$p" >/dev/null 2>&1
+done
+_at_memo_clear
+active_ticket_lookup "$B/rogue/a.ts" >/dev/null 2>&1
+# shellcheck source=/dev/null
+. "$LIB"
+ctx
+if [ "$ATD_CALLS" = 1 ]; then ok "1g only the lookup without a trusted new marker runs the old-layout resolution"; else bad "1g" "calls=$ATD_CALLS (want 1)"; fi
 
 # --- 2. writer counter -------------------------------------------------------
 SHIM="$B/shim"
@@ -330,7 +347,9 @@ for l in "${badl[@]}"; do
 done
 [ "$cls_ok" = 1 ] && ok "3a the classifier handles known-good and known-bad lines"
 
-# Extract the scanned function bodies from the library.
+# Extract the scanned function bodies from the library. The old-layout
+# resolution (_atd_*) keeps the cost it had before markers moved and is not
+# scanned. Check 1g shows that a lookup that finds a new marker never runs it.
 SCAN_NAMES='^(_at_[a-z_]+|active_ticket_(lookup|lookup_cwd|gitdir|is_marker_target|read_field|set_context|marker_for_path|project_markers))$'
 EXTRA_SCAN="${ACTIVE_TICKET_EXTRA_SCAN:-}"
 scan_fail=0

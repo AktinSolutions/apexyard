@@ -10,16 +10,17 @@
 #   <repo>/.git/worktrees/<id>/apexyard-ticket    ← linked worktree
 #
 # _lib-active-ticket.sh finds and validates that git dir. It runs no git
-# process. A tree that is not the ops fork or a registered workspace clone
-# has no marker, so its writes stay gated. Old-layout markers under
-# ops_root/.claude/session/ are honoured in a main clone only, and only
-# until the legacy reader is removed (AgDR-0216).
+# process for that step. During the move, the old-layout markers under
+# ops_root/.claude/session/ still work everywhere they worked before
+# (AgDR-0216, Backward compatibility).
 #
 # Resolution for a given FILE_PATH:
 #   1. Validate the tree that holds FILE_PATH and read its marker. If present
 #      → exempt.
-#   2. Otherwise apply the legacy rule (main clone only). If it passes
-#      → exempt.
+#   2. Otherwise run the old-layout resolution in _lib-active-ticket.sh: the
+#      per-worktree, per-project and session-level files under
+#      ops_root/.claude/session/. If one is present → exempt. A tree that
+#      fails validation lands here too.
 #   3. Otherwise, block with instructions.
 #
 # The one write into a .git directory that this gate allows is the marker
@@ -446,16 +447,20 @@ _ratc_evaluate_target() {
   # portfolio_resolve_into_vars reads the config once per process, so a Bash
   # command with several targets does not resolve the workspace dir again for
   # each one.
-  local WORKSPACE_DIR="$OPS_ROOT/workspace"
+  # WORKSPACE_DIR keeps the value the hook used before markers moved: any
+  # non-empty resolved value. TREE_WS is the value the tree validation uses: an
+  # absolute resolved value, else the default.
+  local WORKSPACE_DIR="$OPS_ROOT/workspace" TREE_WS="$OPS_ROOT/workspace"
   if [ -n "$OPS_ROOT" ] && [ -f "$HOOK_DIR/_lib-portfolio-paths.sh" ] && [ -f "$HOOK_DIR/_lib-read-config.sh" ]; then
     # shellcheck source=/dev/null
     . "$HOOK_DIR/_lib-read-config.sh"
     # shellcheck source=/dev/null
     . "$HOOK_DIR/_lib-portfolio-paths.sh"
     portfolio_resolve_into_vars
+    [ -z "${_PP_WS:-}" ] || WORKSPACE_DIR="$_PP_WS"
     # A relative value means the hook runs outside the fork. Keep the default.
     case "${_PP_WS:-}" in
-      /*) WORKSPACE_DIR="$_PP_WS" ;;
+      /*) TREE_WS="$_PP_WS" ;;
     esac
   fi
 
@@ -672,8 +677,8 @@ _ratc_evaluate_target() {
 
   # Marker resolution is shared with the migration gate and the other
   # readers, so no two gates can authorise the same path against different
-  # tickets. The library validates the tree of the target and reads its
-  # marker with shell builtins only.
+  # tickets. The library reads the marker in the git dir of a validated tree
+  # with shell builtins only. Without one, it runs the old-layout resolution.
   local ACTIVE_TICKET_LIB="$HOOK_DIR/_lib-active-ticket.sh"
   if [ -f "$ACTIVE_TICKET_LIB" ]; then
     # shellcheck source=/dev/null
@@ -681,7 +686,7 @@ _ratc_evaluate_target() {
   fi
   local MARKER="" LOOKUP_RC=1
   if command -v active_ticket_lookup >/dev/null 2>&1; then
-    active_ticket_set_context "$OPS_ROOT" "$WORKSPACE_DIR"
+    active_ticket_set_context "$OPS_ROOT" "$TREE_WS" "$MARKER_HOME" "$WORKSPACE_DIR"
     # The only write into a .git directory that needs no ticket is the
     # marker itself and its temporary file. Each target must pass on its own.
     case "$FILE_PATH" in
@@ -693,7 +698,8 @@ _ratc_evaluate_target() {
     esac
     if [ -z "$FILE_PATH" ]; then
       # An unextractable Bash target is judged against the working directory
-      # of the hook, which keeps an active session ticket effective for it.
+      # of the hook. Without a marker there, the session-level old-layout
+      # marker still counts for it.
       active_ticket_lookup_cwd
     else
       active_ticket_lookup "$FILE_PATH"
@@ -706,23 +712,30 @@ _ratc_evaluate_target() {
   fi
 
   # Nothing found. Say whether the tree failed validation or only has no
-  # marker, and mention an old-layout file that was not used.
+  # marker. An old-layout file that exists but does not cover the target is
+  # named as information about the move, not as the reason for the block.
   #
   # The quoted-origin note, when present, sits between the Target line and
   # "Exempt paths" with a blank line on each side. A plain variable keeps the
   # trailing newline that a command substitution inside the heredoc would
   # strip. With no note, the variable is empty and the one blank line stays.
-  local QUOTED_HINT WHY_LINE LEGACY_LINE="" CWD_HINT=""
+  local QUOTED_HINT WHY_LINE TREE_LINE LEGACY_LINE="" CWD_HINT=""
+  local FALLBACK_MARKER=""
+  if command -v active_ticket_legacy_fallback >/dev/null 2>&1; then
+    active_ticket_legacy_fallback
+    FALLBACK_MARKER="$REPLY"
+  fi
   QUOTED_HINT=$(_ratc_quoted_origin_hint "$TOOL_NAME")
   [ -n "$QUOTED_HINT" ] && QUOTED_HINT=$'\n'"$QUOTED_HINT"$'\n'
   if [ -n "${AT_REASON:-}" ]; then
-    WHY_LINE="BLOCKED: No active ticket set. ${FILE_PATH:-the hook working directory} is not inside the ops fork or a registered workspace clone, or its git dir failed validation ($AT_REASON). Ticket markers are not read from unregistered trees."
+    WHY_LINE="A marker in the git dir of the target's tree is not read ($AT_REASON). Old-layout markers under .claude/session/ still count."
+    TREE_LINE="  this tree:    not read ($AT_REASON)"
   else
-    WHY_LINE="BLOCKED: No active ticket set for this working tree (${AT_TREE:-unknown}). Run /start-ticket <N> in this tree."
+    WHY_LINE="The working tree ${AT_TREE:-unknown} has no marker, and no old-layout marker covers the target."
+    TREE_LINE="  this tree:    ${AT_GITDIR:+$AT_GITDIR/}apexyard-ticket"
   fi
   if [ -n "${AT_LEGACY_FILE:-}" ]; then
-    LEGACY_LINE="apexyard: ticket markers moved to each working tree's git dir. Old markers are used only in a main clone and only for their own project. Run /start-ticket <N> in this tree. See AgDR-0216.
-Old marker found: $AT_LEGACY_FILE (not used: ${AT_LEGACY_WHY:-unknown reason})
+    LEGACY_LINE="Note: ticket markers are moving to each working tree's git dir (AgDR-0216). Old markers are still read and written during the move. Old marker found: $AT_LEGACY_FILE (${AT_LEGACY_WHY:-it does not cover this target}).
 "
   fi
   if [ -z "$FILE_PATH" ]; then
@@ -730,6 +743,7 @@ Old marker found: $AT_LEGACY_FILE (not used: ${AT_LEGACY_WHY:-unknown reason})
 "
   fi
   cat >&2 <<MSG
+BLOCKED: No active ticket set for this session.
 $WHY_LINE
 
 ApexYard requires a ticket BEFORE any code changes (workflow-gates rule #3,
@@ -741,8 +755,13 @@ To unblock:
        gh issue create --repo <owner/repo> --title "..."
   2. Declare it for this working tree: run the /start-ticket skill from the
      tree you edit, with the issue number (or pass owner/repo#number to pin
-     it). The skill writes the marker into that tree's git dir.
+     it). The skill writes the marker into that tree's git dir, and the
+     old-layout marker under .claude/session/ too.
   3. Retry the edit
+
+Markers looked up for this path (in order):
+$TREE_LINE
+  ops fallback: $FALLBACK_MARKER
 
 ${LEGACY_LINE}Target: ${FILE_PATH:-<unextractable Bash write target>}
 ${CWD_HINT}${QUOTED_HINT}

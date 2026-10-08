@@ -420,5 +420,47 @@ active_ticket_gitdir "$WS/p1/c/d.ts"
 v2="$AT_VALIDATIONS"
 if [ "$v2" = "$v1" ] && [ "$REPLY" = "$P1G" ]; then ok "26 re-sourcing keeps the validation memo"; else bad "26" "v1=$v1 v2=$v2"; fi
 
+# 29. A registry entry's workspace: path names a registered clone outside the
+# workspace dir, absolute or relative to the ops root.
+EXT="$B/elsewhere/p5"
+mkrepo "$EXT"
+git -C "$EXT" worktree add -q "$B/p5-wt" -b p5wt
+mkrepo "$OPS/other/p6"
+mkrepo "$B/real7"
+ln -s "$B/real7" "$B/link7"
+mkrepo "$B/shared"
+write_registry "$OPS/apexyard.projects.yaml" \
+  '  - name: p5' '    repo: org/p5' "    workspace: $EXT" \
+  '  - name: p6' '    repo: org/p6' '    workspace: other/p6' \
+  '  - name: p7' '    repo: org/p7' "    workspace: $B/link7" \
+  '  - name: p8' '    repo: org/p8' "    workspace: $B/shared" \
+  '  - name: p9' '    repo: org/p9' "    workspace: \"$B/shared\""
+ctx
+expect_gd "29a an absolute workspace: outside the workspace dir is registered" "$EXT/src/a.ts" "$EXT/.git"
+expect_gd "29b a linked worktree of that clone is registered" "$B/p5-wt/src/a.ts" "$EXT/.git/worktrees/p5-wt"
+_at_memo_clear
+active_ticket_gitdir "$EXT/src/a.ts"
+if [ "$AT_PROJECT" = p5 ]; then ok "29c the project name comes from the entry"; else bad "29c" "project=$AT_PROJECT"; fi
+expect_gd "29d a relative workspace: resolves against the ops root" "$OPS/other/p6/a.ts" "$OPS/other/p6/.git"
+expect_refuse "29e a workspace: path that is a symlink is refused" "$B/real7/a.ts" "symlink in marker path"
+expect_refuse "29f two entries with the same workspace: are ambiguous" "$B/shared/a.ts" "ambiguous common dir"
+printf 'repo=org/p5\nnumber=29\n' > "$EXT/.git/apexyard-ticket"
+_at_memo_clear
+active_ticket_lookup "$EXT/src/a.ts"
+if [ "$?" = 0 ] && [ "$REPLY" = "$EXT/.git/apexyard-ticket" ] && [ "$AT_SOURCE" = tree ]; then ok "29g the new marker of an entry clone counts"; else bad "29g" "REPLY=$REPLY source=$AT_SOURCE reason=$AT_REASON"; fi
+_at_memo_clear
+active_ticket_project_markers
+case "$REPLY" in *"$EXT/.git/apexyard-ticket"*) ok "29h project markers include an entry clone" ;; *) bad "29h" "$REPLY" ;; esac
+# A refused tree falls back to the old-layout resolution.
+printf 'repo=org/p7\nnumber=30\n' > "$B/real7/.git/apexyard-ticket"
+mkdir -p "$OPS/.claude/session"
+printf 'repo=org/p7\nnumber=31\n' > "$OPS/.claude/session/current-ticket"
+_at_memo_clear
+active_ticket_lookup "$B/real7/a.ts"
+if [ "$?" = 0 ] && [ "$REPLY" = "$OPS/.claude/session/current-ticket" ] && [ "$AT_SOURCE" = legacy ]; then ok "29i a refused symlinked clone falls back to the old-layout marker"; else bad "29i" "REPLY=$REPLY source=$AT_SOURCE"; fi
+rm -f "$OPS/.claude/session/current-ticket" "$EXT/.git/apexyard-ticket" "$B/real7/.git/apexyard-ticket"
+write_registry "$OPS/apexyard.projects.yaml"
+ctx
+
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]
