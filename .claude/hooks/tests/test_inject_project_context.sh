@@ -979,6 +979,36 @@ else
 fi
 rm -rf "$MARKER_DIR"
 
+# --- (reg12) a stale lock replaced by a fresh one mid-takeover is not stolen
+LSHIM="$SB/lock-shim"
+mkdir -p "$LSHIM"
+cat > "$LSHIM/stat" <<SH
+#!/bin/sh
+last=
+for arg do last=\$arg; done
+stamp=\$("$REAL_STAT" "\$@") || exit 1
+if [ "\$last" = "\$LOCK_TEST_PATH" ] && [ ! -e "\$LOCK_TEST_PATH.seen" ]; then
+  : > "\$LOCK_TEST_PATH.seen"
+  /bin/rmdir "\$last"
+  /bin/mkdir "\$last"
+fi
+printf '%s\\n' "\$stamp"
+SH
+chmod +x "$LSHIM/stat"
+SK=$(printf '%s' reg12 | cksum | awk '{print $1}')
+MK=$(printf '%s' 'main|demo' | cksum | awk '{print $1}')
+LM="$MARKER_DIR/injected-$SK-$MK"
+mkdir -p "$LM" "$LM.reclaim"
+touch -t 200001010000 "$LM" "$LM.reclaim" 2>/dev/null \
+  || touch -d '2000-01-01' "$LM" "$LM.reclaim" 2>/dev/null
+OUT=$(LOCK_TEST_PATH="$LM.reclaim" PATH="$LSHIM:$PATH" invoke "$(payload reg12 "" "" "$WS/src/a.ts")")
+if [ -z "$OUT" ] && [ -d "$LM.reclaim" ]; then
+  pass_case "(reg12) a fresh lock that replaced the stale one is left in place"
+else
+  fail_case "(reg12) lock takeover race" "out_len=${#OUT} lock=$([ -d "$LM.reclaim" ] && echo kept || echo removed)"
+fi
+rm -rf "$MARKER_DIR"
+
 echo "===== test_inject_project_context.sh ====="
 echo "Passed: $PASS"
 echo "Failed: $FAIL"

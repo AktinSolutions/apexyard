@@ -110,7 +110,7 @@ _projctx_path_age_secs() {
 # Try to claim MARKER as a pending directory. On conflict: done → give up;
 # fresh pending → give up (parallel caller owns it); stale pending → reclaim.
 _projctx_claim_marker() {
-  local age reclaim_lock moved claimed=1
+  local age reclaim_lock old_lock moved claimed=1
   if mkdir "$MARKER" 2>/dev/null; then
     return 0
   fi
@@ -125,12 +125,20 @@ _projctx_claim_marker() {
     if [ -n "$age" ] && [ "$age" -ge "$PROJCTX_PENDING_STALE_SECS" ]; then
       reclaim_lock="$MARKER.reclaim"
       if ! mkdir "$reclaim_lock" 2>/dev/null; then
-        # A lock as old as a stale marker belongs to a killed caller. Two
-        # observers may both take it; the recheck and the single-winner mv
-        # below still let at most one caller claim.
+        # A lock as old as a stale marker belongs to a killed caller. Move
+        # it aside under a unique name, so only the caller whose mv
+        # succeeds retakes it. If the moved lock turns out fresh (its owner
+        # replaced the stale one meanwhile), put it back and give up.
         age=$(_projctx_path_age_secs "$reclaim_lock") || age=""
         { [ -n "$age" ] && [ "$age" -ge "$PROJCTX_PENDING_STALE_SECS" ]; } || return 1
-        rmdir "$reclaim_lock" 2>/dev/null
+        old_lock="$reclaim_lock.stale.$$"
+        mv "$reclaim_lock" "$old_lock" 2>/dev/null || return 1
+        age=$(_projctx_path_age_secs "$old_lock") || age=""
+        if ! { [ -n "$age" ] && [ "$age" -ge "$PROJCTX_PENDING_STALE_SECS" ]; }; then
+          mv "$old_lock" "$reclaim_lock" 2>/dev/null
+          return 1
+        fi
+        rmdir "$old_lock" 2>/dev/null
         mkdir "$reclaim_lock" 2>/dev/null || return 1
       fi
       trap 'rmdir "$reclaim_lock" 2>/dev/null; exit 0' TERM INT HUP
