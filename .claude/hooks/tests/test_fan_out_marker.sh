@@ -134,6 +134,18 @@ if [ "$rc" = 0 ] && [ "$common" = "$SB/workspace/p1/.git" ] && [ -z "$(git -C "$
 else
   bad "prepare_worktree_ignores_the_callers_git_environment" "rc=$rc common=$common out=$out"
 fi
+# Variables outside the four that pick the repository are scrubbed too, from
+# git's own list. An object store that does not exist would make the branch
+# creation fail.
+WT2="$SB/.claude/worktrees/feature-GH-49-env"
+out=$(cd "$SB" && GIT_OBJECT_DIRECTORY="$SB/no-such-objects" GIT_CONFIG_PARAMETERS="'core.bare'='true'" \
+  "$SB/.claude/skills/fan-out/prepare-worktree.sh" "$SB/workspace/p1" "$WT2" "feature/GH-49-env" 2>&1)
+rc=$?
+if [ "$rc" = 0 ] && [ -f "$WT2/.git" ] && [ ! -e "$SB/no-such-objects" ]; then
+  ok "prepare_worktree_scrubs_gits_local_env_vars"
+else
+  bad "prepare_worktree_scrubs_gits_local_env_vars" "rc=$rc out=$out"
+fi
 rm -rf "$SB"
 
 # --- an ops task is created from the ops fork -----------------------------

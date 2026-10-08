@@ -25,9 +25,19 @@
 
 set -u
 
-# The caller's git environment must not choose the repository or the index
-# that the git calls below act on.
+# The caller's git environment must not choose the repository, the index, the
+# object store or the config that the git calls below act on. The four
+# variables that pick the repository go first, so the scrub holds when git is
+# missing or fails. Then git's own list of repository-local variables goes,
+# which also covers GIT_OBJECT_DIRECTORY, GIT_CONFIG_PARAMETERS and the rest.
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+_git_local_env=$(git rev-parse --local-env-vars 2>/dev/null) || _git_local_env=""
+for _git_var in $_git_local_env; do
+  case "$_git_var" in
+    GIT_*) case "$_git_var" in *[!A-Z0-9_]*) ;; *) unset "$_git_var" ;; esac ;;
+  esac
+done
+unset _git_local_env _git_var
 
 SOURCE="${1:-}"
 WTPATH="${2:-}"

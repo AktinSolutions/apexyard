@@ -77,6 +77,14 @@ case "$OUT" in
   ok$'\t'"$SB/wt-x"*) ok "list_ignores_the_callers_git_environment" ;;
   *) bad "list_ignores_the_callers_git_environment" "$OUT" ;;
 esac
+# Variables outside the four that pick the repository are scrubbed too, from
+# git's own list.
+OUT=$(cd "$SB" && GIT_OBJECT_DIRECTORY="$SB/no-such-objects" GIT_CONFIG_PARAMETERS="'core.bare'='true'" \
+  "$SB/.claude/skills/approve-merge/remove-worktree.sh" list "$P1" feature/x 2>&1)
+case "$OUT" in
+  ok$'\t'"$SB/wt-x"*"cache/blob.bin"*) ok "list_scrubs_gits_local_env_vars" ;;
+  *) bad "list_scrubs_gits_local_env_vars" "$OUT" ;;
+esac
 # A worktree path with a newline in it stays one candidate.
 NLWT="$SB/wt-nl"$'\n'"x"
 git -C "$P1" worktree add -q "$NLWT" -b feature/nl
