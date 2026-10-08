@@ -858,9 +858,11 @@ _atd_lookup() {
 # True when <repo> belongs to the validated tree in AT_PROJECT and AT_GITDIR.
 # A project clone takes only a repo of its own registry entry (repo:, repos:
 # or primary:, compared without regard to case). The ops fork takes no repo of
-# a registered project. When the registry cannot be read, nothing is bound,
-# except in the ops fork of a portfolio with no registry file at all.
-# Builtins only.
+# a registered project. In a project clone, a registry that cannot be read
+# binds nothing. In the ops fork, an unknown registry path falls back to the
+# fork's own apexyard.projects.yaml, the single-fork default, which is not
+# taken from the environment. When that file does not exist either, no
+# project is known and the marker is bound. Builtins only.
 _at_bound() {
   local repo="$1"
   _at_fill_reg
@@ -871,6 +873,7 @@ _at_bound() {
     _at_member "$AT_REG_REPO_SET" "$repo"
     return
   fi
+  local _AT_REG="${_AT_REG:-${_AT_OPS:+$_AT_OPS/apexyard.projects.yaml}}"
   [ -n "$_AT_REG" ] || return 1
   [ -e "$_AT_REG" ] || return 0
   [ -r "$_AT_REG" ] || return 1

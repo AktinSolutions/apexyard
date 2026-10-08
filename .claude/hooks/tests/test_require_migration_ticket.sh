@@ -112,9 +112,13 @@ set_marker() {
 }
 
 # Give a registered project a real clone under workspace/ and write its ticket
-# marker into the clone's git dir.
+# marker into the clone's git dir. The marker names the repo of the project's
+# own registry entry (example/<name>), because a marker for another repo is
+# not trusted in that clone. The mocked tracker answers by number only, so the
+# repo argument of the callers is kept for readability and not written.
 set_project_marker() {
-  local sb="$1" name="$2" repo="$3" num="$4" dir gd
+  local sb="$1" name="$2" repo num="$4" dir gd
+  repo="example/$name"
   dir="${5:-$sb/workspace}/$name"
   if [ ! -e "$dir/.git" ]; then
     mkdir -p "$dir"
@@ -256,7 +260,7 @@ set_project_marker "$SB" example "test-org/test-repo" 42
 git -C "$SB/workspace/example" worktree add -q "$SB/wt-example" -b feature/1182
 mkdir -p "$SB/wt-example/migrations"
 wt_gd=$(git -C "$SB/wt-example" rev-parse --absolute-git-dir)
-printf 'repo=%s\nnumber=%s\n' "test-org/test-repo" 99 > "$wt_gd/apexyard-ticket"
+printf 'repo=%s\nnumber=%s\n' "example/example" 99 > "$wt_gd/apexyard-ticket"
 install_mock "$SB" gh 'case "$*" in
   *99*) echo "{\"state\":\"OPEN\",\"labels\":[{\"name\":\"migration\"}],\"body\":\"docs/agdr/AgDR-0001-db-migration.md\"}" ;;
   *)    echo "{\"state\":\"OPEN\",\"labels\":[],\"body\":\"\"}" ;;

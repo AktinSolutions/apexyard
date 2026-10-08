@@ -119,11 +119,18 @@ add_project() {
      "$SRC_ROOT/.claude/hooks/_lib-resolution-cache.sh" "$sb/.claude/hooks/"
 }
 
-# Write a ticket marker into the git dir of the working tree at <dir>.
+# Write a ticket marker into the git dir of the working tree at <dir>. The
+# marker names the repo of the tree it lands in, as the writer requires: a
+# clone of workspace/<name> gets me2resh/<name>, and the ops fork gets
+# me2resh/apexyard.
 write_marker() {
-  local dir="$1" gd
+  local dir="$1" gd cd repo="me2resh/apexyard" n
   gd=$(git -C "$dir" rev-parse --absolute-git-dir)
-  printf 'repo=me2resh/apexyard\nnumber=%s\ntitle=test\n' "${2:-1}" > "$gd/apexyard-ticket"
+  cd=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir)
+  case "$cd" in
+    */workspace/*/.git) n="${cd%/.git}"; repo="me2resh/${n##*/}" ;;
+  esac
+  printf 'repo=%s\nnumber=%s\ntitle=test\n' "$repo" "${2:-1}" > "$gd/apexyard-ticket"
 }
 
 run_case() {
