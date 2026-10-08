@@ -2,6 +2,11 @@
 # Regression cases for quoted data, heredocs, and mixed Bash writes (#1459).
 set -u
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
+
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 HOOKS="${HOOKS_OVERRIDE:-$ROOT/.claude/hooks}"
 TMP=$(mktemp -d)
@@ -105,7 +110,8 @@ rm -f "$TMP/.git/apexyard-ticket"
 mkdir -p "$TMP/.claude/hooks"
 for file in require-active-ticket.sh _lib-detect-bash-write.sh \
   _lib-command-scrub.sh _lib-mask-quoted.sh _lib-read-config.sh \
-  _lib-path-resolve.sh _lib-active-ticket.sh _lib-ops-root.sh; do
+  _lib-path-resolve.sh _lib-active-ticket.sh _lib-ticket-path-exemptions.sh \
+  _lib-ops-root.sh; do
   [ -f "$HOOKS/$file" ] && cp "$HOOKS/$file" "$TMP/.claude/hooks/$file"
 done
 cp "$ROOT/.claude/project-config.defaults.json" "$TMP/.claude/project-config.defaults.json"

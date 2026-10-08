@@ -28,6 +28,11 @@
 
 set -u
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
+
 # Test isolation: don't let a live session pin escape onto the real fork.
 unset APEXYARD_OPS_PIN_DIR CLAUDE_CODE_SESSION_ID 2>/dev/null || true
 export APEXYARD_OPS_DISABLE_PIN=1
@@ -78,7 +83,7 @@ projects:
     repo: example/other
 YAML
     mkdir -p .claude/hooks migrations
-    for f in _lib-tracker.sh _lib-read-config.sh _lib-portfolio-paths.sh _lib-ops-root.sh _lib-detect-bash-write.sh _lib-path-resolve.sh _lib-active-ticket.sh; do
+    for f in _lib-tracker.sh _lib-read-config.sh _lib-portfolio-paths.sh _lib-ops-root.sh _lib-detect-bash-write.sh _lib-path-resolve.sh _lib-active-ticket.sh _lib-ticket-path-exemptions.sh; do
       [ -f "$HOOK_DIR/$f" ] && cp "$HOOK_DIR/$f" ".claude/hooks/$f"
     done
     cp "$HOOK_SCRIPT" .claude/hooks/require-migration-ticket.sh

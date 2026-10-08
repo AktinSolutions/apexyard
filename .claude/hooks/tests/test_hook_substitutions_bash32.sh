@@ -5,6 +5,11 @@
 
 set -u
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
+
 HOOK_DIR=$(cd "$(dirname "$0")/.." && pwd)
 LIB="$HOOK_DIR/_lib-detect-bash-write.sh"
 PR_HOOK="$HOOK_DIR/validate-pr-create.sh"
@@ -290,7 +295,8 @@ YAML
     mkdir -p .claude/hooks migrations bin
     for f in _lib-tracker.sh _lib-read-config.sh _lib-portfolio-paths.sh \
              _lib-ops-root.sh _lib-detect-bash-write.sh _lib-path-resolve.sh \
-             _lib-active-ticket.sh _lib-command-scrub.sh; do
+             _lib-active-ticket.sh _lib-ticket-path-exemptions.sh \
+             _lib-command-scrub.sh; do
       [ -f "$HOOK_DIR/$f" ] && cp "$HOOK_DIR/$f" ".claude/hooks/$f"
     done
     cp "$MIG_HOOK" .claude/hooks/require-migration-ticket.sh

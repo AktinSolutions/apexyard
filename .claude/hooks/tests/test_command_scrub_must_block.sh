@@ -7,6 +7,11 @@
 # macOS /bin/bash 3.2: no associative arrays, no mapfile, no ${var,,}.
 set -u
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
+
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 HOOKS="${HOOKS_OVERRIDE:-$ROOT/.claude/hooks}"
 SNAP_HOOKS="${SNAP_HOOKS:-}"
@@ -50,7 +55,8 @@ setup_ticket_sandbox() {
   cp "$CONFIG_DEFAULTS" "$dest/.claude/project-config.defaults.json"
   for file in require-active-ticket.sh _lib-detect-bash-write.sh \
     _lib-command-scrub.sh _lib-mask-quoted.sh _lib-read-config.sh \
-    _lib-path-resolve.sh _lib-active-ticket.sh _lib-ops-root.sh; do
+    _lib-path-resolve.sh _lib-active-ticket.sh _lib-ticket-path-exemptions.sh \
+    _lib-ops-root.sh; do
     [ -f "$hooks_src/$file" ] && cp "$hooks_src/$file" "$dest/.claude/hooks/$file"
   done
   # No active ticket — writes to src/app.ts must block.
@@ -79,7 +85,7 @@ setup_dispatch_sandbox() {
   chmod +x "$dest/hooks/dispatch-bash.sh"
   local script
   for script in block-ambient-tracker-repo.sh block-privileged-escalation.sh \
-    require-skill-for-issue-create.sh require-migration-ticket.sh \
+    require-skill-for-issue-create.sh require-orbit-slice-for-ticket.sh require-migration-ticket.sh \
     require-active-ticket.sh warn-review-marker-write.sh \
     warn-isolated-build-risk.sh block-reviewer-repo-mutation.sh \
     block-git-add-all.sh block-main-push.sh validate-branch-name.sh \

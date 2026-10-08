@@ -77,6 +77,10 @@ NORM_CMD=$(echo "$COMMAND" | tr -s '[:space:]' ' ')
 # Substring-anywhere matching false-positives on commit messages or
 # scripts that mention the pattern in prose, e.g.
 # `git commit -m "...mentions gh issue create..."`.
+# Do not match `$(pat…)` here: /tickets-batch, /roadmap, /spike-close
+# --promote, and /prototype-close assign `result="$(tracker_create …)"`
+# without writing the active-issue-skill marker. Wrapped-create detection
+# for ORBIT lives only in require-orbit-slice-for-ticket.sh (AgDR-0217).
 MATCHED=""
 while IFS= read -r pat; do
   [ -z "$pat" ] && continue

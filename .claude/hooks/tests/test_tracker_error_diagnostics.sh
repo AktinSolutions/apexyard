@@ -26,6 +26,11 @@
 
 set -u
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
+
 HOOKS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 
@@ -60,7 +65,8 @@ make_sandbox() {
   cp "$HOOKS_DIR/$hook" "$sb/.claude/hooks/$hook"
   chmod +x "$sb/.claude/hooks/$hook"
   for lib in _lib-read-config.sh _lib-tracker.sh _lib-extract-pr.sh _lib-pr-repo.sh \
-             _lib-active-ticket.sh _lib-ops-root.sh _lib-detect-bash-write.sh \
+             _lib-active-ticket.sh _lib-ticket-path-exemptions.sh _lib-ops-root.sh \
+             _lib-detect-bash-write.sh \
              _lib-portfolio-paths.sh _lib-review-markers.sh; do
     if [ -f "$SRC_ROOT/.claude/hooks/$lib" ]; then
       cp "$SRC_ROOT/.claude/hooks/$lib" "$sb/.claude/hooks/$lib"

@@ -3,9 +3,16 @@
 
 set -u
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
+
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 HOOK_SOURCE=${HOOK_SOURCE:-$ROOT/.claude/hooks/check-private-refs-staged.sh}
 PARSER_SOURCE="$ROOT/.claude/hooks/_lib-registry-parser.sh"
+MATCH_SOURCE="$ROOT/.claude/hooks/_lib-private-refs-match.sh"
+VIS_SOURCE="$ROOT/.claude/hooks/_lib-leak-remote-visibility.sh"
 
 PASS=0
 FAIL=0
@@ -17,6 +24,8 @@ check_hook() {
   mkdir -p "$sandbox/.claude/hooks"
   cp "$HOOK_SOURCE" "$sandbox/.claude/hooks/check-private-refs-staged.sh"
   cp "$PARSER_SOURCE" "$sandbox/.claude/hooks/_lib-registry-parser.sh"
+  cp "$MATCH_SOURCE" "$sandbox/.claude/hooks/_lib-private-refs-match.sh"
+  cp "$VIS_SOURCE" "$sandbox/.claude/hooks/_lib-leak-remote-visibility.sh"
   printf '%s\n' "$registry" > "$sandbox/apexyard.projects.yaml"
   printf '%s\n' "$content" > "$sandbox/a-clean.md"
   expected_path='a-clean.md'

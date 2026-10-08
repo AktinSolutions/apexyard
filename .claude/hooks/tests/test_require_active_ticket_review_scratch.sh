@@ -6,6 +6,11 @@
 
 set -u
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
+
 SRC_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 HOOK_SOURCE=${RATC_HOOK_SOURCE:-$SRC_ROOT/.claude/hooks/require-active-ticket.sh}
 TMP_RAW=$(mktemp -d)
@@ -30,7 +35,8 @@ git -C "$ops" worktree add -q -b linked-review "$TMP/linked"
 
 cp "$HOOK_SOURCE" "$ops/.claude/hooks/require-active-ticket.sh"
 for lib in _lib-detect-bash-write.sh _lib-path-resolve.sh _lib-ops-root.sh \
-  _lib-review-markers.sh _lib-active-ticket.sh _lib-read-config.sh \
+  _lib-review-markers.sh _lib-active-ticket.sh _lib-ticket-path-exemptions.sh \
+  _lib-read-config.sh \
   _lib-mask-quoted.sh _lib-fail-closed-json.sh; do
   cp "$SRC_ROOT/.claude/hooks/$lib" "$ops/.claude/hooks/$lib"
 done
