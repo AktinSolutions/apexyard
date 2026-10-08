@@ -891,6 +891,21 @@ else
 fi
 rm -rf "$MARKER_DIR"
 
+# --- (reg8) after the first call a session's miss path starts no git
+mkdir -p "$OUTSIDE/plain"
+: > "$OUTSIDE/plain/a.ts"
+: > "$SB/git.log"
+PATH="$GITSHIM:$PATH" invoke "$(payload reg8 "" "" "$OUTSIDE/plain/a.ts")" >/dev/null
+FIRST_LOG=$(cat "$SB/git.log")
+: > "$SB/git.log"
+PATH="$GITSHIM:$PATH" invoke "$(payload reg8 "" "" "$OUTSIDE/plain/a.ts")" >/dev/null
+if [ -n "$FIRST_LOG" ] && [ ! -s "$SB/git.log" ]; then
+  pass_case "(reg8) second call in a session starts no git on the miss path"
+else
+  fail_case "(reg8) memoised miss path" "first_len=${#FIRST_LOG} second=$(head -c 200 "$SB/git.log")"
+fi
+rm -rf "$MARKER_DIR"
+
 echo "===== test_inject_project_context.sh ====="
 echo "Passed: $PASS"
 echo "Failed: $FAIL"

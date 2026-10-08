@@ -107,27 +107,35 @@ EOF
 _projctx_registry_tsv() {
   # portfolio_registry costs ~45 ms (config reads); the hook runs on every
   # file tool call, so memoise the resolved path per session.
-  local registry reg_cache="" sd
+  local registry reg_cache="" sd registry_real="" root_real="" memo_hit=0
   if [ -n "${PROJCTX_SESSION_ID:-}" ] && sd=$(projctx_state_dir); then
     reg_cache="$sd/registry-path-$(printf '%s' "$PROJCTX_SESSION_ID" | cksum | awk '{print $1}')"
-    [ -f "$reg_cache" ] && [ ! -L "$reg_cache" ] && IFS= read -r registry < "$reg_cache"
+    if [ -f "$reg_cache" ] && [ ! -L "$reg_cache" ]; then
+      # Line 1 registry, line 2 its canonical path, line 3 the canonical
+      # portfolio root. An older one-line memo has no line 2 and is a miss.
+      { IFS= read -r registry; IFS= read -r registry_real; IFS= read -r root_real; } < "$reg_cache" 2>/dev/null
+      [ -n "$registry" ] && [ -f "$registry" ] && [ -n "$registry_real" ] && memo_hit=1
+    fi
   fi
-  if [ -z "$registry" ] || [ ! -f "$registry" ]; then
+  local key cache_file state_dir root
+  root=$root_real
+  if [ "$memo_hit" = 0 ]; then
     registry=$(portfolio_registry 2>/dev/null) || return 1
-    [ -n "$reg_cache" ] && [ ! -L "$reg_cache" ] && printf '%s\n' "$registry" > "$reg_cache" 2>/dev/null
+    [ -f "$registry" ] || return 1
+    root=$(_portfolio_root 2>/dev/null) || root=""
+    registry_real=$(_portfolio_canonicalize "$registry" 2>/dev/null) || return 1
+    root_real=""
+    if [ -n "$root" ]; then
+      root_real=$(_portfolio_canonicalize "$root" 2>/dev/null) || return 1
+    fi
+    if [ -n "$reg_cache" ] && [ ! -L "$reg_cache" ]; then
+      printf '%s\n%s\n%s\n' "$registry" "$registry_real" "$root_real" > "$reg_cache" 2>/dev/null
+    fi
   fi
-  [ -f "$registry" ] || return 1
 
   # Include both the content and its resolution context. Identical relative
   # registries in separate ops clones must not share absolute workspace TSVs.
   # Content (not mtime+size) also catches same-length rewrites.
-  local key cache_file state_dir root registry_real root_real
-  root=$(_portfolio_root 2>/dev/null) || root=""
-  registry_real=$(_portfolio_canonicalize "$registry" 2>/dev/null) || return 1
-  root_real=""
-  if [ -n "$root" ]; then
-    root_real=$(_portfolio_canonicalize "$root" 2>/dev/null) || return 1
-  fi
   key=$({ printf '%s\0%s\0' "$registry_real" "$root_real"; cat "$registry"; } 2>/dev/null | cksum | awk '{print $1}')
   [ -z "$key" ] && key="nokey"
   state_dir=$(projctx_state_dir) || state_dir=""
