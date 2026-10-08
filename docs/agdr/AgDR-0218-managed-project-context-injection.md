@@ -180,7 +180,7 @@ This table is a snapshot at PR #1425 after the review-fix rounds. The PR is stil
 | 1. Live read | Implemented | PR body |
 | 2. Nothing at session start | Implemented | Test (b). No SessionStart entry. |
 | 3. Dedupe key | Implemented | Test (d) |
-| 4. Atomic pending claim, then done | Implemented. TERM/INT/HUP remove a still-pending claim. A pending marker older than about 5 seconds is reclaimed under a short exclusive lock with an atomic move to a unique path (SIGKILL recovery); a stale reclaim lock is recovered too. Done is written only after emit. | Tests (l), (m), (w), (reg2), (reg2b), (reg6), (reg12) |
+| 4. Atomic pending claim, then done | Implemented. TERM/INT/HUP remove a still-pending claim. A pending marker older than about 5 seconds is reclaimed under a short exclusive lock with an atomic move to a unique path (SIGKILL recovery); a stale reclaim lock is recovered too. Done is written only after emit. | Tests (l), (m), (w), (reg2), (reg2b), (reg6), (reg12). Tests (l) and (reg2b) are skipped on a host whose `mkdir` is not atomic under concurrency (uutils coreutils 0.10), because the single-winner claim relies on that primitive. |
 | 5. 9,500-character budget | Implemented. `PROJCTX_BUDGET` is clamped to at most 9,500. | Tests (f), (reg5) |
 | 6. Budget order | Partial. Header and frame come first. The index is capped at about 2,000 chars and 30 entries per section, and the body gets the rest. Index-first order is kept (D1). | Tests (q), (a2) |
 | 7. Truncation pointer for every cut section | Partial. Two pointers exist: the body-cut note and the "…and N more" lines in the index. | Tariq S5. Test (q). |

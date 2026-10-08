@@ -336,6 +336,27 @@ else
   fail_case "(k) symlink containment" "failed:$K_FAIL"
 fi
 
+# The single-winner claim relies on mkdir failing for all but one concurrent
+# caller. Some coreutils builds (uutils 0.10) let several callers succeed, so
+# probe the host before the cases that assert exactly one injection.
+mkdir_is_atomic() {
+  local r=0 i n
+  while [ "$r" -lt 30 ]; do
+    r=$((r + 1))
+    rm -rf "$SB/mkprobe" "$SB"/mkprobe.log*
+    for i in 1 2 3 4 5; do
+      ( mkdir "$SB/mkprobe" 2>/dev/null && : > "$SB/mkprobe.log.$i" ) &
+    done
+    wait
+    n=0
+    for i in 1 2 3 4 5; do [ -e "$SB/mkprobe.log.$i" ] && n=$((n + 1)); done
+    [ "$n" -le 1 ] || return 1
+  done
+  return 0
+}
+if mkdir_is_atomic; then MKDIR_ATOMIC=1; else MKDIR_ATOMIC=0; fi
+rm -rf "$SB/mkprobe" "$SB"/mkprobe.log*
+
 # --- (l) B1: five parallel first touches -> exactly one injection
 mkdir -p "$SB/par"
 PIN=$(payload l1 "" "" "$WS/src/a.ts")
@@ -345,7 +366,9 @@ done
 wait
 NONEMPTY=0
 for i in 1 2 3 4 5; do [ -s "$SB/par/out$i" ] && NONEMPTY=$((NONEMPTY + 1)); done
-if [ "$NONEMPTY" = 1 ]; then
+if [ "$MKDIR_ATOMIC" = 0 ]; then
+  pass_case "(l) skipped: this host's mkdir is not atomic under concurrency (outputs: $NONEMPTY)"
+elif [ "$NONEMPTY" = 1 ]; then
   pass_case "(l) five parallel first touches: exactly one injection"
 else
   fail_case "(l) parallel dedupe" "non-empty outputs: $NONEMPTY"
@@ -808,7 +831,9 @@ done
 wait
 NONEMPTY=0
 for slot in 0 1 2 3; do [ -s "$SYNC/out$slot" ] && NONEMPTY=$((NONEMPTY + 1)); done
-if [ "$NONEMPTY" = 1 ] && [ ! -e "$SYNC/barrier-timeout" ]; then
+if [ "$MKDIR_ATOMIC" = 0 ] && [ ! -e "$SYNC/barrier-timeout" ]; then
+  pass_case "(reg2b) skipped: this host's mkdir is not atomic under concurrency (outputs: $NONEMPTY)"
+elif [ "$NONEMPTY" = 1 ] && [ ! -e "$SYNC/barrier-timeout" ]; then
   pass_case "(reg2b) four parallel stale-marker callers: exactly one injection"
 else
   fail_case "(reg2b) stale-marker race" "non-empty outputs: $NONEMPTY barrier_timeout=$([ -e "$SYNC/barrier-timeout" ] && echo yes || echo no)"
