@@ -408,6 +408,8 @@ budget_limits() {
     exempt) max_f=18; max_e=10 ;;
     bash) max_f=530; max_e=224 ;;
     mig) max_f=374; max_e=119 ;;
+    legmain) max_f=130; max_e=57 ;;
+    legwt) max_f=137; max_e=63 ;;
     *) max_f=0; max_e=0 ;;
   esac
 }
@@ -488,6 +490,69 @@ hook_count_case() {
   rm -rf "$sb"
 }
 hook_count_case
+
+# --- 4b. hook-level process count, old-layout markers only --------------------
+# The same count for targets that only an old-layout marker covers, so the
+# fallback resolution runs: tickets/p1 for a main clone, and
+# tickets/p2/<branch> for a linked worktree inside the workspace dir. The
+# limits are the merge-base counts for the same fixture, measured the same
+# way as above.
+legacy_count_case() {
+  if ! command -v strace >/dev/null 2>&1 || ! strace -qq -o /dev/null true >/dev/null 2>&1; then
+    return 0
+  fi
+  mkdir -p "$FIXBASE" || return 0
+  local sb f i rc forks execs max_f max_e
+  sb=$(mktemp -d "$FIXBASE/budget-legacy.XXXXXX")
+  sb=$(cd -P "$sb" && pwd)
+  mkrepo "$sb"
+  : > "$sb/.apexyard-fork"
+  : > "$sb/onboarding.yaml"
+  printf 'projects:\n  - name: p1\n    repo: org/p1\n  - name: p2\n    repo: org/p2\n' > "$sb/apexyard.projects.yaml"
+  mkdir -p "$sb/.claude/hooks" "$sb/.claude/session/tickets/p2" "$sb/workspace"
+  for f in require-active-ticket.sh require-migration-ticket.sh _lib-detect-bash-write.sh _lib-read-config.sh \
+           _lib-path-resolve.sh _lib-active-ticket.sh _lib-mask-quoted.sh _lib-portfolio-paths.sh \
+           _lib-ops-root.sh _lib-resolution-cache.sh _lib-tracker.sh; do
+    cp "$HOOKSDIR/$f" "$sb/.claude/hooks/$f"
+  done
+  cp "$SRC_ROOT/.claude/project-config.defaults.json" "$sb/.claude/project-config.defaults.json"
+  printf '{ "tracker": { "kind": "none" } }\n' > "$sb/.claude/project-config.json"
+  mkrepo "$sb/workspace/p1"
+  mkrepo "$sb/workspace/p2"
+  git -C "$sb/workspace/p2" worktree add -q "$sb/workspace/p2/.wt/w" -b feature/w
+  mkdir -p "$sb/workspace/p1/src" "$sb/workspace/p2/.wt/w/src"
+  printf 'repo=org/p1\nnumber=4\n' > "$sb/.claude/session/tickets/p1"
+  printf 'repo=org/p2\nnumber=5\n' > "$sb/.claude/session/tickets/p2/feature__w"
+  local names=(legmain legwt) payloads=()
+  payloads[0]=$(jq -nc --arg p "$sb/workspace/p1/src/a.ts" '{tool_name:"Edit", tool_input:{file_path:$p}}')
+  payloads[1]=$(jq -nc --arg p "$sb/workspace/p2/.wt/w/src/a.ts" '{tool_name:"Edit", tool_input:{file_path:$p}}')
+  touch -t 202001010000 "$sb/.claude/project-config.defaults.json" "$sb/.claude/project-config.json"
+  mkdir -p "$sb/pin"
+  for i in 0 1; do
+    printf '%s' "${payloads[$i]}" > "$sb/payload.json"
+    ( cd "$sb" && CLAUDE_CODE_SESSION_ID="budget-$$" APEXYARD_OPS_PIN_DIR="$sb/pin" APEXYARD_DISABLE_RESOLUTION_CACHE='' \
+        bash "$sb/.claude/hooks/require-active-ticket.sh" < "$sb/payload.json" > /dev/null 2>&1 )
+    ( cd "$sb" && CLAUDE_CODE_SESSION_ID="budget-$$" APEXYARD_OPS_PIN_DIR="$sb/pin" APEXYARD_DISABLE_RESOLUTION_CACHE='' \
+        strace -f -qq -e trace=process -o "$sb/trace.$i" \
+        bash "$sb/.claude/hooks/require-active-ticket.sh" < "$sb/payload.json" > /dev/null 2>&1 )
+    rc=$?
+    forks=$(awk '/^[0-9]+ +(clone3?|fork|vfork)\(/ && !/CLONE_THREAD/ && !/= -1/ {n++} END {print n+0}' "$sb/trace.$i")
+    execs=$(awk '/^[0-9]+ +execve\(/ && !/= -1/ {n++} END {print n+0}' "$sb/trace.$i")
+    if [ -n "${APEXYARD_BUDGET_MEASURE:-}" ]; then
+      echo "MEASURE ${names[$i]}: forks=$forks execs=$execs rc=$rc"
+      continue
+    fi
+    budget_limits "${names[$i]}"
+    if [ "$rc" != 0 ]; then bad "4b (${names[$i]}) the hook passes" "rc=$rc"; continue; fi
+    if [ "$forks" -le "$max_f" ] && [ "$execs" -le "$max_e" ]; then
+      ok "4b (${names[$i]}) forks=$forks (max $max_f) execs=$execs (max $max_e)"
+    else
+      bad "4b (${names[$i]})" "forks=$forks (max $max_f) execs=$execs (max $max_e)"
+    fi
+  done
+  rm -rf "$sb"
+}
+legacy_count_case
 
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]
