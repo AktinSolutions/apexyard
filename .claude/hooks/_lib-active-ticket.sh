@@ -1341,6 +1341,46 @@ active_ticket_write_legacy() {
   return 0
 }
 
+# active_ticket_write_from_file <tree> <file>: /start-ticket writes the ticket
+# fields to <file> with the Write tool, one key=value line each (repo, number,
+# title, url, suggested_branch), and then runs this with paths only. The issue
+# title never reaches a command line, so a title with shell syntax in it
+# cannot look like a write to the Bash write detector. Writes the marker into
+# the tree's git dir when the tree validates, and always the old-layout
+# marker. Deletes <file> in every case. Returns 0 when at least one marker was
+# written.
+active_ticket_write_from_file() {
+  local dir="$1" f="$2" l repo="" num="" title="" url="" branch="" wrote=1
+  if [ -L "$f" ] || [ ! -f "$f" ]; then
+    echo "apexyard: ticket fields not read: $f is missing or is not a regular file" >&2
+    [ -L "$f" ] && rm -f "$f"
+    return 1
+  fi
+  while IFS= read -r l || [ -n "$l" ]; do
+    l="${l%$'\r'}"
+    case "$l" in
+      repo=*) [ -n "$repo" ] || repo="${l#repo=}" ;;
+      number=*) [ -n "$num" ] || num="${l#number=}" ;;
+      title=*) [ -n "$title" ] || title="${l#title=}" ;;
+      url=*) [ -n "$url" ] || url="${l#url=}" ;;
+      suggested_branch=*) [ -n "$branch" ] || branch="${l#suggested_branch=}" ;;
+    esac
+  done < "$f"
+  rm -f "$f"
+  if [ -z "$repo" ] || [ -z "$num" ]; then
+    echo "apexyard: ticket fields not read: $f has no repo= or number= line" >&2
+    return 1
+  fi
+  active_ticket_init "$dir" || true
+  if active_ticket_gitdir "$dir"; then
+    active_ticket_write "$dir" "$repo" "$num" "$title" "$url" "$branch" && wrote=0
+  else
+    echo "note: $dir failed validation (${AT_REASON:-unknown}). Only the old-layout marker is written." >&2
+  fi
+  active_ticket_write_legacy "$dir" "$repo" "$num" "$title" "$url" "$branch" && wrote=0
+  return "$wrote"
+}
+
 # ---------------------------------------------------------------------------
 # Path helpers for display only (project name for a path). They use the
 # old-layout resolution and fork like it. They do not decide which marker

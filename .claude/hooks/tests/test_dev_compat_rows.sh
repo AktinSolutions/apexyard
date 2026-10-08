@@ -106,9 +106,9 @@ check_old() {
 # does, with the current library.
 new_start_ticket() {
   local ops="$1" tree="$2" repo="$3" num="$4"
-  (cd "$ops" && bash -c '. "$1" && active_ticket_init "$2"
-    if active_ticket_gitdir "$2"; then active_ticket_write "$2" "$3" "$4" t u b; fi
-    active_ticket_write_legacy "$2" "$3" "$4" t u b' _ "$NEW_HOOKS/_lib-active-ticket.sh" "$tree" "$repo" "$num") >/dev/null 2>&1
+  printf 'repo=%s\nnumber=%s\ntitle=t\nurl=u\nsuggested_branch=b\n' "$repo" "$num" > "$ops/.claude/session/start-ticket.pending"
+  (cd "$ops" && bash -c '. "$1" && active_ticket_write_from_file "$2" "$3"' \
+    _ "$NEW_HOOKS/_lib-active-ticket.sh" "$tree" "$ops/.claude/session/start-ticket.pending") >/dev/null 2>&1
 }
 
 v=new

@@ -194,22 +194,29 @@ Do not delete an old-layout file. Step 5 writes the old-layout marker for this t
 
 ### 5. Write the markers
 
-Two functions in `.claude/hooks/_lib-active-ticket.sh` write the markers. `active_ticket_write` writes the marker into the tree's git dir. `active_ticket_write_legacy` writes the old-layout marker. Run both through `bash -c`, with the values as arguments, so a title with quotes or newlines cannot break the command:
+Write the markers in two steps. The issue title never goes on a command line. A title can hold shell syntax such as `>`, `| tee` or `sed -i`, and the ticket gate reads such a command as a file write. A fresh tree has no ticket yet, so the gate would block `/start-ticket` itself.
 
-```bash
-bash -c '. "$1/.claude/hooks/_lib-active-ticket.sh"
-active_ticket_init "$2"
-if active_ticket_gitdir "$2"
-then
-  active_ticket_write "$2" "$3" "$4" "$5" "$6" "$7"
-else
-  echo "note: $2 failed validation (${AT_REASON:-unknown}). Only the old-layout marker is written." >&2
-fi
-active_ticket_write_legacy "$2" "$3" "$4" "$5" "$6" "$7"' _ \
-  "$ops_root" "$tree" "<owner/repo>" "<number>" "<title>" "<url>" "<branch>"
-```
+1. Use the Write tool to write the ticket fields to `<ops_root>/.claude/session/start-ticket.pending`, one `key=value` line each:
 
-When the tree fails validation, the skill writes only the old-layout marker and prints a one-line note. That is not an error. The hooks read the old-layout marker for that tree as they did before.
+   ```
+   repo=<owner/repo>
+   number=<number>
+   title=<title>
+   url=<url>
+   suggested_branch=<branch>
+   ```
+
+   Put the title on one line. Replace any newline in it with a space.
+
+2. Run this fixed command. Replace `$ops_root` and `$tree` with the paths from step 4. The command takes only paths:
+
+   ```bash
+   bash -c '. "$1/.claude/hooks/_lib-active-ticket.sh" && active_ticket_write_from_file "$2" "$1/.claude/session/start-ticket.pending"' _ "$ops_root" "$tree"
+   ```
+
+`active_ticket_write_from_file` in `.claude/hooks/_lib-active-ticket.sh` reads the fields and deletes the file. It refuses a file that is a symlink. It then runs the two writers. `active_ticket_write` writes the marker into the tree's git dir. `active_ticket_write_legacy` writes the old-layout marker.
+
+When the tree fails validation, the command writes only the old-layout marker and prints a one-line note. That is not an error. The hooks read the old-layout marker for that tree as they did before.
 
 `active_ticket_write` validates the tree, then writes these lines atomically into the tree's git dir. `active_ticket_write_legacy` writes the same lines to the old-layout path:
 
