@@ -150,15 +150,24 @@ Notes on the fallback:
 
 The marker goes into the tree that holds the code you will change.
 
-- Run the skill from inside the tree, and use `.` as the tree.
-- When the ticket maps to a registered project (step 4b) and you run from the ops root, use `workspace/<project>` as the tree.
+- Run the skill from inside the tree. The tree is the git top level of the working directory, so a subdirectory of the tree also works.
+- When the ticket maps to a registered project (step 4b) and you run from the ops fork's main tree, use the project's workspace clone as the tree.
+- The workspace dir comes from `portfolio_workspace_dir`. A split-portfolio adopter keeps it outside the ops fork.
 - A ticket on the ops fork itself uses the ops root, or the linked worktree of the ops fork you work in.
 
 ```bash
-if [ -n "$project" ] && [ "$PWD" = "$ops_root" ]; then
-  tree="$ops_root/workspace/$project"
+workspace_dir=$(portfolio_workspace_dir)
+case "$workspace_dir" in
+  /*) ;;
+  *) workspace_dir="$ops_root/${workspace_dir#./}" ;;
+esac
+cwd_top=$(git rev-parse --show-toplevel 2>/dev/null || true)
+ops_top=$(cd "$ops_root" && pwd -P)
+if [ -n "$project" ] && [ "$cwd_top" = "$ops_top" ]
+then
+  tree="$workspace_dir/$project"
 else
-  tree="$PWD"
+  tree="${cwd_top:-$PWD}"
 fi
 ```
 
