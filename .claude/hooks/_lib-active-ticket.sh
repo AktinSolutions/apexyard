@@ -1341,16 +1341,50 @@ active_ticket_write_legacy() {
   return 0
 }
 
+# active_ticket_pending_path <ops_root>: prints the path of the ticket fields
+# file for this session, <ops>/.claude/session/start-ticket-<id>.pending, and
+# sets REPLY to it. The id is CLAUDE_CODE_SESSION_ID with every character
+# outside [A-Za-z0-9_-] removed. Each session has its own file, so two
+# sessions that run /start-ticket at the same time cannot read each other's
+# fields. Without a session id, the id is built from the process id and a
+# random number. A second call then gives another path, so the caller passes
+# the printed path on instead of calling this again.
+active_ticket_pending_path() {
+  local sid="${CLAUDE_CODE_SESSION_ID:-}"
+  sid="${sid//[!A-Za-z0-9_-]/}"
+  [ -n "$sid" ] || sid="nosession-$$-$RANDOM"
+  REPLY="${1%/}/.claude/session/start-ticket-${sid}.pending"
+  printf '%s\n' "$REPLY"
+}
+
 # active_ticket_write_from_file <tree> <file>: /start-ticket writes the ticket
 # fields to <file> with the Write tool, one key=value line each (repo, number,
 # title, url, suggested_branch), and then runs this with paths only. The issue
 # title never reaches a command line, so a title with shell syntax in it
 # cannot look like a write to the Bash write detector. Writes the marker into
 # the tree's git dir when the tree validates, and always the old-layout
-# marker. Deletes <file> in every case. Returns 0 when at least one marker was
-# written.
+# marker. Returns 0 when at least one marker was written.
+#
+# <file> must be a start-ticket-<id>.pending file in a .claude/session
+# directory, as active_ticket_pending_path names it. Any other path is
+# refused and left in place, so this function never deletes an unrelated
+# file. A file with that name is deleted after it is read, or when it is a
+# symlink.
 active_ticket_write_from_file() {
-  local dir="$1" f="$2" l repo="" num="" title="" url="" branch="" wrote=1
+  local dir="$1" f="$2" l repo="" num="" title="" url="" branch="" wrote=1 id=""
+  case "$f" in
+    */.claude/session/start-ticket-*.pending)
+      id="${f##*/start-ticket-}"
+      id="${id%.pending}"
+      case "$id" in
+        *[!A-Za-z0-9_-]*) id="" ;;
+      esac
+      ;;
+  esac
+  if [ -z "$id" ]; then
+    echo "apexyard: ticket fields not read: $f is not a start-ticket-<id>.pending file in .claude/session" >&2
+    return 1
+  fi
   if [ -L "$f" ] || [ ! -f "$f" ]; then
     echo "apexyard: ticket fields not read: $f is missing or is not a regular file" >&2
     [ -L "$f" ] && rm -f "$f"

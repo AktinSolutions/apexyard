@@ -9,7 +9,9 @@
 #   - the command writes both markers with the title as given, and deletes
 #     the fields file
 # A control case shows that the same title on the command line is read as a
-# file write and blocked. A symlinked fields file is refused.
+# file write and blocked. A symlinked fields file is refused. Two sessions
+# get two fields files and do not read each other's ticket. A path that is
+# not a session fields file is refused and left in place.
 
 # Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
 # shellcheck disable=SC1091
@@ -32,17 +34,21 @@ T=$(mktemp -d)
 T=$(cd -P "$T" && pwd)
 trap 'rm -rf "$T"' EXIT
 
-# The bash block of step 5, with its list indent removed.
-STEP5=$(awk '
-  /^### 5\. Write the markers/ { in5 = 1; next }
-  in5 && /^### / { exit }
-  in5 && /^[[:space:]]*```bash[[:space:]]*$/ { code = 1; next }
-  in5 && code && /^[[:space:]]*```[[:space:]]*$/ { exit }
-  in5 && code { sub(/^   /, ""); print }
-' "$SKILL")
-if [ -n "$STEP5" ]; then ok "step 5 has a bash command"; else bad "step 5 has a bash command" "no bash block found in $SKILL"; fi
+# step5_block <n>: the n-th bash block of step 5, with its list indent removed.
+step5_block() {
+  awk -v want="$1" '
+    /^### 5\. Write the markers/ { in5 = 1; next }
+    in5 && /^### / { exit }
+    in5 && !code && /^[[:space:]]*```bash[[:space:]]*$/ { code = 1; n++; next }
+    in5 && code && /^[[:space:]]*```[[:space:]]*$/ { code = 0; if (n == want) exit; next }
+    in5 && code && n == want { sub(/^   /, ""); print }
+  ' "$SKILL"
+}
+PATHCMD=$(step5_block 1)
+STEP5=$(step5_block 2)
+if [ -n "$PATHCMD" ] && [ -n "$STEP5" ]; then ok "step 5 has two bash commands"; else bad "step 5 has two bash commands" "path=[$PATHCMD] write=[$STEP5]"; fi
 case "$STEP5" in
-  *'<title>'*|*'"$3"'*) bad "the step 5 command takes paths only" "$STEP5" ;;
+  *'<title>'*|*'"$4"'*) bad "the step 5 command takes paths only" "$STEP5" ;;
   *) ok "the step 5 command takes paths only" ;;
 esac
 
@@ -78,12 +84,31 @@ gate() {
   RC=$?
 }
 
-# step5_cmd <ops> <tree>: the SKILL.md command with the two paths filled in.
+# step5_cmd <ops> <tree> <pending>: the SKILL.md write command with the
+# three paths filled in.
 step5_cmd() {
   local c="$STEP5"
   c="${c//\"\$ops_root\"/\"$1\"}"
   c="${c//\"\$tree\"/\"$2\"}"
+  c="${c//\"\$pending\"/\"$3\"}"
   printf '%s' "$c"
+}
+
+# pending_for <ops> <session id>: runs the SKILL.md path command as that
+# session and prints the path. An empty id runs it with no session id.
+pending_for() {
+  local c="$PATHCMD"
+  c="${c//\"\$ops_root\"/\"$1\"}"
+  if [ -n "$2" ]; then
+    (cd "$1" && CLAUDE_CODE_SESSION_ID="$2" bash -c "$c")
+  else
+    (cd "$1" && env -u CLAUDE_CODE_SESSION_ID bash -c "$c")
+  fi
+}
+
+pending_for_cmd() {
+  local c="$PATHCMD"
+  printf '%s' "${c//\"\$ops_root\"/\"$1\"}"
 }
 
 fields() {
@@ -95,13 +120,18 @@ for title in 'Fix a > b redirect in the report' 'Pipe the log | tee out.txt' 'St
   n=$((n + 1))
   OPS=$(make_sb "t$n")
   TREE="$OPS/workspace/p1"
-  PENDING="$OPS/.claude/session/start-ticket.pending"
+  PENDING=$(pending_for "$OPS" "sess-$n")
+  if [ "$PENDING" = "$OPS/.claude/session/start-ticket-sess-$n.pending" ]; then ok "[$title] the path command names the session's fields file"; else bad "[$title] the path command names the session's fields file" "$PENDING"; fi
+
+  CMD=$(pending_for_cmd "$OPS")
+  gate "$OPS" "$(jq -nc --arg c "$CMD" '{tool_name:"Bash", tool_input:{command:$c}}')"
+  if [ "$RC" = 0 ]; then ok "[$title] the path command passes the gate"; else bad "[$title] the path command passes the gate" "rc=$RC ${ERR:0:300}"; fi
 
   gate "$OPS" "$(jq -nc --arg p "$PENDING" --arg c "$(fields "$n" "$title")" '{tool_name:"Write", tool_input:{file_path:$p, content:$c}}')"
   if [ "$RC" = 0 ]; then ok "[$title] the Write of the fields file passes the gate"; else bad "[$title] the Write of the fields file passes the gate" "rc=$RC ${ERR:0:300}"; fi
   fields "$n" "$title" > "$PENDING"
 
-  CMD=$(step5_cmd "$OPS" "$TREE")
+  CMD=$(step5_cmd "$OPS" "$TREE" "$PENDING")
   gate "$OPS" "$(jq -nc --arg c "$CMD" '{tool_name:"Bash", tool_input:{command:$c}}')"
   if [ "$RC" = 0 ]; then ok "[$title] the step 5 command passes the gate"; else bad "[$title] the step 5 command passes the gate" "rc=$RC ${ERR:0:300}"; fi
 
@@ -133,11 +163,12 @@ done
 OPS=$(make_sb sym)
 TREE="$OPS/workspace/p1"
 fields 20 'Symlinked' > "$T/elsewhere"
-ln -s "$T/elsewhere" "$OPS/.claude/session/start-ticket.pending"
-out=$(cd "$OPS" && bash -c "$(step5_cmd "$OPS" "$TREE")" 2>&1)
+PENDING=$(pending_for "$OPS" sym)
+ln -s "$T/elsewhere" "$PENDING"
+out=$(cd "$OPS" && bash -c "$(step5_cmd "$OPS" "$TREE" "$PENDING")" 2>&1)
 rc=$?
 if [ "$rc" != 0 ] && [ ! -e "$TREE/.git/apexyard-ticket" ] && [ ! -e "$OPS/.claude/session/tickets/p1" ] \
-   && [ ! -L "$OPS/.claude/session/start-ticket.pending" ] && [ -f "$T/elsewhere" ]; then
+   && [ ! -L "$PENDING" ] && [ -f "$T/elsewhere" ]; then
   ok "a symlinked fields file is refused"
 else
   bad "a symlinked fields file is refused" "rc=$rc out=$out"
@@ -146,13 +177,59 @@ fi
 # A fields file with no repo= line writes nothing.
 OPS=$(make_sb norepo)
 TREE="$OPS/workspace/p1"
-printf 'number=21\ntitle=x\n' > "$OPS/.claude/session/start-ticket.pending"
-out=$(cd "$OPS" && bash -c "$(step5_cmd "$OPS" "$TREE")" 2>&1)
+PENDING=$(pending_for "$OPS" norepo)
+printf 'number=21\ntitle=x\n' > "$PENDING"
+out=$(cd "$OPS" && bash -c "$(step5_cmd "$OPS" "$TREE" "$PENDING")" 2>&1)
 rc=$?
-if [ "$rc" != 0 ] && [ ! -e "$TREE/.git/apexyard-ticket" ] && [ ! -e "$OPS/.claude/session/start-ticket.pending" ]; then
+if [ "$rc" != 0 ] && [ ! -e "$TREE/.git/apexyard-ticket" ] && [ ! -e "$PENDING" ]; then
   ok "a fields file with no repo is refused"
 else
   bad "a fields file with no repo is refused" "rc=$rc out=$out"
+fi
+
+# Two sessions start a ticket at the same time. Each one has its own fields
+# file, so the first command writes the first session's ticket and leaves the
+# second session's file alone.
+OPS=$(make_sb two)
+TREE="$OPS/workspace/p1"
+PA=$(pending_for "$OPS" sess-a)
+PB=$(pending_for "$OPS" sess-b)
+if [ -n "$PA" ] && [ "$PA" != "$PB" ]; then ok "two sessions get two fields files"; else bad "two sessions get two fields files" "a=$PA b=$PB"; fi
+fields 31 'Session A' > "$PA"
+fields 32 'Session B' > "$PB"
+out=$(cd "$OPS" && bash -c "$(step5_cmd "$OPS" "$TREE" "$PA")" 2>&1)
+if grep -qx 'number=31' "$TREE/.git/apexyard-ticket" 2>/dev/null && [ ! -e "$PA" ] && grep -qx 'number=32' "$PB" 2>/dev/null; then
+  ok "session A writes its own ticket and leaves session B's file"
+else
+  bad "session A writes its own ticket and leaves session B's file" "out=$out marker=$(cat "$TREE/.git/apexyard-ticket" 2>&1)"
+fi
+out=$(cd "$OPS" && bash -c "$(step5_cmd "$OPS" "$TREE" "$PB")" 2>&1)
+if grep -qx 'number=32' "$TREE/.git/apexyard-ticket" 2>/dev/null && [ ! -e "$PB" ]; then
+  ok "session B writes its own ticket"
+else
+  bad "session B writes its own ticket" "out=$out marker=$(cat "$TREE/.git/apexyard-ticket" 2>&1)"
+fi
+
+# A session id with unsafe characters is reduced to [A-Za-z0-9_-]. With no
+# session id, each run names another file.
+P=$(pending_for "$OPS" '../x y/z;$')
+if [ "$P" = "$OPS/.claude/session/start-ticket-xyz.pending" ]; then ok "an unsafe session id is sanitised"; else bad "an unsafe session id is sanitised" "$P"; fi
+P1=$(pending_for "$OPS" '')
+P2=$(pending_for "$OPS" '')
+case "$P1" in
+  "$OPS/.claude/session/start-ticket-nosession-"*.pending)
+    if [ "$P1" != "$P2" ]; then ok "no session id gives a new fields file per run"; else bad "no session id gives a new fields file per run" "$P1 = $P2"; fi ;;
+  *) bad "no session id gives a new fields file per run" "$P1" ;;
+esac
+
+# A path that is not a session fields file is refused and left in place.
+fields 33 'Elsewhere' > "$T/other.pending"
+out=$(cd "$OPS" && bash -c "$(step5_cmd "$OPS" "$TREE" "$T/other.pending")" 2>&1)
+rc=$?
+if [ "$rc" != 0 ] && [ -f "$T/other.pending" ] && ! grep -qx 'number=33' "$TREE/.git/apexyard-ticket" 2>/dev/null; then
+  ok "a path outside .claude/session is refused and kept"
+else
+  bad "a path outside .claude/session is refused and kept" "rc=$rc out=$out"
 fi
 
 echo "PASS=$PASS FAIL=$FAIL"

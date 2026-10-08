@@ -194,9 +194,17 @@ Do not delete an old-layout file. Step 5 writes the old-layout marker for this t
 
 ### 5. Write the markers
 
-Write the markers in two steps. The issue title never goes on a command line. A title can hold shell syntax such as `>`, `| tee` or `sed -i`, and the ticket gate reads such a command as a file write. A fresh tree has no ticket yet, so the gate would block `/start-ticket` itself.
+Write the markers in three steps. The issue title never goes on a command line. A title can hold shell syntax such as `>`, `| tee` or `sed -i`, and the ticket gate reads such a command as a file write. A fresh tree has no ticket yet, so the gate would block `/start-ticket` itself.
 
-1. Use the Write tool to write the ticket fields to `<ops_root>/.claude/session/start-ticket.pending`, one `key=value` line each:
+1. Run this fixed command to get the path of the ticket fields file. Replace `$ops_root` with the path from step 4:
+
+   ```bash
+   bash -c '. "$1/.claude/hooks/_lib-active-ticket.sh" && active_ticket_pending_path "$1"' _ "$ops_root"
+   ```
+
+   The command prints one path, `<ops_root>/.claude/session/start-ticket-<id>.pending`. The `<id>` is the session id, so each session uses its own file. Two sessions that run `/start-ticket` at the same time cannot swap tickets. Without a session id, the command makes a new id on each run. Run it once and use the printed path in steps 2 and 3.
+
+2. Use the Write tool to write the ticket fields to the path from step 1, one `key=value` line each:
 
    ```
    repo=<owner/repo>
@@ -208,13 +216,13 @@ Write the markers in two steps. The issue title never goes on a command line. A 
 
    Put the title on one line. Replace any newline in it with a space.
 
-2. Run this fixed command. Replace `$ops_root` and `$tree` with the paths from step 4. The command takes only paths:
+3. Run this fixed command. Replace `$ops_root` and `$tree` with the paths from step 4, and `$pending` with the path from step 1. The command takes only paths:
 
    ```bash
-   bash -c '. "$1/.claude/hooks/_lib-active-ticket.sh" && active_ticket_write_from_file "$2" "$1/.claude/session/start-ticket.pending"' _ "$ops_root" "$tree"
+   bash -c '. "$1/.claude/hooks/_lib-active-ticket.sh" && active_ticket_write_from_file "$2" "$3"' _ "$ops_root" "$tree" "$pending"
    ```
 
-`active_ticket_write_from_file` in `.claude/hooks/_lib-active-ticket.sh` reads the fields and deletes the file. It refuses a file that is a symlink. It then runs the two writers. `active_ticket_write` writes the marker into the tree's git dir. `active_ticket_write_legacy` writes the old-layout marker.
+`active_ticket_write_from_file` in `.claude/hooks/_lib-active-ticket.sh` reads the fields and deletes the file. It refuses a file that is a symlink. It also refuses any path that is not a `start-ticket-<id>.pending` file in `.claude/session`, and leaves that path in place. It then runs the two writers. `active_ticket_write` writes the marker into the tree's git dir. `active_ticket_write_legacy` writes the old-layout marker.
 
 When the tree fails validation, the command writes only the old-layout marker and prints a one-line note. That is not an error. The hooks read the old-layout marker for that tree as they did before.
 
