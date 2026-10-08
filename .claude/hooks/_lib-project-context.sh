@@ -107,14 +107,15 @@ EOF
 _projctx_registry_tsv() {
   # portfolio_registry costs ~45 ms (config reads); the hook runs on every
   # file tool call, so memoise the resolved path per session.
-  local registry reg_cache="" sd registry_real="" root_real="" memo_hit=0
+  local registry reg_cache="" sd registry_real="" root_real="" memo_hit=0 memo_tmp
   if [ -n "${PROJCTX_SESSION_ID:-}" ] && sd=$(projctx_state_dir); then
     reg_cache="$sd/registry-path-$(printf '%s' "$PROJCTX_SESSION_ID" | cksum | awk '{print $1}')"
     if [ -f "$reg_cache" ] && [ ! -L "$reg_cache" ]; then
       # Line 1 registry, line 2 its canonical path, line 3 the canonical
       # portfolio root. An older one-line memo has no line 2 and is a miss.
       { IFS= read -r registry; IFS= read -r registry_real; IFS= read -r root_real; } < "$reg_cache" 2>/dev/null
-      [ -n "$registry" ] && [ -f "$registry" ] && [ -n "$registry_real" ] && memo_hit=1
+      [ -n "$registry" ] && [ -f "$registry" ] && [ -n "$registry_real" ] \
+        && [ "$registry" -ef "$registry_real" ] && memo_hit=1
     fi
   fi
   local key cache_file state_dir root
@@ -129,7 +130,13 @@ _projctx_registry_tsv() {
       root_real=$(_portfolio_canonicalize "$root" 2>/dev/null) || return 1
     fi
     if [ -n "$reg_cache" ] && [ ! -L "$reg_cache" ]; then
-      printf '%s\n%s\n%s\n' "$registry" "$registry_real" "$root_real" > "$reg_cache" 2>/dev/null
+      # Private temp file, then an atomic move into place.
+      memo_tmp="$reg_cache.tmp.$$"
+      if ( umask 077; printf '%s\n%s\n%s\n' "$registry" "$registry_real" "$root_real" > "$memo_tmp" ) 2>/dev/null; then
+        mv -f "$memo_tmp" "$reg_cache" 2>/dev/null || rm -f "$memo_tmp" 2>/dev/null
+      else
+        rm -f "$memo_tmp" 2>/dev/null
+      fi
     fi
   fi
 

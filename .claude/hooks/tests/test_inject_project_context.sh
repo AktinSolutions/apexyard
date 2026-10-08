@@ -1009,6 +1009,23 @@ else
 fi
 rm -rf "$MARKER_DIR"
 
+# --- (reg13) the registry memo is private, and a mismatched memo is a miss
+invoke "$(payload reg13 "" "" "$WS/src/a.ts")" >/dev/null
+MEMO="$MARKER_DIR/registry-path-$(printf '%s' reg13 | cksum | awk '{print $1}')"
+MEMO_MODE=$(stat -c '%a' "$MEMO" 2>/dev/null || stat -f '%Lp' "$MEMO" 2>/dev/null)
+GOOD_REAL=$(sed -n 2p "$MEMO" 2>/dev/null)
+{ sed -n 1p "$MEMO"; echo "$SB/not-the-registry.yaml"; sed -n 3p "$MEMO"; } > "$MEMO.new"
+mv "$MEMO.new" "$MEMO"
+rm -rf "$MARKER_DIR/injected-"*
+invoke "$(payload reg13 "" "" "$WS/src/a.ts")" >/dev/null
+if [ "$MEMO_MODE" = 600 ] && [ -n "$GOOD_REAL" ] && [ "$(sed -n 2p "$MEMO")" = "$GOOD_REAL" ] \
+   && ! ls "$MARKER_DIR"/registry-path-*.tmp* >/dev/null 2>&1; then
+  pass_case "(reg13) registry memo is mode 600 and a mismatched memo is recomputed"
+else
+  fail_case "(reg13) registry memo" "mode=$MEMO_MODE line2=$(sed -n 2p "$MEMO" 2>/dev/null)"
+fi
+rm -rf "$MARKER_DIR"
+
 echo "===== test_inject_project_context.sh ====="
 echo "Passed: $PASS"
 echo "Failed: $FAIL"
