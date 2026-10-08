@@ -47,23 +47,23 @@ mkrepo() {
   git -C "$1" commit -q --allow-empty -m init
 }
 
-# make_sb <version> <name>: an ops fork with the current hooks, a registered
-# clone workspace/p1 and a registered clone p5 at an absolute workspace: path
-# outside the workspace dir. <version> only names the sandbox dir. Prints the
-# ops root.
+# make_sb <name>: an ops fork with the current hooks, a registered clone
+# workspace/p1 and a registered clone p5 at an absolute workspace: path
+# outside the workspace dir. <name> names the sandbox dir. Prints the ops
+# root.
 make_sb() {
-  local ver="$1" name="$2" ops hooks="$NEW_HOOKS" defaults="$NEW_DEFAULTS" f
-  ops="$T/$ver-$name/ops"
+  local name="$1" ops hooks="$NEW_HOOKS" defaults="$NEW_DEFAULTS" f
+  ops="$T/$name/ops"
   mkrepo "$ops"
   : > "$ops/.apexyard-fork"
   : > "$ops/onboarding.yaml"
-  mkdir -p "$ops/.claude/hooks" "$ops/.claude/session" "$ops/workspace" "$T/$ver-$name/ext"
+  mkdir -p "$ops/.claude/hooks" "$ops/.claude/session" "$ops/workspace" "$T/$name/ext"
   for f in "$hooks"/*.sh; do cp "$f" "$ops/.claude/hooks/"; done
   chmod +x "$ops/.claude/hooks/"*.sh
   cp "$defaults" "$ops/.claude/project-config.defaults.json"
-  printf 'projects:\n  - name: p1\n    repo: org/p1\n  - name: p5\n    repo: org/p5\n    workspace: %s\n' "$T/$ver-$name/ext/p5" > "$ops/apexyard.projects.yaml"
+  printf 'projects:\n  - name: p1\n    repo: org/p1\n  - name: p5\n    repo: org/p5\n    workspace: %s\n' "$T/$name/ext/p5" > "$ops/apexyard.projects.yaml"
   mkrepo "$ops/workspace/p1"
-  mkrepo "$T/$ver-$name/ext/p5"
+  mkrepo "$T/$name/ext/p5"
   printf '%s' "$ops"
 }
 
@@ -111,120 +111,119 @@ new_start_ticket() {
     _ "$NEW_HOOKS/_lib-active-ticket.sh" "$tree" "$ops/.claude/session/start-ticket-rows.pending") >/dev/null 2>&1
 }
 
-v=new
 # B1
-OPS=$(make_sb "$v" b1)
-EXT="$T/$v-b1/ext/p5"
+OPS=$(make_sb b1)
+EXT="$T/b1/ext/p5"
 marker "$OPS/.claude/session/current-ticket" org/p5 1
 gate "$OPS" "$OPS" "$(edit "$EXT/src/a.ts")"
-expect "B1 ($v) a workspace: clone outside the workspace dir uses current-ticket" 0
+expect "B1 a workspace: clone outside the workspace dir uses current-ticket" 0
 rm -f "$OPS/.claude/session/current-ticket"
 marker "$OPS/.claude/session/tickets/p5" org/p5 1
 gate "$OPS" "$OPS" "$(edit "$EXT/src/a.ts")"
-expect "B1 ($v) tickets/p5 alone does not cover that clone" 2
+expect "B1 tickets/p5 alone does not cover that clone" 2
 
 # B2
-OPS=$(make_sb "$v" b2)
+OPS=$(make_sb b2)
 git -C "$OPS/workspace/p1" worktree add -q "$OPS/workspace/p1/.wt/w2" -b feature/w2
 marker "$OPS/.claude/session/tickets/p1/feature__w2" org/p1 2
 gate "$OPS" "$OPS" "$(edit "$OPS/workspace/p1/.wt/w2/src/a.ts")"
-expect "B2 ($v) a linked worktree keeps its per-branch marker" 0
+expect "B2 a linked worktree keeps its per-branch marker" 0
 gate "$OPS" "$OPS" "$(edit "$OPS/workspace/p1/src/a.ts")"
-expect "B2 ($v) the per-branch marker does not cover the main clone" 2
+expect "B2 the per-branch marker does not cover the main clone" 2
 
 # B3
-OPS=$(make_sb "$v" b3)
-OTHER="$T/$v-b3/home/work/other"
+OPS=$(make_sb b3)
+OTHER="$T/b3/home/work/other"
 mkrepo "$OTHER"
 git -C "$OTHER" remote add origin https://example.test/org/other.git
 marker "$OPS/.claude/session/current-ticket" org/other 3
 gate "$OPS" "$OPS" "$(edit "$OTHER/src/a.ts")"
-expect "B3 ($v) an unregistered repo outside the fork uses current-ticket" 0
+expect "B3 an unregistered repo outside the fork uses current-ticket" 0
 rm -f "$OPS/.claude/session/current-ticket"
 gate "$OPS" "$OPS" "$(edit "$OTHER/src/a.ts")"
-expect "B3 ($v) without current-ticket it is blocked" 2
+expect "B3 without current-ticket it is blocked" 2
 
 # B4
-OPS=$(make_sb "$v" b4)
+OPS=$(make_sb b4)
 marker "$OPS/.claude/session/current-ticket" org/p1 4
 gate "$OPS" "$OPS" "$(edit "$OPS/src/a.ts")"
-expect "B4 ($v) a current-ticket naming a managed project passes an ops edit" 0
+expect "B4 a current-ticket naming a managed project passes an ops edit" 0
 
 # B5
-OPS=$(make_sb "$v" b5)
+OPS=$(make_sb b5)
 marker "$OPS/.claude/session/current-ticket" org/ops 5
 mkrepo "$OPS/vendor/nested"
 gate "$OPS" "$OPS" "$(edit "$OPS/vendor/nested/a.ts")"
-expect "B5 ($v) a nested repo in the fork uses current-ticket" 0
+expect "B5 a nested repo in the fork uses current-ticket" 0
 mkdir -p "$OPS/broken"
 printf 'not a gitdir line\n' > "$OPS/broken/.git"
 gate "$OPS" "$OPS" "$(edit "$OPS/broken/a.ts")"
-expect "B5 ($v) a malformed .git file uses current-ticket" 0
-mkrepo "$T/$v-b5/subsrc"
-git -C "$OPS" -c protocol.file.allow=always submodule add -q "$T/$v-b5/subsrc" sub >/dev/null 2>&1
+expect "B5 a malformed .git file uses current-ticket" 0
+mkrepo "$T/b5/subsrc"
+git -C "$OPS" -c protocol.file.allow=always submodule add -q "$T/b5/subsrc" sub >/dev/null 2>&1
 if [ -e "$OPS/sub/.git" ]; then
   gate "$OPS" "$OPS" "$(edit "$OPS/sub/a.ts")"
-  expect "B5 ($v) a submodule uses current-ticket" 0
+  expect "B5 a submodule uses current-ticket" 0
 else
   echo "INFO: git submodule add failed here, so the submodule case did not run"
 fi
-mkrepo "$T/$v-b5/real-p1"
+mkrepo "$T/b5/real-p1"
 rm -rf "$OPS/workspace/p1"
-ln -s "$T/$v-b5/real-p1" "$OPS/workspace/p1"
+ln -s "$T/b5/real-p1" "$OPS/workspace/p1"
 gate "$OPS" "$OPS" "$(edit "$OPS/workspace/p1/src/a.ts")"
-expect "B5 ($v) a symlinked clone root uses current-ticket" 0
+expect "B5 a symlinked clone root uses current-ticket" 0
 
 # B6
-OPS=$(make_sb "$v" b6)
+OPS=$(make_sb b6)
 marker "$OPS/.claude/session/current-ticket" org/p1 6
 gate "$OPS" "$OPS/workspace/p1" "$(bashc 'sed -i "s/x/y/" "$VAR"')"
-expect "B6 ($v) an unextractable Bash target in a clone uses current-ticket" 0
+expect "B6 an unextractable Bash target in a clone uses current-ticket" 0
 rm -f "$OPS/.claude/session/current-ticket"
 gate "$OPS" "$OPS/workspace/p1" "$(bashc 'sed -i "s/x/y/" "$VAR"')"
-expect "B6 ($v) without current-ticket it is blocked" 2
+expect "B6 without current-ticket it is blocked" 2
 
 # B7
-OPS=$(make_sb "$v" b7)
+OPS=$(make_sb b7)
 rm -f "$OPS/.claude/hooks/_lib-portfolio-paths.sh"
 marker "$OPS/.claude/session/tickets/p1" org/p1 7
 gate "$OPS" "$OPS" "$(edit "$OPS/workspace/p1/src/a.ts")"
-expect "B7 ($v) without the portfolio library tickets/p1 still counts" 0
+expect "B7 without the portfolio library tickets/p1 still counts" 0
 
 # B8
-OPS=$(make_sb "$v" b8)
+OPS=$(make_sb b8)
 new_start_ticket "$OPS" "$OPS/workspace/p1" org/p1 8
 gate "$OPS" "$OPS" "$(edit "$OPS/workspace/p1/src/a.ts")"
-expect "B8 ($v) the new /start-ticket covers a main clone" 0
-check_old "B8 ($v) the old-layout marker for a main clone is tickets/p1" "$OPS/.claude/session/tickets/p1" org/p1 8
+expect "B8 the new /start-ticket covers a main clone" 0
+check_old "B8 the old-layout marker for a main clone is tickets/p1" "$OPS/.claude/session/tickets/p1" org/p1 8
 git -C "$OPS/workspace/p1" worktree add -q "$OPS/workspace/p1/.wt/w8" -b feature/w8
 # The old layout keeps per-branch markers in a tickets/p1 directory, so the
 # single-agent tickets/p1 file goes first, as the old /start-ticket told users.
 rm -f "$OPS/.claude/session/tickets/p1"
 new_start_ticket "$OPS" "$OPS/workspace/p1/.wt/w8" org/p1 81
 gate "$OPS" "$OPS" "$(edit "$OPS/workspace/p1/.wt/w8/src/a.ts")"
-expect "B8 ($v) the new /start-ticket covers a linked worktree" 0
-check_old "B8 ($v) the old-layout marker for a linked worktree is tickets/p1/<branch>" "$OPS/.claude/session/tickets/p1/feature__w8" org/p1 81
+expect "B8 the new /start-ticket covers a linked worktree" 0
+check_old "B8 the old-layout marker for a linked worktree is tickets/p1/<branch>" "$OPS/.claude/session/tickets/p1/feature__w8" org/p1 81
 new_start_ticket "$OPS" "$OPS" org/ops 82
 gate "$OPS" "$OPS" "$(edit "$OPS/src/a.ts")"
-expect "B8 ($v) the new /start-ticket covers an ops edit" 0
-check_old "B8 ($v) the old-layout marker for an ops edit is current-ticket" "$OPS/.claude/session/current-ticket" org/ops 82
+expect "B8 the new /start-ticket covers an ops edit" 0
+check_old "B8 the old-layout marker for an ops edit is current-ticket" "$OPS/.claude/session/current-ticket" org/ops 82
 
 # P1: a project ticket aimed at a clone path that does not exist. The
 # writer must not walk up and put it into the ops fork's git dir.
-OPS=$(make_sb "$v" p1)
+OPS=$(make_sb p1)
 new_start_ticket "$OPS" "$OPS/workspace/p5" org/p5 91
 gate "$OPS" "$OPS" "$(edit "$OPS/bin/tool.sh")"
-expect "P1 ($v) a project ticket for a missing clone does not cover an ops edit" 2
+expect "P1 a project ticket for a missing clone does not cover an ops edit" 2
 
 # P2: a ticket for one project started from another project's clone.
-OPS=$(make_sb "$v" p2)
+OPS=$(make_sb p2)
 new_start_ticket "$OPS" "$OPS/workspace/p1" org/p5 92
 gate "$OPS" "$OPS" "$(edit "$OPS/workspace/p1/src/a.ts")"
-expect "P2 ($v) another project's ticket does not cover the clone it was started from" 2
+expect "P2 another project's ticket does not cover the clone it was started from" 2
 # The same, planted by hand or by an older writer, is not trusted either.
 printf 'repo=org/p5\nnumber=93\n' > "$OPS/workspace/p1/.git/apexyard-ticket"
 gate "$OPS" "$OPS" "$(edit "$OPS/workspace/p1/src/a.ts")"
-expect "P2 ($v) a planted marker for another project is not trusted" 2
+expect "P2 a planted marker for another project is not trusted" 2
 
 # B9: one sandbox, a ticket carried across an update and a rollback.
 OPS=$(make_sb new b9)
