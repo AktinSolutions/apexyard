@@ -345,9 +345,14 @@ projctx_emit() {
   local reserve=$((${#end_m} + 1)) idx_max=$(( ${#out} + PROJCTX_INDEX_BUDGET ))
   body=""
 
+  local cm_ok=0
   if _projctx_safe_file "$claude_md" "$ws_real"; then
-    # One bounded read (M2); 64 KB is enough to find every @import.
+    # One bounded read; 64 KB is enough to find every @import. Check again
+    # after the read: a file swapped for a link meanwhile is dropped.
     cm=$(head -c 65536 "$claude_md" 2>/dev/null)
+    _projctx_safe_file "$claude_md" "$ws_real" && cm_ok=1
+  fi
+  if [ "$cm_ok" = 1 ]; then
     body="${body}## $name/CLAUDE.md"$'\n'
     body="${body}${cm:0:$PROJCTX_BUDGET}"$'\n\n'
     local imports imp nimp=0 more=0
@@ -378,7 +383,7 @@ PROJCTX_IMPORTS
 
   local rules_dir="$ws/.claude/rules"
   if [ -d "$rules_dir" ]; then
-    local rf paths_list nrules=0 nidx=0 more=0
+    local rf rb paths_list nrules=0 nidx=0 more=0
     for rf in "$rules_dir"/*.md; do
       [ "$nrules" -ge 200 ] && break
       nrules=$((nrules + 1))
@@ -386,8 +391,11 @@ PROJCTX_IMPORTS
       paths_list=$(_projctx_rule_paths "$rf")
       if [ -z "$paths_list" ]; then
         if [ "${#body}" -lt "$PROJCTX_BUDGET" ]; then
-          body="${body}## rule: $(basename "$rf")"$'\n'
-          body="${body}$(head -c "$PROJCTX_BUDGET" "$rf" 2>/dev/null)"$'\n\n'
+          rb=$(head -c "$PROJCTX_BUDGET" "$rf" 2>/dev/null)
+          if _projctx_safe_file "$rf" "$ws_real"; then
+            body="${body}## rule: $(basename "$rf")"$'\n'
+            body="${body}${rb}"$'\n\n'
+          fi
         fi
       else
         if [ "$nidx" -ge 30 ] || [ "${#out}" -gt "$idx_max" ]; then more=$((more+1)); else nidx=$((nidx+1)); out="${out}- rule (paths: ${paths_list:0:200}): ${rf#"$ws"/}"$'\n'; fi

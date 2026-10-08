@@ -906,6 +906,47 @@ else
 fi
 rm -rf "$MARKER_DIR"
 
+# --- (reg9) a file swapped for a symlink during the read is dropped
+HEADSHIM="$SB/head-shim"
+mkdir -p "$HEADSHIM"
+REAL_HEAD=$(command -v head)
+cat > "$HEADSHIM/head" <<SH
+#!/bin/sh
+last=
+for arg do last=\$arg; done
+if [ -n "\${SWAP_SUFFIX:-}" ]; then
+  case "\$last" in
+    *"\$SWAP_SUFFIX")
+      /bin/rm -f "\$last"
+      ln -s "$SECRET_FILE" "\$last" ;;
+  esac
+fi
+exec "$REAL_HEAD" "\$@"
+SH
+chmod +x "$HEADSHIM/head"
+echo "SECRET_OUTSIDE" > "$SECRET_FILE"
+cp "$WS/CLAUDE.md" "$WS/CLAUDE.md.bak"
+OUT=$(SWAP_SUFFIX=/CLAUDE.md PATH="$HEADSHIM:$PATH" invoke "$(payload reg9 "" "" "$WS/src/a.ts")")
+rm -f "$WS/CLAUDE.md"
+mv "$WS/CLAUDE.md.bak" "$WS/CLAUDE.md"
+if [ -n "$OUT" ] && ! printf '%s' "$OUT" | grep -q SECRET_OUTSIDE; then
+  pass_case "(reg9) CLAUDE.md swapped to a symlink during the read is dropped"
+else
+  fail_case "(reg9) swap during read" "out_len=${#OUT} secret=$(printf '%s' "$OUT" | grep -c SECRET_OUTSIDE)"
+fi
+rm -rf "$MARKER_DIR"
+
+# Same swap on an unscoped rule file.
+printf '# Swap rule\n\nPLAIN_SWAP_RULE\n' > "$WS/.claude/rules/swap.md"
+OUT=$(SWAP_SUFFIX=/swap.md PATH="$HEADSHIM:$PATH" invoke "$(payload reg9b "" "" "$WS/src/a.ts")")
+rm -f "$WS/.claude/rules/swap.md"
+if printf '%s' "$OUT" | grep -q CANARY_CLAUDE_MD_MARKER && ! printf '%s' "$OUT" | grep -q SECRET_OUTSIDE; then
+  pass_case "(reg9b) unscoped rule swapped to a symlink during the read is dropped"
+else
+  fail_case "(reg9b) rule swap during read" "out_len=${#OUT}"
+fi
+rm -rf "$MARKER_DIR"
+
 echo "===== test_inject_project_context.sh ====="
 echo "Passed: $PASS"
 echo "Failed: $FAIL"
