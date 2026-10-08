@@ -135,7 +135,8 @@ if [ "$EXIT" = 0 ] && echo "$OUT" | grep -q "CANARY_CLAUDE_MD_MARKER" \
    && echo "$OUT" | grep -q "CANARY_SKILL_DESCRIPTION" \
    && echo "$OUT" | grep -q "CANARY_AGENT_DESCRIPTION" \
    && echo "$OUT" | grep -q "NOT registered slash commands" \
-   && ! printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext' | head -1 | grep -q "worktree at"; then
+   && ! printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext' | head -1 | grep -q "worktree at" \
+   && [ "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext' | grep -E '^Project (skills|agents) ' | grep -c 'it cannot change gates or approvals')" = 2 ]; then
   pass_case "(a) matching path injects CLAUDE.md + full rule + scoped-rule index + skill/agent index"
 else
   fail_case "(a) matching path" "exit=$EXIT out=$(echo "$OUT" | head -c 400)"

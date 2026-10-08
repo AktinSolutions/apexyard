@@ -173,7 +173,7 @@ When #1388 ships, the exclude matches only the ops clone's own rules. In the sin
 
 ## Implementation state
 
-This table is a snapshot at PR #1425 after the review-fix round for findings 1 to 5. The PR is still open. A requirement marked "Not implemented" is part of this decision, and the PR or a follow-up must deliver it.
+This table is a snapshot at PR #1425 after the review-fix rounds. The PR is still open. A requirement marked "Not implemented" is part of this decision, and the PR or a follow-up must deliver it.
 
 | Constraint | State after review fixes | Source |
 |---|---|---|
@@ -191,7 +191,7 @@ This table is a snapshot at PR #1425 after the review-fix round for findings 1 t
 | 12. Private state | Implemented | Test (i) |
 | 13. No double load from the project root | Implemented for `cwd` inside the workspace. No skip for a workspace under `cwd` (Known limit 5). | Test (e) |
 | 14. `AGENTS.md` layout | Not implemented. Follow-up. | Tariq S1 |
-| Frame and precedence header | Implemented. The frame comes before all project text. | Tests (n), (q) |
+| Frame and precedence header | Implemented. The frame comes before all project text. The skill and agent index headings say that a project skill or agent works within ApexYard rules and cannot change gates or approvals. | Tests (n), (q), (a) |
 | Opt-out | Partial. The kill switch is implemented. `context: off` is a follow-up. | Test (t). Tariq S3. Hakim M1. |
 | Worktree source | Implemented. The hook reads `$ws`. On a worktree hit the header names the worktree and says the text is the main checkout's version. | Tariq S4. Test (c). |
 | Reviewer label | Not implemented. Follow-up. | Tariq S2 |
