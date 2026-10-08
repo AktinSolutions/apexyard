@@ -23,9 +23,9 @@ Each working tree keeps its own marker in its own git dir (AgDR-0216):
 
 One tree holds one ticket. Parallel sessions on one project no longer overwrite each other, because each linked worktree has its own marker. `git worktree remove` deletes the marker with the worktree. The marker is never tracked, so it does not appear in `git status`.
 
-The hook accepts a git dir only for the ops fork or a registered `workspace/<project>/` clone. The marker is a process gate. Anyone with write access to the git dir can forge it. It is not an authorization boundary.
+The hook trusts a marker in a git dir only for the ops fork or a registered clone. A registered clone is `workspace/<project>/`, or the `workspace:` path of its registry entry. The marker is a process gate. Anyone with write access to the git dir can forge it. It is not an authorization boundary.
 
-Old-layout markers under `<ops_root>/.claude/session/` (`current-ticket`, `tickets/<project>`) still work in a main clone, for their own project only, until the legacy reader is removed. Step 4d offers to move one.
+During the move to the new layout, the skill also writes the old-layout marker under `<ops_root>/.claude/session/`, in the place the old skill used (`tickets/<project>/<branch>`, `tickets/<project>` or `current-ticket`). The hooks still read old markers wherever they read them before. A hook from before the move, after a rollback or in a session that has not reloaded its hooks, sees the ticket too. See AgDR-0216, "Backward compatibility".
 
 This is the mechanical enforcement of the Pre-Build Gate in `.claude/rules/workflow-gates.md` — "do not start coding until the ticket exists".
 
@@ -171,24 +171,30 @@ else
 fi
 ```
 
-#### 4d. Offer to move an old marker
+#### 4d. Old-layout markers
 
-If an old-layout file exists for this project (`$ops_root/.claude/session/tickets/<project>`), or for the ops fork (`$ops_root/.claude/session/current-ticket`), ask with `AskUserQuestion`:
+Do not delete an old-layout file. Step 5 writes the old-layout marker for this ticket in the same place the old skill used, so it replaces an older ticket there, as before.
 
-> An old marker for `<repo>#<number>` exists. Write it to this tree and delete the old file?
+### 5. Write the markers
 
-On yes, use the old file's `repo` and `number` for step 5, then delete the old file. On no, continue with the ticket from step 1 and leave the old file. Never move a marker without asking.
-
-### 5. Write the marker
-
-The marker is written by one function, `active_ticket_write`, in `.claude/hooks/_lib-active-ticket.sh`. Run it through `bash -c`, with the values as arguments, so a title with quotes or newlines cannot break the command:
+Two functions in `.claude/hooks/_lib-active-ticket.sh` write the markers. `active_ticket_write` writes the marker into the tree's git dir. `active_ticket_write_legacy` writes the old-layout marker. Run both through `bash -c`, with the values as arguments, so a title with quotes or newlines cannot break the command:
 
 ```bash
-bash -c '. "$1/.claude/hooks/_lib-active-ticket.sh" && active_ticket_write "$2" "$3" "$4" "$5" "$6" "$7"' _ \
+bash -c '. "$1/.claude/hooks/_lib-active-ticket.sh"
+active_ticket_init "$2"
+if active_ticket_gitdir "$2"
+then
+  active_ticket_write "$2" "$3" "$4" "$5" "$6" "$7"
+else
+  echo "note: $2 failed validation (${AT_REASON:-unknown}). Only the old-layout marker is written." >&2
+fi
+active_ticket_write_legacy "$2" "$3" "$4" "$5" "$6" "$7"' _ \
   "$ops_root" "$tree" "<owner/repo>" "<number>" "<title>" "<url>" "<branch>"
 ```
 
-The function validates the tree, then writes these lines atomically into the tree's git dir:
+When the tree fails validation, the skill writes only the old-layout marker and prints a one-line note. That is not an error. The hooks read the old-layout marker for that tree as they did before.
+
+`active_ticket_write` validates the tree, then writes these lines atomically into the tree's git dir. `active_ticket_write_legacy` writes the same lines to the old-layout path:
 
 ```
 repo=<owner/repo>
@@ -199,7 +205,9 @@ suggested_branch=<branch>
 started_at=<ISO-8601>
 ```
 
-It refuses a tree that is not the ops fork or a registered clone. It also refuses a symlink in the path, a repo owned by another user, and a malformed `.git` file. It prints the reason to stderr. If it prints a hint about the sandbox, the session may not write into the git dir. Stop and tell the user. See AgDR-0216 for the allowlist the user can add.
+`active_ticket_write` refuses a tree that is not the ops fork or a registered clone. It also refuses a symlink in the path, a repo owned by another user, and a malformed `.git` file. It prints the reason to stderr. If it prints a hint about the sandbox, the session may not write into the git dir. Tell the user. The old-layout marker still covers the tree. See AgDR-0216 for the allowlist the user can add.
+
+`active_ticket_write_legacy` prints a one-line note and writes nothing when the old-layout path is blocked. An example is a `tickets/<project>` file where the per-worktree marker needs a directory. Report the note to the user. Do not delete the file.
 
 Do NOT write the marker with the Edit or Write tool. `.git` is a protected path for those tools.
 
@@ -208,10 +216,10 @@ Do NOT write the marker with the Edit or Write tool. `.git` is a protected path 
 Other skills read the active ticket of the working tree through the same resolver. Run this from the tree you are in:
 
 ```bash
-bash -c '. "$1/.claude/hooks/_lib-active-ticket.sh" && active_ticket_init "$PWD" && active_ticket_lookup_cwd && cat "$REPLY"' _ "$ops_root"
+bash -c '. "$1/.claude/hooks/_lib-active-ticket.sh" && active_ticket_init "$PWD" && active_ticket_lookup "$PWD" && cat "$REPLY"' _ "$ops_root"
 ```
 
-The command prints the marker (`repo=`, `number=`, `title=`, `url=`), or nothing when the tree has no marker.
+The command prints the marker (`repo=`, `number=`, `title=`, `url=`), or nothing when no marker covers the tree. It reads the marker in the tree's git dir first, then the old-layout marker.
 
 ### 6. Move the board card to "In progress" (opt-in)
 

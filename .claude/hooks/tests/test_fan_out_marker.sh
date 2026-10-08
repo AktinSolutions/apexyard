@@ -117,13 +117,49 @@ rc=$?
 if [ "$rc" != 0 ] && [ ! -e "$WT" ] && [ -z "$(git -C "$SB/workspace/p1" branch --list 'feature/GH-43-none')" ] && printf '%s' "$out" | grep -q "no active ticket"; then ok "prepare_worktree_refuses_a_tree_with_no_ticket"; else bad "prepare_worktree_refuses_a_tree_with_no_ticket" "rc=$rc out=$out"; fi
 rm -rf "$SB"
 
-# --- a source tree that is not registered is refused ----------------------
+# --- a source tree that is not registered gets the old-layout marker only --
+# The new worktree fails validation, so its git dir marker is not written. The
+# old /fan-out flow covered it with the session-level marker, and so does this.
 SB=$(make_sb)
 mkrepo "$SB/workspace/rogue"
 WT="$SB/.claude/worktrees/feature-GH-44-rogue"
 out=$(prepare "$SB" "$SB/workspace/rogue" "$WT" "feature/GH-44-rogue" org/rogue 44 "Rogue" "u" 2>&1)
 rc=$?
-if [ "$rc" != 0 ] && [ ! -e "$WT" ]; then ok "prepare_worktree_refuses_an_unregistered_clone"; else bad "prepare_worktree_refuses_an_unregistered_clone" "rc=$rc out=$out"; fi
+wtg=$(git -C "$WT" rev-parse --absolute-git-dir 2>/dev/null)
+if [ "$rc" = 0 ] && [ -d "$WT" ] && [ ! -e "$wtg/apexyard-ticket" ] \
+   && grep -q '^number=44$' "$SB/.claude/session/current-ticket" 2>/dev/null \
+   && printf '%s' "$out" | grep -q "only the old-layout marker is written"; then
+  ok "prepare_worktree_writes_only_the_old_marker_for_an_unregistered_clone"
+else
+  bad "prepare_worktree_writes_only_the_old_marker_for_an_unregistered_clone" "rc=$rc out=$out"
+fi
+rm -rf "$SB"
+
+# --- an existing session-level old marker is kept --------------------------
+SB=$(make_sb)
+mkrepo "$SB/workspace/rogue"
+mkdir -p "$SB/.claude/session"
+printf 'repo=org/ops\nnumber=7\n' > "$SB/.claude/session/current-ticket"
+WT="$SB/.claude/worktrees/feature-GH-46-rogue"
+out=$(prepare "$SB" "$SB/workspace/rogue" "$WT" "feature/GH-46-rogue" org/rogue 46 "Rogue" "u" 2>&1)
+rc=$?
+if [ "$rc" = 0 ] && grep -q '^number=7$' "$SB/.claude/session/current-ticket" && printf '%s' "$out" | grep -q "kept the existing"; then
+  ok "prepare_worktree_keeps_an_existing_session_marker"
+else
+  bad "prepare_worktree_keeps_an_existing_session_marker" "rc=$rc out=$out"
+fi
+rm -rf "$SB"
+
+# --- the old-layout per-worktree marker is written for a registered repo ----
+SB=$(make_sb)
+WT="$SB/.claude/worktrees/feature-GH-47-dual"
+out=$(prepare "$SB" "$SB/workspace/p1" "$WT" "feature/GH-47-dual" 2>&1)
+rc=$?
+if [ "$rc" = 0 ] && grep -q '^number=42$' "$SB/.claude/session/tickets/p1/feature__GH-47-dual" 2>/dev/null; then
+  ok "prepare_worktree_writes_the_old_per_worktree_marker"
+else
+  bad "prepare_worktree_writes_the_old_per_worktree_marker" "rc=$rc out=$out"
+fi
 rm -rf "$SB"
 
 # --- a failed marker write removes the tree and the branch ----------------

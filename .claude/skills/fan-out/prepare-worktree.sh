@@ -14,8 +14,11 @@
 #
 # The script writes the ticket marker into the git dir of the new worktree,
 # through the shared resolver, so the ticket gate lets the writer agent edit.
-# If the marker write fails, the script removes the worktree and the branch
-# it created. It never uses --force.
+# It also writes the old-layout per-worktree marker, so a hook from before the
+# move sees the ticket too.
+# When the new worktree fails validation, only the old-layout marker is
+# written, with a one-line note. If neither marker is written, the script
+# removes the worktree and the branch it created. It never uses --force.
 #
 # On success it prints the worktree path. On failure it prints the reason to
 # stderr and exits non-zero.
@@ -52,8 +55,8 @@ if ! active_ticket_init "$SOURCE"; then
   exit 1
 fi
 
-# The source tree must be a valid tree, and it must hold a ticket when the
-# caller gave none.
+# The source tree must hold a ticket when the caller gave none. The ticket may
+# be the marker in its git dir or an old-layout marker.
 if [ -z "$NUMBER" ]; then
   if ! active_ticket_lookup "$SOURCE"; then
     echo "prepare-worktree: no active ticket for $SOURCE. Run /start-ticket there first." >&2
@@ -68,11 +71,6 @@ if [ -z "$NUMBER" ]; then
     echo "prepare-worktree: the ticket marker of $SOURCE has no repo= or number=" >&2
     exit 1
   fi
-else
-  if ! active_ticket_gitdir "$SOURCE"; then
-    echo "prepare-worktree: $SOURCE is not a valid working tree: ${AT_REASON:-git dir failed validation}" >&2
-    exit 1
-  fi
 fi
 
 if ! git -C "$SOURCE" worktree add -q "$WTPATH" -b "$BRANCH" 2>/dev/null; then
@@ -81,8 +79,26 @@ if ! git -C "$SOURCE" worktree add -q "$WTPATH" -b "$BRANCH" 2>/dev/null; then
 fi
 
 _at_memo_clear
-if ! active_ticket_write "$WTPATH" "$REPO" "$NUMBER" "$TITLE" "$URL" "$BRANCH"; then
-  echo "prepare-worktree: the marker write failed, so the worktree is removed" >&2
+wrote=0
+if active_ticket_gitdir "$WTPATH"; then
+  _at_memo_clear
+  active_ticket_write "$WTPATH" "$REPO" "$NUMBER" "$TITLE" "$URL" "$BRANCH" && wrote=1
+else
+  echo "prepare-worktree: note: $WTPATH failed validation (${AT_REASON:-unknown}), so only the old-layout marker is written" >&2
+fi
+# A repo outside the registry maps to the session-level old-layout marker. An
+# existing one belongs to the session that started the fan-out, so keep it.
+# The old /fan-out flow relied on that file in the same way.
+if active_ticket_legacy_path "$WTPATH" "$REPO"; then
+  if [ "$AT_LEGACY_KIND" = session ] && [ -e "$REPLY" ]; then
+    echo "prepare-worktree: note: kept the existing $REPLY" >&2
+    wrote=1
+  else
+    active_ticket_write_legacy "$WTPATH" "$REPO" "$NUMBER" "$TITLE" "$URL" "$BRANCH" && wrote=1
+  fi
+fi
+if [ "$wrote" = 0 ]; then
+  echo "prepare-worktree: no marker was written, so the worktree is removed" >&2
   git -C "$SOURCE" worktree remove "$WTPATH" >/dev/null 2>&1 || true
   git -C "$SOURCE" branch -d "$BRANCH" >/dev/null 2>&1 || true
   exit 1
