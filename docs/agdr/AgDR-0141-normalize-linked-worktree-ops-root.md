@@ -12,7 +12,7 @@ category: architecture
 # Normalize linked worktrees to the main ops root
 
 > In the context of linked worktrees for an ops fork, facing split review-marker state, I decided to resolve the main worktree from Git's common directory data to keep gate state in one location, accepting the need to handle stale pins.
-
+>
 > **Partly superseded by AgDR-0216.** Linked worktrees still resolve to the main ops root for review markers and other gate state. The ticket marker is the exception. It no longer sits in the ops root. Each working tree keeps its own marker in its git dir.
 
 ## Context
