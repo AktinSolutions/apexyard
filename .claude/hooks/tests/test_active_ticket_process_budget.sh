@@ -392,7 +392,7 @@ if [ -n "$r" ]; then ok "3c a command substitution in a lookup function is caugh
 # into the git dir, on the same fixture.
 #
 # The limits in budget_limits were measured on the fixture of this test with
-# the hooks of the dev merge base (compat/dev-base/BASE), on a developer
+# the dev hooks at b312ca8, on a developer
 # machine. Confirm them on the CI ubuntu leg, and re-measure when the runner,
 # the fixture or the merge base changes:
 #   APEXYARD_BUDGET_MEASURE=1 bash test_active_ticket_process_budget.sh
