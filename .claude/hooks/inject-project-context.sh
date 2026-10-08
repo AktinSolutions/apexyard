@@ -121,7 +121,16 @@ _projctx_claim_marker() {
     age=$(_projctx_path_age_secs "$MARKER") || age=""
     if [ -n "$age" ] && [ "$age" -ge "$PROJCTX_PENDING_STALE_SECS" ]; then
       reclaim_lock="$MARKER.reclaim"
-      mkdir "$reclaim_lock" 2>/dev/null || return 1
+      if ! mkdir "$reclaim_lock" 2>/dev/null; then
+        # A lock as old as a stale marker belongs to a killed caller. Two
+        # observers may both take it; the recheck and the single-winner mv
+        # below still let at most one caller claim.
+        age=$(_projctx_path_age_secs "$reclaim_lock") || age=""
+        { [ -n "$age" ] && [ "$age" -ge "$PROJCTX_PENDING_STALE_SECS" ]; } || return 1
+        rmdir "$reclaim_lock" 2>/dev/null
+        mkdir "$reclaim_lock" 2>/dev/null || return 1
+      fi
+      trap 'rmdir "$reclaim_lock" 2>/dev/null; exit 0' TERM INT HUP
       # Recheck under the lock: a prior caller may have replaced the marker.
       age=$(_projctx_path_age_secs "$MARKER") || age=""
       if [ -d "$MARKER" ] && [ ! -L "$MARKER" ] && [ ! -f "$MARKER/done" ] \
@@ -136,6 +145,7 @@ _projctx_claim_marker() {
         fi
       fi
       rmdir "$reclaim_lock" 2>/dev/null || true
+      trap - TERM INT HUP
       return "$claimed"
     fi
   fi

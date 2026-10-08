@@ -851,6 +851,21 @@ fi
 mv "$WS/CLAUDE.md.bak" "$WS/CLAUDE.md"
 rm -rf "$MARKER_DIR"
 
+# --- (reg6) a reclaim lock left by a killed hook is recovered
+SK=$(printf '%s' reg6 | cksum | awk '{print $1}')
+MK=$(printf '%s' 'main|demo' | cksum | awk '{print $1}')
+LOCK_MARKER="$MARKER_DIR/injected-$SK-$MK"
+mkdir -p "$LOCK_MARKER" "$LOCK_MARKER.reclaim"
+touch -t 200001010000 "$LOCK_MARKER" "$LOCK_MARKER.reclaim" 2>/dev/null \
+  || touch -d '2000-01-01' "$LOCK_MARKER" "$LOCK_MARKER.reclaim" 2>/dev/null
+OUT=$(invoke "$(payload reg6 "" "" "$WS/src/a.ts")")
+if printf '%s' "$OUT" | grep -q CANARY_CLAUDE_MD_MARKER && [ ! -e "$LOCK_MARKER.reclaim" ]; then
+  pass_case "(reg6) stale reclaim lock is recovered; inject proceeds"
+else
+  fail_case "(reg6) stale reclaim lock" "out_len=${#OUT} lock_left=$([ -e "$LOCK_MARKER.reclaim" ] && echo yes || echo no)"
+fi
+rm -rf "$MARKER_DIR"
+
 echo "===== test_inject_project_context.sh ====="
 echo "Passed: $PASS"
 echo "Failed: $FAIL"
