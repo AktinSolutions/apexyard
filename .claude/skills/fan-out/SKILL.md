@@ -84,7 +84,7 @@ Do this for every task that involves code edits, not pure research. Find the wor
 
 - A task on a managed project uses its clone as its **source tree**: `<ops_root>/workspace/<name>/`, or the `workspace:` path of its registry entry.
 - A task on the ops fork uses `<ops_root>` as its source tree.
-- The marker lives in the source tree's git dir (AgDR-0216). During the move, an old-layout marker under `.claude/session/` also counts. Check both with `active_ticket_lookup <source-tree>` from `.claude/hooks/_lib-active-ticket.sh`. With `--from-tickets`, the task's own ticket is used instead.
+- The marker lives in the source tree's git dir (AgDR-0222). During the move, an old-layout marker under `.claude/session/` also counts. Check both with `active_ticket_lookup <source-tree>` from `.claude/hooks/_lib-active-ticket.sh`. With `--from-tickets`, the task's own ticket is used instead.
 
 If a source tree has no marker, **refuse the entire fan-out** and tell the user:
 

@@ -118,7 +118,7 @@ fi
 # ---------------------------------------------------------------------------
 # 3. Active ticket: read the marker of the working tree you are in.
 #
-# Each working tree keeps its own marker in its git dir (AgDR-0216). The
+# Each working tree keeps its own marker in its git dir (AgDR-0222). The
 # shared resolver finds and validates it. Each marker is a key=value file
 # written by /start-ticket; we only need `number`, `title` and `repo` here.
 #

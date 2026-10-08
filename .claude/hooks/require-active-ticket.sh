@@ -4,7 +4,7 @@
 # CLAUDE.md, workflows/sdlc.md, or .claude/rules/workflow-gates.md.
 #
 # Active tickets are declared by the /start-ticket skill. Each working tree
-# keeps its own marker in its git dir (docs/agdr/AgDR-0216):
+# keeps its own marker in its git dir (docs/agdr/AgDR-0222):
 #
 #   <repo>/.git/apexyard-ticket                   ← main clone
 #   <repo>/.git/worktrees/<id>/apexyard-ticket    ← linked worktree
@@ -12,7 +12,7 @@
 # _lib-active-ticket.sh finds and validates that git dir. It runs no git
 # process for that step. During the move, the old-layout markers under
 # ops_root/.claude/session/ still work everywhere they worked before
-# (AgDR-0216, Backward compatibility).
+# (AgDR-0222, Backward compatibility).
 #
 # Resolution for a given FILE_PATH:
 #   1. Validate the tree that holds FILE_PATH and read its marker. If present
@@ -749,7 +749,7 @@ _ratc_evaluate_target() {
     TREE_LINE="  this tree:    ${AT_GITDIR:+$AT_GITDIR/}apexyard-ticket"
   fi
   if [ -n "${AT_LEGACY_FILE:-}" ]; then
-    LEGACY_LINE="Note: ticket markers are moving to each working tree's git dir (AgDR-0216). Old markers are still read and written during the move. Old marker found: $AT_LEGACY_FILE (${AT_LEGACY_WHY:-it does not cover this target}).
+    LEGACY_LINE="Note: ticket markers are moving to each working tree's git dir (AgDR-0222). Old markers are still read and written during the move. Old marker found: $AT_LEGACY_FILE (${AT_LEGACY_WHY:-it does not cover this target}).
 "
   fi
   if [ -z "$FILE_PATH" ]; then

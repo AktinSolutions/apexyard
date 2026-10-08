@@ -1,6 +1,6 @@
 #!/bin/bash
 # require-agdr-for-arch-changes.sh: the spike and prototype exemption reads the
-# marker of the working tree that holds the commit (AgDR-0216). A spike ticket
+# marker of the working tree that holds the commit (AgDR-0222). A spike ticket
 # kept for another project, in any location, must not exempt this commit.
 #
 # Fixture: an ops fork that registers projects a and b. The commit stages a

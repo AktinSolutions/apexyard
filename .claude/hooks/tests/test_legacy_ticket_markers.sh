@@ -1,5 +1,5 @@
 #!/bin/bash
-# Old-layout ticket markers during the move (AgDR-0216, Backward
+# Old-layout ticket markers during the move (AgDR-0222, Backward
 # compatibility). When no validated tree holds a new marker, the gate runs the
 # old resolution unchanged: tickets/<project>/<branch> for a linked worktree
 # inside the workspace dir, then tickets/<project>, then current-ticket. A new
@@ -179,7 +179,7 @@ if [ -z "$out" ]; then ok "10a SessionStart prints nothing when no old file exis
 legacy "$SB/.claude/session/tickets/p1" org/p1 7
 out=$(cd "$SB" && bash "$SB/.claude/hooks/warn-legacy-ticket-markers.sh" </dev/null 2>/dev/null)
 case "$out" in
-  *"ticket markers are moving to each working tree's git dir"*"still read and written"*"tickets/p1"*"AgDR-0216"*) ok "10b SessionStart prints the notice and the old file" ;;
+  *"ticket markers are moving to each working tree's git dir"*"still read and written"*"tickets/p1"*"AgDR-0222"*) ok "10b SessionStart prints the notice and the old file" ;;
   *) bad "10b" "$out" ;;
 esac
 hook "$SB" "$SB/workspace/p1/src/a.ts"

@@ -30,7 +30,7 @@
 # external command. The functions that fork on purpose are
 # active_ticket_init, the writers and the old-layout resolution (_atd_*).
 #
-# VALIDATION (docs/agdr/AgDR-0216-ticket-marker-in-worktree-git-dir.md):
+# VALIDATION (docs/agdr/AgDR-0222-ticket-marker-in-worktree-git-dir.md):
 #   - the git dir must belong to the ops fork or to a registered clone, matched
 #     fresh on every validated path. A registered clone sits under the
 #     workspace dir with its registry name, or at the workspace: path of its
@@ -1174,7 +1174,7 @@ active_ticket_write() {
   else
     ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   fi
-  hint=" The sandbox may deny writes to the git dir. See AgDR-0216 for the allowlist."
+  hint=" The sandbox may deny writes to the git dir. See AgDR-0222 for the allowlist."
   tmp=$(mktemp "$G/apexyard-ticket.tmp.XXXXXX" 2>/dev/null) || {
     echo "apexyard: cannot write ticket marker in $G: mktemp failed.$hint" >&2
     return 1

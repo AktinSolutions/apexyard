@@ -1,5 +1,5 @@
 #!/bin/bash
-# Index and self-test of the merge-base compat runs (AgDR-0216, Backward
+# Index and self-test of the merge-base compat runs (AgDR-0222, Backward
 # compatibility).
 #
 # Each original under compat/dev-base/ runs in its own suite entry,

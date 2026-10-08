@@ -1,5 +1,5 @@
 #!/bin/bash
-# /approve-merge worktree removal (AgDR-0216): remove-worktree.sh takes its
+# /approve-merge worktree removal (AgDR-0222): remove-worktree.sh takes its
 # candidates only from `git worktree list --porcelain`, refuses unsafe trees,
 # lists ignored files for the confirmation prompt, and never uses --force.
 

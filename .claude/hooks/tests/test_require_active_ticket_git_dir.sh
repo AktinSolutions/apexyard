@@ -1,6 +1,6 @@
 #!/bin/bash
 # Gate behaviour with the ticket marker in each working tree's git dir
-# (AgDR-0216). Each case builds an ops fork sandbox that holds the real hook
+# (AgDR-0222). Each case builds an ops fork sandbox that holds the real hook
 # and its libraries, a registered clone workspace/p1 and a linked worktree of
 # it, then pipes a synthetic PreToolUse payload to require-active-ticket.sh.
 #

@@ -1,6 +1,6 @@
 #!/bin/bash
 # The tracked settings file must not grant broad access to a .git directory
-# (AgDR-0216). A sandbox or permission rule may name only the exact marker
+# (AgDR-0222). A sandbox or permission rule may name only the exact marker
 # file and its temporary file in a git dir. A rule such as `.git/**`, `.git/*`
 # or a bare `.git` would let a session write hooks and config.
 #

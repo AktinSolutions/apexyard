@@ -1,6 +1,6 @@
 #!/bin/bash
 # Runs the merge-base version of test_tracker_error_diagnostics.sh against the current hooks.
-# See compat/run-dev-compat.sh and AgDR-0216, Backward compatibility.
+# See compat/run-dev-compat.sh and AgDR-0222, Backward compatibility.
 
 # Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
 # shellcheck disable=SC1091

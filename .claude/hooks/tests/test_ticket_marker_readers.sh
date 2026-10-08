@@ -1,5 +1,5 @@
 #!/bin/bash
-# No file may read the old ticket marker paths outside the resolver (AgDR-0216).
+# No file may read the old ticket marker paths outside the resolver (AgDR-0222).
 #
 # The old layout kept the active ticket in `.claude/session/current-ticket` and
 # `.claude/session/tickets/<project>`. Every reader now goes through

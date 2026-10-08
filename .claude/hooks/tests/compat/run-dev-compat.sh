@@ -1,6 +1,6 @@
 #!/bin/bash
 # Runs one original test file from the dev merge base against the current
-# hooks (AgDR-0216, Backward compatibility).
+# hooks (AgDR-0222, Backward compatibility).
 #
 # Usage: run-dev-compat.sh <test name>, for example
 #   run-dev-compat.sh test_status_briefing.sh

@@ -1,5 +1,5 @@
 #!/bin/bash
-# /fan-out writer worktrees (AgDR-0216): prepare-worktree.sh creates each
+# /fan-out writer worktrees (AgDR-0222): prepare-worktree.sh creates each
 # worktree from the task's own source tree and writes a ticket marker into
 # the git dir of the new worktree.
 #

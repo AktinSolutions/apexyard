@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-Behaviour change: the active ticket now lives in each working tree's git dir (#1576, AgDR-0216). `/start-ticket` writes `apexyard-ticket` into the git dir of the tree you run it in. Each linked worktree needs its own `/start-ticket`. `git worktree remove` deletes the marker with the worktree.
+Behaviour change: the active ticket now lives in each working tree's git dir (#1576, AgDR-0222). `/start-ticket` writes `apexyard-ticket` into the git dir of the tree you run it in. Each linked worktree needs its own `/start-ticket`. `git worktree remove` deletes the marker with the worktree.
 
 ### Upgrade notes
 

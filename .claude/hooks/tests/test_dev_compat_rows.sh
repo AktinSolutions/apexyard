@@ -1,5 +1,5 @@
 #!/bin/bash
-# Backward compatibility rows B1 to B9 of the ticket marker move (AgDR-0216).
+# Backward compatibility rows B1 to B9 of the ticket marker move (AgDR-0222).
 #
 # Each row is a real-session shape that the first version of the move broke.
 # Every row runs twice: against the current hooks and against the hooks of

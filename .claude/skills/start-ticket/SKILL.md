@@ -14,7 +14,7 @@ When this skill writes a durable artifact, read .claude/rules/writing-standard.m
 
 Writes the active-ticket marker for one working tree, so the `require-active-ticket.sh` PreToolUse hook permits Edit/Write on code paths in that tree. Without it, the hook blocks edits to anything outside `.claude/`, `docs/`, `projects/*/docs/`, and `*.md`.
 
-Each working tree keeps its own marker in its own git dir (AgDR-0216):
+Each working tree keeps its own marker in its own git dir (AgDR-0222):
 
 | Working tree | Marker path |
 |--------------|-------------|
@@ -25,7 +25,7 @@ One tree holds one ticket. Parallel sessions on one project no longer overwrite 
 
 The hook trusts a marker in a git dir only for the ops fork or a registered clone. A registered clone is `workspace/<project>/`, or the `workspace:` path of its registry entry. The marker is a process gate. Anyone with write access to the git dir can forge it. It is not an authorization boundary.
 
-During the move to the new layout, the skill also writes the old-layout marker under `<ops_root>/.claude/session/`. It uses the place the old skill used: `tickets/<project>/<branch>`, `tickets/<project>` or `current-ticket`. The hooks still read old markers wherever they read them before. A hook from before the move, after a rollback or in a session that has not reloaded its hooks, sees the ticket too. See AgDR-0216, "Backward compatibility".
+During the move to the new layout, the skill also writes the old-layout marker under `<ops_root>/.claude/session/`. It uses the place the old skill used: `tickets/<project>/<branch>`, `tickets/<project>` or `current-ticket`. The hooks still read old markers wherever they read them before. A hook from before the move, after a rollback or in a session that has not reloaded its hooks, sees the ticket too. See AgDR-0222, "Backward compatibility".
 
 This is the mechanical enforcement of the Pre-Build Gate in `.claude/rules/workflow-gates.md` — "do not start coding until the ticket exists".
 
@@ -222,7 +222,7 @@ suggested_branch=<branch>
 started_at=<ISO-8601>
 ```
 
-`active_ticket_write` refuses a tree that is not the ops fork or a registered clone. It also refuses a symlink in the path, a repo owned by another user, and a malformed `.git` file. It prints the reason to stderr. If it prints a hint about the sandbox, the session may not write into the git dir. Tell the user. The old-layout marker still covers the tree. See AgDR-0216 for the allowlist the user can add.
+`active_ticket_write` refuses a tree that is not the ops fork or a registered clone. It also refuses a symlink in the path, a repo owned by another user, and a malformed `.git` file. It prints the reason to stderr. If it prints a hint about the sandbox, the session may not write into the git dir. Tell the user. The old-layout marker still covers the tree. See AgDR-0222 for the allowlist the user can add.
 
 `active_ticket_write_legacy` prints a one-line note and writes nothing when the old-layout path is blocked. An example is a `tickets/<project>` file where the per-worktree marker needs a directory. Report the note to the user. Do not delete the file.
 
