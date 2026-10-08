@@ -280,6 +280,24 @@ mkdir -p "$oldl/.claude/session/tickets/p1"
 printf 'repo=owner/p1\nnumber=3\n' > "$oldl/.claude/session/tickets/p1/feature__x"
 run_case 'an old per-branch tickets/p1/feature__x file alone still pins the ops root' 2 'gh issue view 42' "$oldl"
 
+
+# A partial install without the resolver library must still block. The guard
+# then reads the old-layout markers inline.
+nolib="$TMP/nolib-hooks"
+mkdir -p "$nolib"
+cp "$HOOKS"/*.sh "$nolib/"
+rm -f "$nolib/_lib-active-ticket.sh"
+saved_hook="$HOOK"
+HOOK="$nolib/block-ambient-tracker-repo.sh"
+run_case 'without the resolver library an old per-branch marker still pins' 2 'gh issue view 42' "$oldl"
+rm -f "$oldl/.claude/session/tickets/p1/feature__x"
+printf 'repo=owner/p1\nnumber=3\n' > "$oldl/.claude/session/current-ticket"
+run_case 'without the resolver library current-ticket still pins' 2 'gh issue view 42' "$oldl"
+run_case 'without the resolver library the explicit repo is allowed' 0 'gh issue view 42 --repo owner/p1' "$oldl"
+rm -f "$oldl/.claude/session/current-ticket"
+run_case 'without the resolver library and with no marker the guard allows' 0 'gh issue view 42' "$oldl"
+HOOK="$saved_hook"
+
 # A scratch clone or an isolated build clone outside the ops fork is not a
 # registered tree, so it has no marker of its own. The session pin still finds
 # the ops root. The guard must then read the ops fork's marker and every

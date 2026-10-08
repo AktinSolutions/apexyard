@@ -12,6 +12,8 @@
 #   - /start-ticket (it describes the old-layout marker it also writes)
 #   - the /status briefing helper (it keeps the old display rule for a tree
 #     without a new marker, and must work in a fork without the hooks)
+#   - the ambient tracker guard (when the resolver library is missing, it
+#     reads the old markers inline so that it still blocks, not allows)
 #   - AgDRs, technical designs and the CHANGELOG (history)
 #   - hook tests (their fixtures exercise the legacy rule)
 #   - this test
@@ -29,7 +31,7 @@ ok() { echo "PASS [$1]"; PASS=$((PASS + 1)); }
 bad() { echo "FAIL [$1]: $2" >&2; FAIL=$((FAIL + 1)); }
 
 PATTERN='session/tickets|current-ticket'
-ALLOWED_RX='^(\.claude/hooks/_lib-active-ticket\.sh|\.claude/hooks/warn-legacy-ticket-markers\.sh|\.claude/skills/start-ticket/SKILL\.md|\.claude/skills/status/briefing\.sh|CHANGELOG\.md|docs/agdr/.*|docs/technical-designs/.*|\.claude/hooks/tests/.*)$'
+ALLOWED_RX='^(\.claude/hooks/_lib-active-ticket\.sh|\.claude/hooks/warn-legacy-ticket-markers\.sh|\.claude/hooks/block-ambient-tracker-repo\.sh|\.claude/skills/start-ticket/SKILL\.md|\.claude/skills/status/briefing\.sh|CHANGELOG\.md|docs/agdr/.*|docs/technical-designs/.*|\.claude/hooks/tests/.*)$'
 
 # offenders <file list on stdin>: prints each file that matches PATTERN and is not allowed
 offenders() {

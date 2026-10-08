@@ -173,6 +173,15 @@ if command -v active_ticket_legacy_markers >/dev/null 2>&1; then
     done <<< "$REPLY"
   fi
   active_ticket_set_context "" ""
+else
+  # Without the resolver library, read the old-layout markers inline, as the
+  # guard did before the library existed. A partial install must not make
+  # this guard weaker than it was: a missing helper library fails closed.
+  for marker in "$OPS_ROOT/.claude/session/current-ticket" "$OPS_ROOT/.claude/session/tickets"/* "$OPS_ROOT/.claude/session/tickets"/*/*; do
+    [ -f "$marker" ] || continue
+    repo=$(sed -n 's/^repo=//p' "$marker" | head -1)
+    [ -n "$repo" ] && REPOS="${REPOS}${repo}"$'\n'
+  done
 fi
 
 # The new repo pins come from the marker of the working tree that runs the
