@@ -68,7 +68,7 @@ esac
 run "$SB" list "$P1" feature/unknown
 case "$OUT" in none:*) ok "list_has_no_candidate_for_an_unknown_branch" ;; *) bad "list_has_no_candidate_for_an_unknown_branch" "$OUT" ;; esac
 mkdir -p "$SB/not-a-worktree"
-run "$SB" remove "$P1" "$SB/not-a-worktree"
+run "$SB" remove "$P1" "$SB/not-a-worktree" feature/x
 if [ "$RC" != 0 ] && [ -d "$SB/not-a-worktree" ]; then ok "remove_refuses_a_path_that_porcelain_does_not_list"; else bad "remove_refuses_a_path_that_porcelain_does_not_list" "rc=$RC $OUT"; fi
 
 # --- refusals ---------------------------------------------------------------
@@ -83,11 +83,11 @@ git -C "$P1" worktree add -q "$SB/wt-lock" -b feature/lock
 git -C "$P1" worktree lock "$SB/wt-lock"
 run "$SB" list "$P1" feature/lock
 if printf '%s' "$OUT" | grep -q 'refused (locked)'; then ok "refuses_a_locked_worktree"; else bad "refuses_a_locked_worktree" "$OUT"; fi
-run "$SB" remove "$P1" "$SB/wt-lock"
+run "$SB" remove "$P1" "$SB/wt-lock" feature/lock
 if [ "$RC" != 0 ] && [ -d "$SB/wt-lock" ]; then ok "remove_refuses_a_locked_worktree"; else bad "remove_refuses_a_locked_worktree" "rc=$RC"; fi
 run "$SB/wt-x" list "$P1" feature/x
 if printf '%s' "$OUT" | grep -q "refused (the session's own tree)"; then ok "refuses_the_sessions_own_tree"; else bad "refuses_the_sessions_own_tree" "$OUT"; fi
-run "$SB/wt-x" remove "$P1" "$SB/wt-x"
+run "$SB/wt-x" remove "$P1" "$SB/wt-x" feature/x
 if [ "$RC" != 0 ] && [ -d "$SB/wt-x" ]; then ok "remove_refuses_the_sessions_own_tree"; else bad "remove_refuses_the_sessions_own_tree" "rc=$RC"; fi
 
 # a worktree of the ops fork that holds the ops root path itself
@@ -107,19 +107,33 @@ rm -f "$SB"/wt-x/cache/f*.bin
 NONGIT=$(mktemp -d)
 run "$NONGIT" list "$P1" feature/x
 if printf '%s' "$OUT" | grep -q "refused (cannot tell the session's own tree or the ops root)"; then ok "refuses_every_candidate_when_the_session_tree_is_unknown"; else bad "refuses_every_candidate_when_the_session_tree_is_unknown" "$OUT"; fi
-run "$NONGIT" remove "$P1" "$SB/wt-x"
+run "$NONGIT" remove "$P1" "$SB/wt-x" feature/x
 if [ "$RC" != 0 ] && [ -d "$SB/wt-x" ]; then ok "remove_refuses_when_the_session_tree_is_unknown"; else bad "remove_refuses_when_the_session_tree_is_unknown" "rc=$RC"; fi
 rmdir "$NONGIT"
 
+# --- remove re-checks that the worktree still holds the merged branch -------
+git -C "$P1" worktree add -q "$SB/wt-other" -b feature/other
+run "$SB" remove "$P1" "$SB/wt-other" feature/x
+if [ "$RC" != 0 ] && [ -d "$SB/wt-other" ] && printf '%s' "$OUT" | grep -q 'does not hold the merged branch'; then
+  ok "remove_refuses_a_worktree_on_another_branch"
+else
+  bad "remove_refuses_a_worktree_on_another_branch" "rc=$RC $OUT"
+fi
+git -C "$SB/wt-other" checkout -q --detach
+run "$SB" remove "$P1" "$SB/wt-other" feature/other
+if [ "$RC" != 0 ] && [ -d "$SB/wt-other" ]; then ok "remove_refuses_a_detached_worktree"; else bad "remove_refuses_a_detached_worktree" "rc=$RC $OUT"; fi
+run "$SB" remove "$P1" "$SB/wt-other"
+if [ "$RC" = 2 ] && [ -d "$SB/wt-other" ]; then ok "remove_requires_the_merged_branch"; else bad "remove_requires_the_merged_branch" "rc=$RC $OUT"; fi
+
 # --- a dirty worktree stops the step ----------------------------------------
 printf 'work\n' > "$SB/wt-x/new-file.txt"
-run "$SB" remove "$P1" "$SB/wt-x"
+run "$SB" remove "$P1" "$SB/wt-x" feature/x
 if [ "$RC" != 0 ] && [ -d "$SB/wt-x" ] && printf '%s' "$OUT" | grep -q "Review it"; then ok "dirty_worktree_stops_the_step"; else bad "dirty_worktree_stops_the_step" "rc=$RC $OUT"; fi
 
 # --- a clean worktree is removed without --force ----------------------------
 rm -f "$SB/wt-x/new-file.txt"
 rm -rf "$SB/wt-x/cache"
-run "$SB" remove "$P1" "$SB/wt-x"
+run "$SB" remove "$P1" "$SB/wt-x" feature/x
 if [ "$RC" = 0 ] && [ ! -e "$SB/wt-x" ] && [ -z "$(git -C "$P1" worktree list --porcelain | grep "$SB/wt-x")" ]; then ok "clean_worktree_is_removed"; else bad "clean_worktree_is_removed" "rc=$RC $OUT"; fi
 
 # --- an unregistered source tree is refused ---------------------------------
@@ -150,7 +164,7 @@ cp "$SKILL/remove-worktree.sh" "$OPS2/.claude/skills/approve-merge/remove-worktr
 chmod +x "$OPS2/.claude/skills/approve-merge/remove-worktree.sh"
 OUT=$(cd "$OPS2" && "$OPS2/.claude/skills/approve-merge/remove-worktree.sh" list "$SPLIT/ws/p1" feature/outer 2>&1)
 if printf '%s' "$OUT" | grep -q 'refused (equals or contains the ops root)'; then ok "refuses_a_worktree_that_contains_the_ops_root"; else bad "refuses_a_worktree_that_contains_the_ops_root" "$OUT"; fi
-OUT=$(cd "$OPS2" && "$OPS2/.claude/skills/approve-merge/remove-worktree.sh" remove "$SPLIT/ws/p1" "$SPLIT/outer" 2>&1)
+OUT=$(cd "$OPS2" && "$OPS2/.claude/skills/approve-merge/remove-worktree.sh" remove "$SPLIT/ws/p1" "$SPLIT/outer" feature/outer 2>&1)
 if [ -d "$SPLIT/outer" ] && printf '%s' "$OUT" | grep -q 'refused'; then ok "remove_refuses_a_worktree_that_contains_the_ops_root"; else bad "remove_refuses_a_worktree_that_contains_the_ops_root" "$OUT"; fi
 rm -rf "$SPLIT"
 

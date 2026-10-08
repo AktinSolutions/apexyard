@@ -3,7 +3,7 @@
 #
 # Usage:
 #   remove-worktree.sh list   <source-tree> <merged-head-branch>
-#   remove-worktree.sh remove <source-tree> <worktree-path>
+#   remove-worktree.sh remove <source-tree> <worktree-path> <merged-head-branch>
 #
 #   <source-tree>  The local clone of the PR's repo: workspace/<name>/ for a
 #                  managed project, or the ops root for an ops fork PR. The
@@ -16,8 +16,12 @@
 #         then the ignored files of each ok worktree, indented by two spaces.
 #         The skill shows that list in its confirmation prompt.
 # remove  Removes one worktree after the user has said yes. It re-checks that
-#         the path is still a candidate. It runs `git worktree remove` with no
-#         --force, so a dirty worktree stops the step and is reported.
+#         git still lists the path, that the worktree still holds the merged
+#         head branch, and every refusal rule below. A detached worktree is
+#         refused. The skill passes the head branch of the PR it just merged.
+#         The helper does not check the merge itself, because a squash merge
+#         leaves no ancestry that git can see. It runs `git worktree remove`
+#         with no --force, so a dirty worktree stops the step and is reported.
 #
 # Candidates come only from `git worktree list --porcelain`. The script
 # refuses the main worktree, a locked worktree, the session's own tree, and any
@@ -28,8 +32,10 @@ set -u
 MODE="${1:-}"
 SOURCE="${2:-}"
 ARG="${3:-}"
-if [ -z "$MODE" ] || [ -z "$SOURCE" ] || [ -z "$ARG" ]; then
-  echo "usage: remove-worktree.sh list <source-tree> <branch> | remove <source-tree> <path>" >&2
+MERGED_BRANCH="${4:-}"
+if [ -z "$MODE" ] || [ -z "$SOURCE" ] || [ -z "$ARG" ] \
+  || { [ "$MODE" = remove ] && [ -z "$MERGED_BRANCH" ]; }; then
+  echo "usage: remove-worktree.sh list <source-tree> <branch> | remove <source-tree> <path> <branch>" >&2
   exit 2
 fi
 
@@ -129,6 +135,10 @@ case "$MODE" in
   remove)
     for i in "${!WT_PATHS[@]}"; do
       [ "${WT_PATHS[$i]}" = "$ARG" ] || continue
+      if [ "${WT_BRANCH[$i]}" != "refs/heads/$MERGED_BRANCH" ]; then
+        echo "remove-worktree: refused, the worktree does not hold the merged branch $MERGED_BRANCH: $ARG" >&2
+        exit 1
+      fi
       why=$(refusal_for "$i")
       if [ -n "$why" ]; then
         echo "remove-worktree: refused, $why: $ARG" >&2

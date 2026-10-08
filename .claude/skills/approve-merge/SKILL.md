@@ -534,10 +534,10 @@ A merged PR often leaves a linked worktree on disk. Removing it also removes its
 4. On "Remove it", run:
 
    ```bash
-   .claude/skills/approve-merge/remove-worktree.sh remove "<source-tree>" "<path>"
+   .claude/skills/approve-merge/remove-worktree.sh remove "<source-tree>" "<path>" "<head-branch>"
    ```
 
-   The helper runs `git worktree remove` with no `--force`. A dirty worktree stops the step. Report the helper's message, and leave the worktree for the user.
+   The helper first re-checks that the worktree still holds the merged head branch and passes every refusal rule. It runs `git worktree remove` with no `--force`. A dirty worktree stops the step. Report the helper's message, and leave the worktree for the user.
 5. On "Keep it", do nothing. Do not ask again.
 
 Never remove a path that the helper did not list. Never pass `--force`.
