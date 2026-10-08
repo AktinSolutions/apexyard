@@ -80,7 +80,7 @@ See `.claude/rules/isolated-builds.md` and AgDR-0210.
 
 ### 3. Active-ticket safety check
 
-For every task that involves code edits (not pure research), find the working tree the task belongs to, and verify that the tree has a ticket marker:
+Do this for every task that involves code edits, not pure research. Find the working tree the task belongs to, and verify that the tree has a ticket marker:
 
 - A task on a managed project uses `<ops_root>/workspace/<name>/` as its **source tree**.
 - A task on the ops fork uses `<ops_root>` as its source tree.
@@ -214,7 +214,7 @@ Background tasks running: <ids>. They'll surface results when done.
 ## Rules
 
 1. **All `Agent` tool calls for a single fan-out MUST be in the SAME assistant message.** Multi-message loops do not get concurrency — they serialise. This is the most important rule in this skill.
-2. **Give every writer its own worktree, created from its source tree by `prepare-worktree.sh`.** Required to prevent file-level races between agents sharing one working directory, and to give each writer its own ticket marker. This overrides `build.isolation` — even when the ops fork sets `"build": {"isolation": "branch"}`, fan-out writers still get worktrees.
+2. **Give every writer its own worktree, created from its source tree by `prepare-worktree.sh`.** This prevents file-level races between agents that share one working directory. It also gives each writer its own ticket marker. This overrides `build.isolation` — even when the ops fork sets `"build": {"isolation": "branch"}`, fan-out writers still get worktrees.
 3. **Refuse fan-out when tasks share file write targets.** Serialise instead — the merge-back conflict cost outweighs any concurrency win.
 4. **Refuse fan-out when tasks have sequential dependencies.** If task B reads task A's output, they cannot run in parallel.
 5. **Cap at 5 concurrent agents per invocation.** If the user wants more, ask them to split into batches. Beyond 5, returns diminish (review fatigue, merge-back queue) and risk grows (rate limits, context dilution).

@@ -151,16 +151,16 @@ Notes on the fallback:
 The marker goes into the tree that holds the code you will change.
 
 - Run the skill from inside the tree. The tree is the git top level of the working directory, so a subdirectory of the tree also works.
-- When the ticket maps to a registered project (step 4b) and you run from the ops fork's main tree, use the project's workspace clone as the tree.
+- A ticket can map to a registered project (step 4b) while you run from the ops fork's main tree. Then use the project's workspace clone as the tree.
 - The workspace dir comes from `portfolio_workspace_dir`. A split-portfolio adopter keeps it outside the ops fork.
 - A ticket on the ops fork itself uses the ops root, or the linked worktree of the ops fork you work in.
 
 ```bash
 workspace_dir=$(portfolio_workspace_dir)
-case "$workspace_dir" in
-  /*) ;;
-  *) workspace_dir="$ops_root/${workspace_dir#./}" ;;
-esac
+if [ "${workspace_dir#/}" = "$workspace_dir" ]
+then
+  workspace_dir="$ops_root/${workspace_dir#./}"
+fi
 cwd_top=$(git rev-parse --show-toplevel 2>/dev/null || true)
 ops_top=$(cd "$ops_root" && pwd -P)
 if [ -n "$project" ] && [ "$cwd_top" = "$ops_top" ]
@@ -199,7 +199,7 @@ suggested_branch=<branch>
 started_at=<ISO-8601>
 ```
 
-It refuses a tree that is not the ops fork or a registered clone, a symlink in the path, a repo owned by another user, and a malformed `.git` file. It prints the reason to stderr. If it prints a hint about the sandbox, the session may not write into the git dir. Stop and tell the user. See AgDR-0216 for the allowlist the user can add.
+It refuses a tree that is not the ops fork or a registered clone. It also refuses a symlink in the path, a repo owned by another user, and a malformed `.git` file. It prints the reason to stderr. If it prints a hint about the sandbox, the session may not write into the git dir. Stop and tell the user. See AgDR-0216 for the allowlist the user can add.
 
 Do NOT write the marker with the Edit or Write tool. `.git` is a protected path for those tools.
 

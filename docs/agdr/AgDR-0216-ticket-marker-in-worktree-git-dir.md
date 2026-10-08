@@ -11,7 +11,7 @@ category: security
 
 # Store the ticket marker in each working tree's git dir
 
-> In the context of parallel sessions on one project, facing last-writer-wins ticket files and a lookup that git environment variables can redirect, I decided to keep one marker file per working tree in that tree's git dir. I find the git dir by reading git's own files, with no git process. I accept that submodules, nested repos and repos with another owner are now blocked.
+> In the context of parallel sessions on one project, I faced last-writer-wins ticket files and a lookup that git environment variables can redirect. I decided to keep one marker file per working tree in that tree's git dir. I find the git dir by reading git's own files, with no git process. I accept that submodules, nested repos and repos with another owner are now blocked.
 
 ## Context
 
@@ -108,9 +108,9 @@ This AgDR partly supersedes AgDR-0066 and AgDR-0141, and amends AgDR-0168 and Ag
 - The legacy `repo=` match compares case-insensitively and against every slug of a registry entry: `repo:`, each `repos:` item and `primary:`.
 - The registry path and the workspace dir come from the portfolio library, and only when that library is loaded in the same process. An inherited `_PP_REG` or `_PP_WS` is never used. Without a trusted resolver the registry path stays unknown, and a workspace lookup fails closed.
 - The registry is resolved on demand. A workspace clone or an old `current-ticket` file needs it. A Claude session reads the path from the session cache without a fork.
-- The hook-level process count test needs `strace`. It fails on a Linux CI runner without it and prints an `INFO:` line elsewhere, because the suite runner treats a line that starts with `SKIP` as a failure. The limits are the merge-base counts measured on a developer machine. Confirm them on the CI ubuntu leg.
+- The hook-level process count test needs `strace`. It fails on a Linux CI runner without it. Elsewhere it prints an `INFO:` line, because the suite runner treats a line that starts with `SKIP` as a failure. The limits are the merge-base counts measured on a developer machine. Confirm them on the CI ubuntu leg.
 - `/fan-out` creates writer worktrees under `<ops>/.claude/worktrees/`. The ticket gate exempts every path under `.claude/`, so edits in those worktrees pass without a marker. This gap exists today. A follow-up task should narrow that exemption or move the worktrees. The marker is still written, so the gate works once the path is not exempt.
-- The ambient tracker guard reads the marker of the tree that runs the command. From the ops fork it also reads the markers of registered workspace clones and their linked worktrees, because `/start-ticket` run at the ops root writes into the project clone.
+- The ambient tracker guard reads the marker of the tree that runs the command. From the ops fork it also reads the markers of registered workspace clones and their linked worktrees. The reason is that `/start-ticket` run at the ops root writes into the project clone.
 - A tree that fails validation, such as a scratch clone outside the ops fork, has no marker of its own. When the session pin still resolves the ops root, the guard reads the ops fork's marker and every project marker. This keeps the old block for such a clone.
 
 ## Artifacts

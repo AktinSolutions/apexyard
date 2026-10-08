@@ -79,7 +79,7 @@ The `clear-issue-skill-marker.sh` SessionStart hook sweeps stale markers from ki
 
 ### 1. Resolve the target repo
 
-Read the active-ticket marker of the working tree you are in (the `apexyard-ticket` file in its git dir, see `/start-ticket` "Read the active ticket") to determine which repo we're working in. If no active ticket, check `apexyard.projects.yaml` for managed projects. If only one project, use it. If multiple, ask:
+Read the active-ticket marker of the working tree you are in to determine which repo we're working in. The marker is the `apexyard-ticket` file in the git dir of that tree. See `/start-ticket` "Read the active ticket". If no active ticket, check `apexyard.projects.yaml` for managed projects. If only one project, use it. If multiple, ask:
 
 ```
 Which project is this prototype for?
