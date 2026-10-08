@@ -1,100 +1,64 @@
 #!/bin/bash
-# Backward compatibility of the ticket marker move (AgDR-0216).
+# Index and self-test of the 27f7565 compat runs (AgDR-0216, Backward
+# compatibility).
 #
-# compat/dev-27f7565/ holds the original test files, unchanged, from the merge
-# base 27f7565, for every test that the marker move edited. Each one runs here
-# against the current hooks. They must pass, except for the cases listed in
-# EXPECTED_DIFF below, each with its reason.
-#
-# The files end in .sh.dev, so the suite runner does not run them in place.
-# This runner builds a mirror of the repo in a temporary directory, with the
-# current .claude/ copied in and every other top-level entry linked (.git
-# too). It puts each original test at its old path, so the test finds the
-# hooks the way it did at the merge base.
+# Each original under compat/dev-27f7565/ runs in its own suite entry,
+# test_dev_marker_compat_<name>.sh, through compat/run-dev-compat.sh. This
+# test does not run the originals. It checks that every original has exactly
+# one wrapper, and that the runner judges a run the right way:
+#   - rc 0 passes
+#   - a failure on expected-difference lines only passes, when one matched
+#   - a non-zero rc with no FAIL line and no expected match fails
+#   - an unexpected FAIL line fails
+#   - a killed run (rc 124 or 137) fails
 
-SRC_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-COMPAT="$SRC_ROOT/.claude/hooks/tests/compat/dev-27f7565"
-
-export APEXYARD_OPS_DISABLE_PIN=1 APEXYARD_DISABLE_RESOLUTION_CACHE=1
+HERE="$(cd "$(dirname "$0")" && pwd)"
+COMPAT="$HERE/compat/dev-27f7565"
+RUNNER="$HERE/compat/run-dev-compat.sh"
 
 PASS=0
 FAIL=0
 ok() { echo "PASS [$1]"; PASS=$((PASS + 1)); }
 bad() { echo "FAIL [$1]: $2" >&2; FAIL=$((FAIL + 1)); }
 
-# "<test file>|<case text that may fail>|<reason>"
-EXPECTED_DIFF=(
-  # The old test pins the exact list of SessionStart hooks. The move adds one,
-  # the notice that old-layout markers are still read and written.
-  "test_dispatch_session_start.sh|dispatcher comment list differs from this test's expected list|a new SessionStart hook prints the transition notice"
-)
-
-# A few original tests resolve paths several levels above the repo root, so
-# the mirror sits as deep as a usual checkout. They also read the parent
-# commit with git, so the mirror links the repository's .git, read-only use.
-MT=$(mktemp -d)
-MT=$(cd -P "$MT" && pwd)
-trap 'rm -rf "$MT"' EXIT
-M="$MT/home/user/work/repo"
-mkdir -p "$M"
-
-for e in "$SRC_ROOT"/* "$SRC_ROOT"/.[!.]*; do
-  [ -e "$e" ] || continue
-  name="${e##*/}"
-  case "$name" in
-    .claude) continue ;;
-    # Tests resolve paths under workspace/, so a link there would point them
-    # into the real checkout. The mirror gets its own empty directory.
-    workspace) mkdir -p "$M/workspace"; continue ;;
-  esac
-  ln -s "$e" "$M/$name"
-done
-(cd "$SRC_ROOT" && tar -cf - --exclude=.claude/worktrees --exclude=.claude/session .claude) | (cd "$M" && tar -xf -)
-
-ran=0
+n=0
 for f in "$COMPAT"/*.sh.dev; do
   [ -f "$f" ] || continue
+  n=$((n + 1))
   t="${f##*/}"
   t="${t%.dev}"
-  cp "$f" "$M/.claude/hooks/tests/$t"
-  # macOS has no timeout command, so the limit applies only where it exists.
-  if command -v timeout >/dev/null 2>&1; then
-    out=$(cd "$M" && timeout 600 bash "$M/.claude/hooks/tests/$t" </dev/null 2>&1)
-  else
-    out=$(cd "$M" && bash "$M/.claude/hooks/tests/$t" </dev/null 2>&1)
-  fi
-  rc=$?
-  ran=$((ran + 1))
-  if [ "$rc" = 0 ]; then
-    ok "$t (27f7565 version) passes against the current hooks"
-    continue
-  fi
-  # A failing run passes only when every failing line is an expected difference.
-  unexpected=""
-  while IFS= read -r line; do
-    case "$line" in
-      *FAIL*) ;;
-      *) continue ;;
-    esac
-    case "$line" in
-      *'FAIL: 0'*|*'FAIL=0'*|*'Failed: 0'*|*'failed: 0'*) continue ;;
-    esac
-    allowed=0
-    for x in "${EXPECTED_DIFF[@]}"; do
-      xf="${x%%|*}"
-      rest="${x#*|}"
-      xc="${rest%%|*}"
-      if [ "$xf" = "$t" ] && [[ $line == *"$xc"* ]]; then allowed=1; break; fi
-    done
-    [ "$allowed" = 1 ] || unexpected="$unexpected$line"$'\n'
-  done <<< "$out"
-  if [ -z "$unexpected" ]; then
-    ok "$t (27f7565 version) passes except for the expected differences"
-  else
-    bad "$t (27f7565 version)" "rc=$rc"$'\n'"$unexpected"
-  fi
+  short="${t#test_}"
+  short="${short%.sh}"
+  w="$HERE/test_dev_marker_compat_$short.sh"
+  if [ -f "$w" ] && grep -q "run-dev-compat.sh\" $t\$" "$w"; then ok "$t has its wrapper"; else bad "$t has its wrapper" "missing or wrong: $w"; fi
 done
-if [ "$ran" -lt 9 ]; then bad "compat files present" "only $ran found in $COMPAT"; fi
+if [ "$n" = 9 ]; then ok "9 originals are present"; else bad "9 originals are present" "found $n"; fi
+for w in "$HERE"/test_dev_marker_compat_*.sh; do
+  t=$(sed -n 's/.*run-dev-compat.sh" \(test_[A-Za-z0-9_]*\.sh\)$/\1/p' "$w")
+  if [ -n "$t" ] && [ -f "$COMPAT/$t.dev" ]; then ok "${w##*/} names an original"; else bad "${w##*/} names an original" "[$t]"; fi
+done
+
+# Self-test of the verdict rules, with fixture originals.
+FX=$(mktemp -d)
+trap 'rm -rf "$FX"' EXIT
+judge() {
+  local name="$1" file="$2" body="$3" want="$4" rc
+  printf '#!/bin/bash\n%s\n' "$body" > "$FX/$file.dev"
+  DEV_COMPAT_DIR="$FX" bash "$RUNNER" "$file" >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" = "$want" ]; then ok "$name"; else bad "$name" "want rc=$want got $rc"; fi
+}
+judge "a passing original passes" test_fx_pass.sh 'echo "PASS: x"; exit 0' 0
+judge "an expected difference alone passes" test_dispatch_session_start.sh \
+  "echo \"FAIL: dispatcher comment list differs from this test's expected list\"; exit 1" 0
+judge "a non-zero rc with no FAIL line fails" test_fx_silent.sh 'exit 1' 1
+judge "a non-zero rc with only the expected text in another file fails" test_fx_other.sh \
+  "echo \"FAIL: dispatcher comment list differs from this test's expected list\"; exit 1" 1
+judge "an unexpected FAIL line fails" test_dispatch_session_start.sh \
+  "echo \"FAIL: dispatcher comment list differs from this test's expected list\"; echo 'FAIL: something else'; exit 1" 1
+judge "a killed run fails (124)" test_dispatch_session_start.sh \
+  "echo \"FAIL: dispatcher comment list differs from this test's expected list\"; exit 124" 1
+judge "a killed run fails (137)" test_fx_killed.sh 'exit 137' 1
 
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]
