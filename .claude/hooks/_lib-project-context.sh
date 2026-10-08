@@ -15,7 +15,7 @@
 #
 # projctx_resolve <abs_path>
 #   Prints "<name>\t<workspace>" for the registered project whose
-#   workspace: contains abs_path. Falls back to git's common-dir (a
+#   workspace: contains abs_path. Falls back to the worktree's gitdir line (a
 #   worktree of that project checked out elsewhere) when abs_path isn't
 #   under any registered workspace. Empty output + nonzero exit on no
 #   match.
@@ -214,26 +214,27 @@ EOF
 
   # Fallback: abs_path is on a worktree of a registered project checked
   # out OUTSIDE its registered workspace (require-active-ticket.sh's tier
-  # 0 resolves the same shape). Resolve the worktree's main checkout via
-  # git's common-dir and re-match that against the registry.
+  # 0 resolves the same shape). Resolve the worktree's main checkout from
+  # its gitdir line and re-match that against the registry.
   local dir="$abs_path" top
   while [ -n "$dir" ] && [ ! -d "$dir" ]; do dir=${dir%/*}; done
   [ -n "$dir" ] || return 1
   # Only a linked worktree has a .git FILE; no repo or a main checkout (a
-  # .git dir) is not a worktree, so skip the git spawn.
+  # .git dir) is not a worktree.
   top=$dir
   while [ -n "$top" ] && [ ! -e "$top/.git" ]; do top=${top%/*}; done
   [ -f "$top/.git" ] || return 1
 
-  # Stock macOS has no `timeout`; the hook's own 3 s cap bounds git there.
-  local gcd main_root
-  if command -v timeout >/dev/null 2>&1; then
-    gcd=$(timeout 1 git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
-  else
-    gcd=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
-  fi
-  [ -z "$gcd" ] && return 1
-  main_root=$(dirname "$gcd")
+  # A linked worktree's .git file names its git dir: <main>/.git/worktrees/<id>.
+  # Read that line instead of starting git on a path the registry does not
+  # vouch for. A submodule or a planted gitdir does not match the shape.
+  local gd line main_root
+  IFS= read -r line < "$top/.git" 2>/dev/null || [ -n "$line" ] || return 1
+  case "$line" in "gitdir: "*) gd=${line#gitdir: } ;; *) return 1 ;; esac
+  case "$gd" in /*) ;; *) gd="$top/$gd" ;; esac
+  case "$gd" in */.git/worktrees/?*) ;; *) return 1 ;; esac
+  case "${gd##*/.git/worktrees/}" in */*) return 1 ;; esac
+  main_root=${gd%/.git/worktrees/*}
   [ -z "$main_root" ] && return 1
 
   while IFS="$(printf '\t')" read -r name ws; do

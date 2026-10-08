@@ -866,6 +866,28 @@ else
 fi
 rm -rf "$MARKER_DIR"
 
+# --- (reg7) the worktree fallback reads the gitdir line and starts no git
+GITSHIM="$SB/git-shim"
+mkdir -p "$GITSHIM"
+REAL_GIT=$(command -v git)
+cat > "$GITSHIM/git" <<SH
+#!/bin/sh
+echo "\$*" >> "$SB/git.log"
+exec "$REAL_GIT" "\$@"
+SH
+chmod +x "$GITSHIM/git"
+mkdir -p "$OUTSIDE/untrusted"
+printf 'gitdir: %s\n' "$OUTSIDE/nowhere" > "$OUTSIDE/untrusted/.git"
+: > "$OUTSIDE/untrusted/x.txt"
+: > "$SB/git.log"
+OUT=$(PATH="$GITSHIM:$PATH" invoke "$(payload reg7 "" "" "$OUTSIDE/untrusted/x.txt")")
+if [ -z "$OUT" ] && ! grep -qF -- "$OUTSIDE/untrusted" "$SB/git.log"; then
+  pass_case "(reg7) worktree fallback starts no git and rejects a planted gitdir"
+else
+  fail_case "(reg7) gitless worktree fallback" "out_len=${#OUT} log=$(head -c 200 "$SB/git.log")"
+fi
+rm -rf "$MARKER_DIR"
+
 echo "===== test_inject_project_context.sh ====="
 echo "Passed: $PASS"
 echo "Failed: $FAIL"
