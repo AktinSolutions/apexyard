@@ -185,6 +185,31 @@ esac
 hook "$SB" "$SB/workspace/p1/src/a.ts"
 if [ "$RC" = 0 ] && [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = 1 ]; then ok "11 a legacy pass is covered by one session notice"; else bad "11" "rc=$RC out=$out"; fi
 
+# 11c. a new marker for the same tree shadows the old file, so the notice
+# leaves it out. An old file for another tree is still listed.
+printf 'repo=org/p1\nnumber=70\n' > "$SB/workspace/p1/.git/apexyard-ticket"
+out=$(cd "$SB" && bash "$SB/.claude/hooks/warn-legacy-ticket-markers.sh" </dev/null 2>/dev/null)
+if [ -z "$out" ]; then ok "11c a shadowed old file gives no notice"; else bad "11c" "$out"; fi
+legacy "$SB/.claude/session/current-ticket" org/elsewhere 71
+out=$(cd "$SB" && bash "$SB/.claude/hooks/warn-legacy-ticket-markers.sh" </dev/null 2>/dev/null)
+case "$out" in
+  *current-ticket*) case "$out" in *tickets/p1*) bad "11d" "$out" ;; *) ok "11d only the unshadowed old file is listed" ;; esac ;;
+  *) bad "11d" "$out" ;;
+esac
+printf 'repo=org/elsewhere\nnumber=72\n' > "$SB/.git/apexyard-ticket"
+git -C "$SB/workspace/p1" worktree add -q "$SB/workspace/p1/.wt/n" -b feature/n
+rm -f "$SB/.claude/session/tickets/p1"
+mkdir -p "$SB/.claude/session/tickets/p1"
+legacy "$SB/.claude/session/tickets/p1/feature__n" org/p1 73
+out=$(cd "$SB" && bash "$SB/.claude/hooks/warn-legacy-ticket-markers.sh" </dev/null 2>/dev/null)
+case "$out" in *feature__n*) ok "11e an old per-branch file with no new marker in its worktree is listed" ;; *) bad "11e" "$out" ;; esac
+printf 'repo=org/p1\nnumber=74\n' > "$(git -C "$SB/workspace/p1/.wt/n" rev-parse --absolute-git-dir)/apexyard-ticket"
+out=$(cd "$SB" && bash "$SB/.claude/hooks/warn-legacy-ticket-markers.sh" </dev/null 2>/dev/null)
+if [ -z "$out" ]; then ok "11f a new marker in that worktree shadows the per-branch file"; else bad "11f" "$out"; fi
+rm -f "$SB/workspace/p1/.git/apexyard-ticket" "$SB/.git/apexyard-ticket" "$SB/.claude/session/current-ticket"
+rm -rf "$SB/.claude/session/tickets/p1"
+legacy "$SB/.claude/session/tickets/p1" org/p1 7
+
 # 11b. the dispatcher prints the notice on stdout, end to end
 dout=$(cd "$SB" && printf '{"hook_event_name":"SessionStart"}' | bash "$SB/.claude/hooks/dispatch-session-start.sh" 2>/dev/null)
 case "$dout" in
