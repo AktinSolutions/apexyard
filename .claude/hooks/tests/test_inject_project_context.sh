@@ -911,13 +911,14 @@ else
 fi
 rm -rf "$MARKER_DIR"
 
-# --- (reg9) a file swapped for a symlink and swapped back around the read
-# is not read. The dirname shim swaps in the link after the safety checks
-# pass; the head shim restores the original file once the read is done, so
-# a check that runs after the read sees a clean file.
+# --- (reg9) a file swapped for a link and swapped back is not read.
+# The dirname shim swaps the link in after the first checks pass, so the file
+# is opened through the link. The stat shim swaps the original back before
+# the path checks run, so every path check sees a clean regular file and only
+# the comparison of the path with the opened descriptor can notice.
 SWSHIM="$SB/swap-shim"
 mkdir -p "$SWSHIM"
-REAL_HEAD=$(command -v head)
+REAL_DIRNAME=$(command -v dirname)
 cat > "$SWSHIM/dirname" <<SH
 #!/bin/sh
 last=
@@ -927,26 +928,67 @@ if [ -n "\${SWAP_FILE:-}" ] && [ "\$last" = "\$SWAP_FILE" ] && [ ! -e "\$SWAP_FI
   /bin/rm -f "\$SWAP_FILE"
   ln -s "$SECRET_FILE" "\$SWAP_FILE"
 fi
-exec "$(command -v dirname)" "\$@"
+exec "$REAL_DIRNAME" "\$@"
 SH
-cat > "$SWSHIM/head" <<SH
+cat > "$SWSHIM/stat" <<SH
 #!/bin/sh
-out=\$("$REAL_HEAD" "\$@")
-if [ -n "\${SWAP_FILE:-}" ] && [ -L "\$SWAP_FILE" ]; then
+last=
+for arg do last=\$arg; done
+if [ -n "\${SWAP_DIR:-}" ] && [ "\$last" = "\$SWAP_DIR_TRIGGER" ] && [ ! -e "\$SWAP_DIR.swapped" ]; then
+  # Swap on the second check of this file, the one made just before the open.
+  if [ ! -e "\$SWAP_DIR.first" ]; then
+    : > "\$SWAP_DIR.first"
+  else
+    : > "\$SWAP_DIR.swapped"
+    /bin/mv "\$SWAP_DIR" "\$SWAP_DIR.real"
+    ln -s "\$SWAP_DIR_TARGET" "\$SWAP_DIR"
+  fi
+fi
+if [ "\$last" = /dev/fd/3 ] && [ -n "\${SWAP_FILE:-}" ] && [ -L "\$SWAP_FILE" ]; then
   /bin/rm -f "\$SWAP_FILE"
   /bin/cp "\$SWAP_BACKUP" "\$SWAP_FILE"
 fi
-printf '%s\\n' "\$out"
+exec "$REAL_STAT" "\$@"
 SH
-chmod +x "$SWSHIM/dirname" "$SWSHIM/head"
+chmod +x "$SWSHIM/dirname" "$SWSHIM/stat"
 cp "$WS/CLAUDE.md" "$WS/CLAUDE.md.bak"
 OUT=$(SWAP_FILE="$WS/CLAUDE.md" SWAP_BACKUP="$WS/CLAUDE.md.bak" PATH="$SWSHIM:$PATH" invoke "$(payload reg9 "" "" "$WS/src/a.ts")")
 rm -f "$WS/CLAUDE.md" "$WS/CLAUDE.md.swapped"
 mv "$WS/CLAUDE.md.bak" "$WS/CLAUDE.md"
 if ! printf '%s' "$OUT" | grep -q SECRET_OUTSIDE; then
-  pass_case "(reg9) CLAUDE.md swapped to a link and back around the read is not read"
+  pass_case "(reg9) CLAUDE.md swapped to a link and back around the open is not read"
 else
   fail_case "(reg9) swap and swap back" "secret reached the output"
+fi
+rm -rf "$MARKER_DIR"
+
+# --- (reg15) a parent directory swapped for a link between the check and the open
+# (the stat shim swaps it as the last step of the second path check)
+mkdir -p "$OUTSIDE/rulesdir"
+printf '# Swap rule\n\nSECRET_OUTSIDE\n' > "$OUTSIDE/rulesdir/swapdir.md"
+printf '# Swap rule\n\nPLAIN_SWAPDIR_RULE\n' > "$WS/.claude/rules/swapdir.md"
+OUT=$(SWAP_DIR="$WS/.claude/rules" SWAP_DIR_TRIGGER="$WS/.claude/rules/swapdir.md" SWAP_DIR_TARGET="$OUTSIDE/rulesdir" \
+  PATH="$SWSHIM:$PATH" invoke "$(payload reg15 "" "" "$WS/src/a.ts")")
+rm -f "$WS/.claude/rules"
+mv "$WS/.claude/rules.real" "$WS/.claude/rules"
+rm -f "$WS/.claude/rules/swapdir.md" "$WS/.claude/rules.swapped" "$WS/.claude/rules.first"
+if printf '%s' "$OUT" | grep -q CANARY_CLAUDE_MD_MARKER && ! printf '%s' "$OUT" | grep -q SECRET_OUTSIDE; then
+  pass_case "(reg15) rules directory swapped to an outside link after the check is refused"
+else
+  fail_case "(reg15) parent swap" "out_len=${#OUT} secret=$(printf '%s' "$OUT" | grep -c SECRET_OUTSIDE)"
+fi
+rm -rf "$MARKER_DIR"
+
+# --- (reg16) a hardlinked scoped rule is refused too
+printf -- '---\npaths:\n  - "SECRET_SCOPED_PATHS"\n---\n' > "$OUTSIDE/scoped-secret.md"
+ln "$OUTSIDE/scoped-secret.md" "$WS/.claude/rules/hl-scoped.md" 2>/dev/null
+OUT=$(invoke "$(payload reg16 "" "" "$WS/src/a.ts")")
+rm -f "$WS/.claude/rules/hl-scoped.md"
+if [ -f "$OUTSIDE/scoped-secret.md" ] && printf '%s' "$OUT" | grep -q CANARY_CLAUDE_MD_MARKER \
+   && ! printf '%s' "$OUT" | grep -q SECRET_SCOPED_PATHS; then
+  pass_case "(reg16) hardlinked scoped rule is not indexed"
+else
+  fail_case "(reg16) hardlinked scoped rule" "out_len=${#OUT}"
 fi
 rm -rf "$MARKER_DIR"
 

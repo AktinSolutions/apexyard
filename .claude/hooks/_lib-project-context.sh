@@ -322,10 +322,6 @@ _projctx_rule_paths() {
   '
 }
 
-# ------------------------------------------------------------------------------
-# Public: projctx_emit <name> <workspace>
-# ------------------------------------------------------------------------------
-# Symlinks and hardlinks are refused; _projctx_read_safe re-checks them on the opened file.
 # A path with control characters, C1 controls or U+2028/U+2029 is refused.
 _projctx_clean_path() {
   local LC_ALL=C
@@ -333,36 +329,47 @@ _projctx_clean_path() {
   return 0
 }
 
+# A project file is readable when its path is clean, it is a regular file
+# that is not a symlink and has one hard link, and its real parent directory
+# is inside the real workspace. Hardlinks are refused because a second link
+# to an outside file would pass the other checks.
 _projctx_safe_file() {  # $1=file $2=real workspace
   _projctx_clean_path "$1" || return 1
   [ -f "$1" ] && [ ! -L "$1" ] || return 1
-  local d; d=$(cd "$(dirname "$1")" 2>/dev/null && pwd -P) || return 1
-  case "$d/" in "$2"/*) return 0 ;; esac; return 1
+  local d links
+  d=$(cd "$(dirname "$1")" 2>/dev/null && pwd -P) || return 1
+  case "$d/" in "$2"/*) ;; *) return 1 ;; esac
+  links=$(stat -c '%h' "$1" 2>/dev/null || stat -f '%l' "$1" 2>/dev/null) || return 1
+  [ "$links" = 1 ]
 }
 
-# Print at most <bytes> of a file that passed _projctx_safe_file. The file
-# is opened once and read from that descriptor, so a swap after the open
-# cannot change what is read. The path must still be a regular, unlinked
-# file with one link, and must be the very file that was opened. Runs in a
-# subshell so a failed open cannot end a POSIX-mode caller.
+# Print at most <bytes> of a file that passes _projctx_safe_file. The file is
+# opened once and read from that descriptor. After the open, the path is
+# checked again and must be the very file that was opened, so a path swapped
+# before the open is refused. A swap after the open cannot change the bytes
+# read. Runs in a subshell so a failed open cannot end a POSIX-mode caller.
 _projctx_read_safe() {  # $1=file $2=real workspace $3=bytes
   _projctx_safe_file "$1" "$2" || return 1
   (
     exec 3<"$1" 2>/dev/null || exit 1
     if [ -e /dev/fd/3 ]; then
-      [ ! -L "$1" ] && [ -f "$1" ] && [ "$1" -ef /dev/fd/3 ] || exit 1
-      links=$(stat -c '%h' "$1" 2>/dev/null || stat -f '%l' "$1" 2>/dev/null) || exit 1
+      links=$(stat -L -c '%h' /dev/fd/3 2>/dev/null || stat -L -f '%l' /dev/fd/3 2>/dev/null) || exit 1
       [ "$links" = 1 ] || exit 1
+      _projctx_safe_file "$1" "$2" && [ "$1" -ef /dev/fd/3 ] || exit 1
       head -c "$3" <&3 2>/dev/null
     else
-      # No /dev/fd: fall back to a read followed by the path check.
+      # No /dev/fd: read, then run the full path check again. This narrows
+      # the swap window but does not close it.
       data=$(head -c "$3" <&3 2>/dev/null)
-      [ ! -L "$1" ] && [ -f "$1" ] || exit 1
+      _projctx_safe_file "$1" "$2" || exit 1
       printf '%s' "$data"
     fi
   )
 }
 
+# ------------------------------------------------------------------------------
+# Public: projctx_emit <name> <workspace>
+# ------------------------------------------------------------------------------
 projctx_emit() {
   local name="$1" ws="$2" wt="${3:-}"
   [ -z "$name" ] || [ -z "$ws" ] && return 1
