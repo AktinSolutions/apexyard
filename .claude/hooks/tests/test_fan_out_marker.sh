@@ -6,6 +6,7 @@
 #   prepare_worktree_creates_from_clone_and_writes_marker
 #   prepare_worktree_creates_from_ops_fork_for_an_ops_task
 #   prepared_worktree_passes_gate
+#   a_writer_under_claude_worktrees_is_gated_by_its_marker
 #   prepare_worktree_refuses_a_tree_with_no_ticket
 #   marker_write_failure_removes_tree
 
@@ -78,8 +79,9 @@ fi
 if [ ! -f "$SB/.git/worktrees/$(basename "$WT")/apexyard-ticket" ] && [ -z "$(git -C "$SB" worktree list --porcelain | grep "$WT")" ]; then ok "prepare_worktree_does_not_touch_the_ops_fork"; else bad "prepare_worktree_does_not_touch_the_ops_fork" "ops fork lists the worktree"; fi
 
 # --- the new worktree passes the ticket gate -----------------------------
-# The gate exempts every path under .claude/, so the gate case uses worktrees
-# outside it. A plain worktree with no marker is the negative control.
+# These worktrees sit outside .claude/worktrees/, the default fan-out place.
+# The next block covers that place. A plain worktree with no marker is the
+# negative control.
 GWT="$SB/wt-gate"
 prepare "$SB" "$SB/workspace/p1" "$GWT" "feature/GH-42-gate" >/dev/null 2>&1
 git -C "$SB/workspace/p1" worktree add -q "$SB/wt-plain" -b feature/plain
@@ -91,6 +93,32 @@ payload=$(jq -nc --arg p "$SB/wt-plain/src/a.ts" '{tool_name:"Edit", tool_input:
 ERR=$(cd "$SB" && printf '%s' "$payload" | bash "$SB/.claude/hooks/require-active-ticket.sh" 2>&1 >/dev/null)
 rc=$?
 if [ "$rc" = 2 ]; then ok "a_worktree_with_no_marker_is_blocked"; else bad "a_worktree_with_no_marker_is_blocked" "rc=$rc"; fi
+rm -rf "$SB"
+
+# --- a writer under .claude/worktrees/ is gated by its own marker ----------
+# Source under .claude/worktrees/ needs a ticket like any other source. The
+# ops fork's own marker is removed, so only the writer's marker can pass it.
+SB=$(make_sb)
+rm -f "$SB/.git/apexyard-ticket"
+gate_wt() {
+  local payload
+  payload=$(jq -nc --arg p "$1" '{tool_name:"Edit", tool_input:{file_path:$p}}')
+  ERR=$(cd "$SB" && printf '%s' "$payload" | bash "$SB/.claude/hooks/require-active-ticket.sh" 2>&1 >/dev/null)
+  RC=$?
+}
+WT="$SB/.claude/worktrees/feature-GH-60-writer"
+prepare "$SB" "$SB/workspace/p1" "$WT" "feature/GH-60-writer" >/dev/null 2>&1
+rm -rf "$SB/.claude/session"
+gate_wt "$WT/src/a.ts"
+if [ "$RC" = 0 ]; then ok "a_writer_under_claude_worktrees_passes_with_its_marker"; else bad "a_writer_under_claude_worktrees_passes_with_its_marker" "rc=$RC ${ERR:0:300}"; fi
+git -C "$SB/workspace/p1" worktree add -q "$SB/.claude/worktrees/plain" -b feature/plain
+gate_wt "$SB/.claude/worktrees/plain/src/a.ts"
+if [ "$RC" = 2 ]; then ok "a_plain_worktree_under_claude_worktrees_is_blocked"; else bad "a_plain_worktree_under_claude_worktrees_is_blocked" "rc=$RC"; fi
+git -C "$SB/workspace/p1" worktree add -q "$SB/.claude/worktrees/legacy" -b feature/legacy
+mkdir -p "$SB/.claude/session/tickets/p1"
+printf 'repo=org/p1\nnumber=61\n' > "$SB/.claude/session/tickets/p1/feature__legacy"
+gate_wt "$SB/.claude/worktrees/legacy/src/a.ts"
+if [ "$RC" = 2 ]; then ok "an_old_per_branch_marker_alone_does_not_pass_under_claude_worktrees"; else bad "an_old_per_branch_marker_alone_does_not_pass_under_claude_worktrees" "rc=$RC"; fi
 rm -rf "$SB"
 
 # --- the caller's git environment does not redirect the worktree ----------
