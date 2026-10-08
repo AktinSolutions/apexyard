@@ -7,6 +7,10 @@
 # The test reads the tracked `.claude/settings.json` only. It does not see
 # `.claude/settings.local.json` or user settings.
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
 SRC_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 SETTINGS="$SRC_ROOT/.claude/settings.json"
 

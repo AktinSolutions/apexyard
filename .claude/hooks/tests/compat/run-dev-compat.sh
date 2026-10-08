@@ -1,12 +1,13 @@
 #!/bin/bash
-# Runs one original test file from the merge base 27f7565 against the current
+# Runs one original test file from the dev merge base against the current
 # hooks (AgDR-0216, Backward compatibility).
 #
 # Usage: run-dev-compat.sh <test name>, for example
 #   run-dev-compat.sh test_status_briefing.sh
 #
-# dev-27f7565/ holds the original files, unchanged, for every test that the
-# marker move edited. They end in .sh.dev, so the suite runner does not run
+# dev-base/ holds the original files, unchanged, from the dev commit named in
+# dev-base/BASE, for every test that the marker move edited. Refresh them
+# after each merge of dev: git show <base>:<path> for each file. They end in .sh.dev, so the suite runner does not run
 # them in place. One thin wrapper per file, test_dev_marker_compat_<name>.sh,
 # calls this script, so each original gets its own entry and its own time
 # limit in bin/run-hook-tests.sh.
@@ -24,7 +25,9 @@ T_NAME="${1:-}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC_ROOT="$(cd "$HERE/../../../.." && pwd)"
 # DEV_COMPAT_DIR lets the self-test point at fixture files.
-SRC="${DEV_COMPAT_DIR:-$HERE/dev-27f7565}/$T_NAME.dev"
+SRC="${DEV_COMPAT_DIR:-$HERE/dev-base}/$T_NAME.dev"
+BASE=$(cat "$HERE/dev-base/BASE" 2>/dev/null)
+BASE="${BASE:-merge base}"
 
 export APEXYARD_OPS_DISABLE_PIN=1 APEXYARD_DISABLE_RESOLUTION_CACHE=1
 
@@ -67,11 +70,11 @@ out=$(cd "$M" && bash "$M/.claude/hooks/tests/$T_NAME" </dev/null 2>&1)
 rc=$?
 
 if [ "$rc" = 0 ]; then
-  echo "PASS [$T_NAME (27f7565 version) passes against the current hooks]"
+  echo "PASS [$T_NAME ($BASE version) passes against the current hooks]"
   exit 0
 fi
 if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
-  echo "FAIL [$T_NAME (27f7565 version)]: killed (rc=$rc)" >&2
+  echo "FAIL [$T_NAME ($BASE version)]: killed (rc=$rc)" >&2
   exit 1
 fi
 
@@ -98,14 +101,14 @@ while IFS= read -r line; do
 done <<< "$out"
 
 if [ -z "$unexpected" ] && [ "$matched" -gt 0 ]; then
-  echo "PASS [$T_NAME (27f7565 version) passes except for $matched expected difference(s)]"
+  echo "PASS [$T_NAME ($BASE version) passes except for $matched expected difference(s)]"
   exit 0
 fi
 if [ -z "$unexpected" ]; then
-  echo "FAIL [$T_NAME (27f7565 version)]: rc=$rc with no FAIL line and no expected difference" >&2
+  echo "FAIL [$T_NAME ($BASE version)]: rc=$rc with no FAIL line and no expected difference" >&2
   printf '%s\n' "$out" | tail -n 20 >&2
   exit 1
 fi
-echo "FAIL [$T_NAME (27f7565 version)]: rc=$rc" >&2
+echo "FAIL [$T_NAME ($BASE version)]: rc=$rc" >&2
 printf '%s' "$unexpected" >&2
 exit 1

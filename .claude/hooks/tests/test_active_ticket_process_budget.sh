@@ -13,6 +13,10 @@
 # On the commit before the resolver none of the functions exist, so the
 # first two checks fail there.
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
 SRC_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 LIB="$SRC_ROOT/.claude/hooks/_lib-active-ticket.sh"
 
@@ -388,8 +392,9 @@ if [ -n "$r" ]; then ok "3c a command substitution in a lookup function is caugh
 # into the git dir, on the same fixture.
 #
 # The limits in budget_limits were measured on the fixture of this test with
-# the hook of the merge base (27f7565), on a developer machine. Confirm them
-# on the CI ubuntu leg, and re-measure when the runner or the fixture changes:
+# the hooks of the dev merge base (compat/dev-base/BASE), on a developer
+# machine. Confirm them on the CI ubuntu leg, and re-measure when the runner,
+# the fixture or the merge base changes:
 #   APEXYARD_BUDGET_MEASURE=1 bash test_active_ticket_process_budget.sh
 # To measure another hook version, point APEXYARD_BUDGET_HOOKS_DIR at its
 # .claude/hooks directory. That version needs an old-layout current-ticket to
@@ -402,14 +407,14 @@ if [ -n "$r" ]; then ok "3c a command substitution in a lookup function is caugh
 # budget_limits <shape>: sets max_f and max_e
 budget_limits() {
   case "$1" in
-    ops) max_f=118; max_e=48 ;;
-    wt) max_f=123; max_e=53 ;;
-    main) max_f=130; max_e=57 ;;
-    exempt) max_f=18; max_e=10 ;;
-    bash) max_f=530; max_e=224 ;;
-    mig) max_f=374; max_e=119 ;;
-    legmain) max_f=130; max_e=57 ;;
-    legwt) max_f=137; max_e=63 ;;
+    ops) max_f=130; max_e=52 ;;
+    wt) max_f=135; max_e=57 ;;
+    main) max_f=142; max_e=61 ;;
+    exempt) max_f=30; max_e=14 ;;
+    bash) max_f=566; max_e=236 ;;
+    mig) max_f=386; max_e=123 ;;
+    legmain) max_f=142; max_e=61 ;;
+    legwt) max_f=149; max_e=67 ;;
     *) max_f=0; max_e=0 ;;
   esac
 }
@@ -436,7 +441,7 @@ hook_count_case() {
   printf 'projects:\n  - name: p1\n    repo: org/p1\n' > "$sb/apexyard.projects.yaml"
   mkdir -p "$sb/.claude/hooks" "$sb/.claude/session" "$sb/workspace"
   for f in require-active-ticket.sh require-migration-ticket.sh _lib-detect-bash-write.sh _lib-read-config.sh \
-           _lib-path-resolve.sh _lib-active-ticket.sh _lib-mask-quoted.sh _lib-portfolio-paths.sh \
+           _lib-path-resolve.sh _lib-active-ticket.sh _lib-mask-quoted.sh _lib-ticket-path-exemptions.sh _lib-portfolio-paths.sh \
            _lib-ops-root.sh _lib-resolution-cache.sh _lib-tracker.sh; do
     cp "$HOOKSDIR/$f" "$sb/.claude/hooks/$f"
   done
@@ -496,7 +501,7 @@ hook_count_case
 # fallback resolution runs: tickets/p1 for a main clone, and
 # tickets/p2/<branch> for a linked worktree inside the workspace dir. The
 # limits are the merge-base counts for the same fixture, measured the same
-# way as above.
+# way as above, against the same dev merge base.
 legacy_count_case() {
   if ! command -v strace >/dev/null 2>&1 || ! strace -qq -o /dev/null true >/dev/null 2>&1; then
     return 0
@@ -511,7 +516,7 @@ legacy_count_case() {
   printf 'projects:\n  - name: p1\n    repo: org/p1\n  - name: p2\n    repo: org/p2\n' > "$sb/apexyard.projects.yaml"
   mkdir -p "$sb/.claude/hooks" "$sb/.claude/session/tickets/p2" "$sb/workspace"
   for f in require-active-ticket.sh require-migration-ticket.sh _lib-detect-bash-write.sh _lib-read-config.sh \
-           _lib-path-resolve.sh _lib-active-ticket.sh _lib-mask-quoted.sh _lib-portfolio-paths.sh \
+           _lib-path-resolve.sh _lib-active-ticket.sh _lib-mask-quoted.sh _lib-ticket-path-exemptions.sh _lib-portfolio-paths.sh \
            _lib-ops-root.sh _lib-resolution-cache.sh _lib-tracker.sh; do
     cp "$HOOKSDIR/$f" "$sb/.claude/hooks/$f"
   done

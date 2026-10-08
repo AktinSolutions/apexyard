@@ -8,6 +8,10 @@
 # On the commit before the resolver, none of the functions exist and every
 # case fails.
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
 SRC_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 LIB="$SRC_ROOT/.claude/hooks/_lib-active-ticket.sh"
 

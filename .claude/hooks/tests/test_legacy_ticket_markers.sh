@@ -20,6 +20,10 @@
 #   12 an ops .git that links to p1's .git stops the new marker in p1 from
 #      being trusted, and the old resolution decides
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
 SRC_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 HOOKS="$SRC_ROOT/.claude/hooks"
 
@@ -62,7 +66,7 @@ projects:
 YAML
   mkdir -p "$sb/.claude/hooks" "$sb/.claude/session/tickets" "$sb/workspace"
   for f in require-active-ticket.sh warn-legacy-ticket-markers.sh dispatch-session-start.sh _lib-detect-bash-write.sh _lib-read-config.sh \
-           _lib-path-resolve.sh _lib-active-ticket.sh _lib-mask-quoted.sh _lib-portfolio-paths.sh \
+           _lib-path-resolve.sh _lib-active-ticket.sh _lib-mask-quoted.sh _lib-ticket-path-exemptions.sh _lib-portfolio-paths.sh \
            _lib-ops-root.sh _lib-resolution-cache.sh; do
     cp "$HOOKS/$f" "$sb/.claude/hooks/$f"
   done

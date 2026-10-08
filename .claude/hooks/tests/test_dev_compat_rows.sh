@@ -3,9 +3,10 @@
 #
 # Each row is a real-session shape that the first version of the move broke.
 # Every row runs twice: against the current hooks and against the hooks of
-# the merge base 27f7565. A row must give the same answer on both. When the
-# merge base is not in the local history (a shallow clone), the row runs
-# against the current hooks only and an INFO line says so.
+# the dev merge base named in compat/dev-base/BASE. A row must give the same
+# answer on both. When the merge base is not in the local history (a shallow
+# clone), the row runs against the current hooks only and an INFO line says
+# so.
 #
 #   B1 a clone at a registry workspace: path outside the workspace dir
 #   B2 a linked worktree keeps its old per-branch marker
@@ -20,10 +21,15 @@
 # A repo owned by another user (part of B5) needs root to set up, so it is
 # covered in-process by test_active_ticket_resolver.sh instead.
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
 SRC_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 NEW_HOOKS="$SRC_ROOT/.claude/hooks"
 NEW_DEFAULTS="$SRC_ROOT/.claude/project-config.defaults.json"
-BASE=27f7565
+BASE=$(cat "$SRC_ROOT/.claude/hooks/tests/compat/dev-base/BASE" 2>/dev/null)
+BASE="${BASE:-HEAD}"
 
 export APEXYARD_OPS_DISABLE_PIN=1 APEXYARD_DISABLE_RESOLUTION_CACHE=1
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
@@ -74,9 +80,17 @@ make_sb() {
 }
 
 # gate <ops> <cwd> <payload>: runs the ticket gate of the sandbox, sets RC
+# A real session has a session id, and its SessionStart hook pins the ops
+# root, so a hook finds the ops root from any target. Each call models that
+# with its own pin file in a temporary pin dir. The resolution cache stays
+# off, as the session isolation helper sets it.
 gate() {
   local ops="$1" cwd="$2" payload="$3"
-  ERR=$(cd "$cwd" && printf '%s' "$payload" | bash "$ops/.claude/hooks/require-active-ticket.sh" 2>&1 >/dev/null)
+  mkdir -p "$T/pins"
+  printf '%s\n' "$ops" > "$T/pins/ops-root-compat-rows"
+  ERR=$(cd "$cwd" && printf '%s' "$payload" \
+    | CLAUDE_CODE_SESSION_ID=compat-rows APEXYARD_OPS_DISABLE_PIN='' APEXYARD_OPS_PIN_DIR="$T/pins" \
+      bash "$ops/.claude/hooks/require-active-ticket.sh" 2>&1 >/dev/null)
   RC=$?
 }
 edit() { jq -nc --arg p "$1" '{tool_name:"Edit", tool_input:{file_path:$p}}'; }
@@ -84,7 +98,7 @@ bashc() { jq -nc --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}'; }
 marker() { mkdir -p "${1%/*}"; printf 'repo=%s\nnumber=%s\ntitle=t\n' "$2" "$3" > "$1"; }
 expect() {
   local name="$1" want="$2"
-  if [ "$RC" = "$want" ]; then ok "$name"; else bad "$name" "want rc=$want got $RC (${ERR:0:200})"; fi
+  if [ "$RC" = "$want" ]; then ok "$name"; else bad "$name" "want rc=$want got $RC (${ERR:0:${ROWS_ERR_LEN:-200}})"; fi
 }
 
 # new_start_ticket <ops> <tree> <repo> <number>: what the new /start-ticket

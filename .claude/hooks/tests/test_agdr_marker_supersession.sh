@@ -4,6 +4,10 @@
 # must carry a note that says so, and the CHANGELOG must tell adopters what to
 # do.
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
 SRC_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 AGDR="$SRC_ROOT/docs/agdr/AgDR-0216-ticket-marker-in-worktree-git-dir.md"
 

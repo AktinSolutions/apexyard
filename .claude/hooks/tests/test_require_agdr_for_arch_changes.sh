@@ -6,6 +6,10 @@
 # Fixture: an ops fork that registers projects a and b. The commit stages a
 # Dockerfile in project b, which is an architecture change with no AgDR.
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
 SRC_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 HOOK="$SRC_ROOT/.claude/hooks/require-agdr-for-arch-changes.sh"
 

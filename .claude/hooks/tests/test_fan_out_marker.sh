@@ -9,6 +9,10 @@
 #   prepare_worktree_refuses_a_tree_with_no_ticket
 #   marker_write_failure_removes_tree
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
 SRC_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 HOOKS="$SRC_ROOT/.claude/hooks"
 
@@ -40,7 +44,7 @@ make_sb() {
   printf 'projects:\n  - name: p1\n    repo: org/p1\n' > "$sb/apexyard.projects.yaml"
   mkdir -p "$sb/.claude/hooks" "$sb/.claude/skills/fan-out" "$sb/.claude/worktrees" "$sb/workspace"
   for f in require-active-ticket.sh _lib-detect-bash-write.sh _lib-read-config.sh _lib-path-resolve.sh \
-           _lib-active-ticket.sh _lib-mask-quoted.sh _lib-portfolio-paths.sh _lib-ops-root.sh _lib-resolution-cache.sh; do
+           _lib-active-ticket.sh _lib-mask-quoted.sh _lib-ticket-path-exemptions.sh _lib-portfolio-paths.sh _lib-ops-root.sh _lib-resolution-cache.sh; do
     cp "$HOOKS/$f" "$sb/.claude/hooks/$f"
   done
   cp "$SRC_ROOT/.claude/project-config.defaults.json" "$sb/.claude/project-config.defaults.json"

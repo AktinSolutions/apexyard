@@ -3,6 +3,10 @@
 # candidates only from `git worktree list --porcelain`, refuses unsafe trees,
 # lists ignored files for the confirmation prompt, and never uses --force.
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
 SRC_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 HOOKS="$SRC_ROOT/.claude/hooks"
 SKILL="$SRC_ROOT/.claude/skills/approve-merge"

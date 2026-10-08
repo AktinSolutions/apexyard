@@ -16,6 +16,10 @@
 #   - hook tests (their fixtures exercise the legacy rule)
 #   - this test
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
 SRC_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$SRC_ROOT" || exit 1
 

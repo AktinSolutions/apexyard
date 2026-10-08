@@ -15,6 +15,10 @@
 #   8  an exempt path starts no validation
 #   9  a Bash command with several targets in one tree validates once
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
 SRC_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 HOOKS="$SRC_ROOT/.claude/hooks"
 
@@ -46,7 +50,7 @@ make_sb() {
   mkdir -p "$sb/.claude/hooks" "$sb/.claude/session" "$sb/workspace"
   local f
   for f in require-active-ticket.sh require-migration-ticket.sh _lib-detect-bash-write.sh _lib-read-config.sh \
-           _lib-path-resolve.sh _lib-active-ticket.sh _lib-mask-quoted.sh _lib-portfolio-paths.sh \
+           _lib-path-resolve.sh _lib-active-ticket.sh _lib-mask-quoted.sh _lib-ticket-path-exemptions.sh _lib-portfolio-paths.sh \
            _lib-ops-root.sh _lib-resolution-cache.sh _lib-tracker.sh; do
     cp "$HOOKS/$f" "$sb/.claude/hooks/$f"
   done

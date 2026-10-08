@@ -1,8 +1,8 @@
 #!/bin/bash
-# Index and self-test of the 27f7565 compat runs (AgDR-0216, Backward
+# Index and self-test of the merge-base compat runs (AgDR-0216, Backward
 # compatibility).
 #
-# Each original under compat/dev-27f7565/ runs in its own suite entry,
+# Each original under compat/dev-base/ runs in its own suite entry,
 # test_dev_marker_compat_<name>.sh, through compat/run-dev-compat.sh. This
 # test does not run the originals. It checks that every original has exactly
 # one wrapper, and that the runner judges a run the right way:
@@ -12,8 +12,12 @@
 #   - an unexpected FAIL line fails
 #   - a killed run (rc 124 or 137) fails
 
+# Isolate from live Claude Code session pin/cache (me2resh/apexyard#1549).
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_test-session-isolation.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
-COMPAT="$HERE/compat/dev-27f7565"
+COMPAT="$HERE/compat/dev-base"
 RUNNER="$HERE/compat/run-dev-compat.sh"
 
 PASS=0
