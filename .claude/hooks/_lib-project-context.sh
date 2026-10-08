@@ -325,7 +325,7 @@ _projctx_rule_paths() {
 # ------------------------------------------------------------------------------
 # Public: projctx_emit <name> <workspace>
 # ------------------------------------------------------------------------------
-# ponytail: refuses any symlinked file; hardlinks are not detected (same-fs only, needs attacker write to $HOME's fs).
+# Symlinks and hardlinks are refused; _projctx_read_safe re-checks them on the opened file.
 # A path with control characters, C1 controls or U+2028/U+2029 is refused.
 _projctx_clean_path() {
   local LC_ALL=C
@@ -338,6 +338,29 @@ _projctx_safe_file() {  # $1=file $2=real workspace
   [ -f "$1" ] && [ ! -L "$1" ] || return 1
   local d; d=$(cd "$(dirname "$1")" 2>/dev/null && pwd -P) || return 1
   case "$d/" in "$2"/*) return 0 ;; esac; return 1
+}
+
+# Print at most <bytes> of a file that passed _projctx_safe_file. The file
+# is opened once and read from that descriptor, so a swap after the open
+# cannot change what is read. The path must still be a regular, unlinked
+# file with one link, and must be the very file that was opened. Runs in a
+# subshell so a failed open cannot end a POSIX-mode caller.
+_projctx_read_safe() {  # $1=file $2=real workspace $3=bytes
+  _projctx_safe_file "$1" "$2" || return 1
+  (
+    exec 3<"$1" 2>/dev/null || exit 1
+    if [ -e /dev/fd/3 ]; then
+      [ ! -L "$1" ] && [ -f "$1" ] && [ "$1" -ef /dev/fd/3 ] || exit 1
+      links=$(stat -c '%h' "$1" 2>/dev/null || stat -f '%l' "$1" 2>/dev/null) || exit 1
+      [ "$links" = 1 ] || exit 1
+      head -c "$3" <&3 2>/dev/null
+    else
+      # No /dev/fd: fall back to a read followed by the path check.
+      data=$(head -c "$3" <&3 2>/dev/null)
+      [ ! -L "$1" ] && [ -f "$1" ] || exit 1
+      printf '%s' "$data"
+    fi
+  )
 }
 
 projctx_emit() {
@@ -367,12 +390,8 @@ projctx_emit() {
   body=""
 
   local cm_ok=0
-  if _projctx_safe_file "$claude_md" "$ws_real"; then
-    # One bounded read; 64 KB is enough to find every @import. Check again
-    # after the read: a file swapped for a link meanwhile is dropped.
-    cm=$(head -c 65536 "$claude_md" 2>/dev/null)
-    _projctx_safe_file "$claude_md" "$ws_real" && cm_ok=1
-  fi
+  # One bounded read; 64 KB is enough to find every @import.
+  cm=$(_projctx_read_safe "$claude_md" "$ws_real" 65536) && cm_ok=1
   if [ "$cm_ok" = 1 ]; then
     body="${body}## $name/CLAUDE.md"$'\n'
     body="${body}${cm:0:$PROJCTX_BUDGET}"$'\n\n'
@@ -412,8 +431,7 @@ PROJCTX_IMPORTS
       paths_list=$(_projctx_rule_paths "$rf")
       if [ -z "$paths_list" ]; then
         if [ "${#body}" -lt "$PROJCTX_BUDGET" ]; then
-          rb=$(head -c "$PROJCTX_BUDGET" "$rf" 2>/dev/null)
-          if _projctx_safe_file "$rf" "$ws_real"; then
+          if rb=$(_projctx_read_safe "$rf" "$ws_real" "$PROJCTX_BUDGET"); then
             body="${body}## rule: $(basename "$rf")"$'\n'
             body="${body}${rb}"$'\n\n'
           fi

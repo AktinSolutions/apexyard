@@ -907,45 +907,58 @@ else
 fi
 rm -rf "$MARKER_DIR"
 
-# --- (reg9) a file swapped for a symlink during the read is dropped
-HEADSHIM="$SB/head-shim"
-mkdir -p "$HEADSHIM"
+# --- (reg9) a file swapped for a symlink and swapped back around the read
+# is not read. The dirname shim swaps in the link after the safety checks
+# pass; the head shim restores the original file once the read is done, so
+# a check that runs after the read sees a clean file.
+SWSHIM="$SB/swap-shim"
+mkdir -p "$SWSHIM"
 REAL_HEAD=$(command -v head)
-cat > "$HEADSHIM/head" <<SH
+cat > "$SWSHIM/dirname" <<SH
 #!/bin/sh
 last=
 for arg do last=\$arg; done
-if [ -n "\${SWAP_SUFFIX:-}" ]; then
-  case "\$last" in
-    *"\$SWAP_SUFFIX")
-      /bin/rm -f "\$last"
-      ln -s "$SECRET_FILE" "\$last" ;;
-  esac
+if [ -n "\${SWAP_FILE:-}" ] && [ "\$last" = "\$SWAP_FILE" ] && [ ! -e "\$SWAP_FILE.swapped" ]; then
+  : > "\$SWAP_FILE.swapped"
+  /bin/rm -f "\$SWAP_FILE"
+  ln -s "$SECRET_FILE" "\$SWAP_FILE"
 fi
-exec "$REAL_HEAD" "\$@"
+exec "$(command -v dirname)" "\$@"
 SH
-chmod +x "$HEADSHIM/head"
-echo "SECRET_OUTSIDE" > "$SECRET_FILE"
+cat > "$SWSHIM/head" <<SH
+#!/bin/sh
+out=\$("$REAL_HEAD" "\$@")
+if [ -n "\${SWAP_FILE:-}" ] && [ -L "\$SWAP_FILE" ]; then
+  /bin/rm -f "\$SWAP_FILE"
+  /bin/cp "\$SWAP_BACKUP" "\$SWAP_FILE"
+fi
+printf '%s\\n' "\$out"
+SH
+chmod +x "$SWSHIM/dirname" "$SWSHIM/head"
 cp "$WS/CLAUDE.md" "$WS/CLAUDE.md.bak"
-OUT=$(SWAP_SUFFIX=/CLAUDE.md PATH="$HEADSHIM:$PATH" invoke "$(payload reg9 "" "" "$WS/src/a.ts")")
-rm -f "$WS/CLAUDE.md"
+OUT=$(SWAP_FILE="$WS/CLAUDE.md" SWAP_BACKUP="$WS/CLAUDE.md.bak" PATH="$SWSHIM:$PATH" invoke "$(payload reg9 "" "" "$WS/src/a.ts")")
+rm -f "$WS/CLAUDE.md" "$WS/CLAUDE.md.swapped"
 mv "$WS/CLAUDE.md.bak" "$WS/CLAUDE.md"
-if [ -n "$OUT" ] && ! printf '%s' "$OUT" | grep -q SECRET_OUTSIDE; then
-  pass_case "(reg9) CLAUDE.md swapped to a symlink during the read is dropped"
+if ! printf '%s' "$OUT" | grep -q SECRET_OUTSIDE; then
+  pass_case "(reg9) CLAUDE.md swapped to a link and back around the read is not read"
 else
-  fail_case "(reg9) swap during read" "out_len=${#OUT} secret=$(printf '%s' "$OUT" | grep -c SECRET_OUTSIDE)"
+  fail_case "(reg9) swap and swap back" "secret reached the output"
 fi
 rm -rf "$MARKER_DIR"
 
-# Same swap on an unscoped rule file.
-printf '# Swap rule\n\nPLAIN_SWAP_RULE\n' > "$WS/.claude/rules/swap.md"
-OUT=$(SWAP_SUFFIX=/swap.md PATH="$HEADSHIM:$PATH" invoke "$(payload reg9b "" "" "$WS/src/a.ts")")
-rm -f "$WS/.claude/rules/swap.md"
-if printf '%s' "$OUT" | grep -q CANARY_CLAUDE_MD_MARKER && ! printf '%s' "$OUT" | grep -q SECRET_OUTSIDE; then
-  pass_case "(reg9b) unscoped rule swapped to a symlink during the read is dropped"
+# --- (reg9b) a hardlinked unscoped rule is refused
+ln "$SECRET_FILE" "$WS/.claude/rules/hardlink.md" 2>/dev/null
+if [ -f "$WS/.claude/rules/hardlink.md" ]; then
+  OUT=$(invoke "$(payload reg9b "" "" "$WS/src/a.ts")")
+  if printf '%s' "$OUT" | grep -q CANARY_CLAUDE_MD_MARKER && ! printf '%s' "$OUT" | grep -q SECRET_OUTSIDE; then
+    pass_case "(reg9b) hardlinked rule file is refused"
+  else
+    fail_case "(reg9b) hardlinked rule" "out_len=${#OUT}"
+  fi
 else
-  fail_case "(reg9b) rule swap during read" "out_len=${#OUT}"
+  fail_case "(reg9b) hardlinked rule" "could not create the hardlink"
 fi
+rm -f "$WS/.claude/rules/hardlink.md"
 rm -rf "$MARKER_DIR"
 
 # --- (reg10) a worktree root with a newline in its name is refused
