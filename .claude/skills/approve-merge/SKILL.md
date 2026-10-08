@@ -522,7 +522,7 @@ Skip this step when `MERGE_RC` is not 0, and when `--no-merge` was passed.
 
 A merged PR often leaves a linked worktree on disk. Removing it also removes its ticket marker, because the marker lives in the worktree's git dir. Offer the removal. Never do it without a yes.
 
-1. Find the local clone of the PR's repo, the **source tree**. For a registered project it is `workspace/<name>/`. For a PR on the ops fork it is the ops root.
+1. Find the local clone of the PR's repo, the **source tree**. For a registered project it is `workspace/<name>/`, or the `workspace:` path of its registry entry. For a PR on the ops fork it is the ops root.
 2. List the candidates with the helper. The head branch is the merged PR's head branch:
 
    ```bash

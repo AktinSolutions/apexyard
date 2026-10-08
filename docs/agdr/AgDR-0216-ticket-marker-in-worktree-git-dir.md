@@ -72,7 +72,7 @@ When a tree fails any of these checks, only its `apexyard-ticket` file stops bei
 
 | Property | Mechanism |
 |----------|-----------|
-| `GIT_*` variables and git config cannot redirect the lookup | No git process runs. |
+| `GIT_*` variables and git config cannot redirect the lookup of a marker in a validated tree's git dir | No git process runs for that lookup. The old resolution keeps its old git calls until the breaking release. |
 | `core.worktree` cannot move the tree | The tree is the directory that holds `.git`. |
 | Only the ops fork or a registered clone has a trusted new marker | The common dir is matched on every call. |
 | A planted `.git`, `gitdir` or `commondir` is refused | The common dir must be registered, and the back-pointers must agree. |
@@ -120,6 +120,8 @@ The invariant is that the gate passes whenever the old hooks passed, and blocks 
 ### Dual write
 
 `/start-ticket` writes the new marker and the old-layout marker, in the place the old skill used. When the tree fails validation, it writes only the old marker, with a one-line note. `/fan-out` does the same for each writer worktree. A hook from before the move therefore sees every ticket that the new skill starts. This covers a rollback and a session that still runs the old hooks during `/update`.
+
+One case is not covered. After a rollback and a second `/update`, a stale `<git dir>/apexyard-ticket` from before the rollback outranks a newer old-layout file. The old hooks did not update that marker. The fix is to run `/start-ticket` again in each tree, or to delete the stale marker.
 
 ### Removal
 

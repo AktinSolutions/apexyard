@@ -8,11 +8,12 @@ Behaviour change: the active ticket now lives in each working tree's git dir (#1
 - Nothing that passed the ticket gate before this release is blocked by it. Old markers under `.claude/session/` are still read wherever they were read before. A marker in a tree's git dir wins over them.
 - `/start-ticket` and `/fan-out` still write the old markers too. A rollback to the previous release, or a session that still runs the old hooks after `/update`, keeps its ticket.
 - A SessionStart notice lists the old markers it finds. It is information, not an error.
+- After a rollback and a second `/update`, a stale `<git dir>/apexyard-ticket` from before the rollback outranks a newer old-layout file. Run `/start-ticket` again in each tree, or delete the stale marker.
 - A later, explicitly breaking release stops reading and writing the old markers. Its upgrade notes will say so.
 
 ### Changed
 
-- The ticket gate, the migration gate, the AgDR spike exemptions, the tracker-repo guard and `/status` read the marker through one resolver. It finds the git dir without a git process, so `GIT_DIR` and git config cannot redirect it.
+- The ticket gate, the migration gate, the AgDR spike exemptions, the tracker-repo guard and `/status` read the marker through one resolver. It finds a marker in a validated tree's git dir without a git process, so `GIT_DIR` and git config cannot redirect that lookup. The old-layout resolution keeps its old git calls until the breaking release.
 - A marker in a git dir counts only for the ops fork and registered clones. A registered clone sits under the workspace dir, or at the `workspace:` path of its registry entry. Other trees use the old markers, as before.
 - A spike marker in one project no longer exempts a change in another project.
 - `/fan-out` creates each writer worktree from its task's own repo and writes the markers for it.
