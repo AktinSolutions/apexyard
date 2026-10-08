@@ -82,9 +82,9 @@ See `.claude/rules/isolated-builds.md` and AgDR-0210.
 
 Do this for every task that involves code edits, not pure research. Find the working tree the task belongs to, and verify that the tree has a ticket marker:
 
-- A task on a managed project uses `<ops_root>/workspace/<name>/` as its **source tree**.
+- A task on a managed project uses its clone as its **source tree**: `<ops_root>/workspace/<name>/`, or the `workspace:` path of its registry entry.
 - A task on the ops fork uses `<ops_root>` as its source tree.
-- The marker lives in the source tree's git dir (AgDR-0216). Check it with `active_ticket_lookup <source-tree>` from `.claude/hooks/_lib-active-ticket.sh`. With `--from-tickets`, the task's own ticket is used instead, and the tree only has to be valid.
+- The marker lives in the source tree's git dir (AgDR-0216). During the move, an old-layout marker under `.claude/session/` also counts. Check both with `active_ticket_lookup <source-tree>` from `.claude/hooks/_lib-active-ticket.sh`. With `--from-tickets`, the task's own ticket is used instead.
 
 If a source tree has no marker, **refuse the entire fan-out** and tell the user:
 
@@ -136,8 +136,8 @@ For every task with `isolation: worktree`, create the worktree and its marker **
 
 - **Known gap:** the ticket gate exempts every path under `.claude/`, so a worktree under `<ops_root>/.claude/worktrees/` passes the gate with or without a marker. The helper still writes the marker. A follow-up task tracks narrowing that exemption.
 - The helper runs `git -C <source-tree> worktree add <path> -b <branch>`. A managed-project task therefore gets a worktree of `workspace/<name>/`, not of the ops fork.
-- The helper writes `apexyard-ticket` into the git dir of the new worktree, with the ticket of the source tree. Pass the ticket fields as extra arguments to give a task its own ticket (`--from-tickets`).
-- The helper never uses `--force`. If it fails, it removes the worktree and branch it created. Stop the whole fan-out and report its message.
+- The helper writes `apexyard-ticket` into the git dir of the new worktree, with the ticket of the source tree. It also writes the old-layout per-worktree marker, so the hooks from before the move see the ticket. When the new worktree fails validation, it writes only the old marker and prints a note. Pass the ticket fields as extra arguments to give a task its own ticket (`--from-tickets`).
+- The helper never uses `--force`. If it writes no marker at all, it removes the worktree and branch it created. Stop the whole fan-out and report its message.
 - Do not pass `isolation: worktree` to the `Agent` call for these tasks. The worktree exists already. Tell the agent to work only under the worktree path and to run `git` and every edit there.
 - If the spawn itself fails, remove each worktree this step created with `git -C <source-tree> worktree remove <path>` (no `--force`).
 

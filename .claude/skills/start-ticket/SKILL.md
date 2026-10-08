@@ -25,7 +25,7 @@ One tree holds one ticket. Parallel sessions on one project no longer overwrite 
 
 The hook trusts a marker in a git dir only for the ops fork or a registered clone. A registered clone is `workspace/<project>/`, or the `workspace:` path of its registry entry. The marker is a process gate. Anyone with write access to the git dir can forge it. It is not an authorization boundary.
 
-During the move to the new layout, the skill also writes the old-layout marker under `<ops_root>/.claude/session/`, in the place the old skill used (`tickets/<project>/<branch>`, `tickets/<project>` or `current-ticket`). The hooks still read old markers wherever they read them before. A hook from before the move, after a rollback or in a session that has not reloaded its hooks, sees the ticket too. See AgDR-0216, "Backward compatibility".
+During the move to the new layout, the skill also writes the old-layout marker under `<ops_root>/.claude/session/`. It uses the place the old skill used: `tickets/<project>/<branch>`, `tickets/<project>` or `current-ticket`. The hooks still read old markers wherever they read them before. A hook from before the move, after a rollback or in a session that has not reloaded its hooks, sees the ticket too. See AgDR-0216, "Backward compatibility".
 
 This is the mechanical enforcement of the Pre-Build Gate in `.claude/rules/workflow-gates.md` — "do not start coding until the ticket exists".
 
@@ -173,7 +173,7 @@ fi
 
 #### 4d. Old-layout markers
 
-Do not delete an old-layout file. Step 5 writes the old-layout marker for this ticket in the same place the old skill used, so it replaces an older ticket there, as before.
+Do not delete an old-layout file. Step 5 writes the old-layout marker for this ticket where the old skill wrote it. So it replaces an older ticket there, as before.
 
 ### 5. Write the markers
 
@@ -255,7 +255,7 @@ Do NOT create the branch automatically. The user may already be on a branch, or 
 - To clear a tree's marker, delete `<git dir>/apexyard-ticket`. `git worktree remove` does it for a linked worktree.
 - A tree needs its own `/start-ticket`. A marker in the main clone does not govern a linked worktree.
 - Exempt paths (`.claude/`, `docs/`, `projects/*/docs/`, any `*.md`) don't need a ticket. The skill is only required before touching source, config, or infra.
-- **Migration from the old layout**: `current-ticket` and `tickets/<project>` files under the ops fork's `.claude/session/` still work in a main clone, for their own project only. A SessionStart notice lists them. Step 4d moves one on request. A future release removes the old reader.
+- **Migration from the old layout**: `current-ticket` and `tickets/<project>` files under the ops fork's `.claude/session/` still work wherever they worked before. This skill still writes them. A SessionStart notice lists them. An explicitly breaking release will stop reading and writing them.
 
 ---
 

@@ -11,7 +11,7 @@ category: security
 
 # Store the ticket marker in each working tree's git dir
 
-> In the context of parallel sessions on one project, I faced last-writer-wins ticket files and a lookup that git environment variables can redirect. I decided to keep one marker file per working tree in that tree's git dir. I find the git dir by reading git's own files, with no git process. I accept that submodules, nested repos and repos with another owner are now blocked.
+> In the context of parallel sessions on one project, I faced last-writer-wins ticket files and a lookup that git environment variables can redirect. I decided to keep one marker file per working tree in that tree's git dir. I find the git dir by reading git's own files, with no git process. During the move, the old markers stay readable and are still written. A tree whose marker is not trusted gets the old resolution, never a new block.
 
 ## Context
 
@@ -44,8 +44,8 @@ Old-layout markers:
 | Option | Pros | Cons |
 |--------|------|------|
 | Ignore them everywhere | Simplest. | Every project blocks once after `/update`. |
-| Honour them in a main clone only (chosen) | Main clones keep working. A linked worktree never reads one. | A temporary reader stays in the trust chain. |
-| Honour them in a linked worktree too | Fewest blocks. | It is the last-writer-wins case of #513. |
+| Honour them in a main clone only (first choice, D1, reversed) | Main clones keep working. A linked worktree never reads one. | Real sessions broke. See "Backward compatibility". |
+| Honour them wherever the old hooks did, and keep writing them (chosen) | No session that passed before is blocked. A rollback keeps working. | The old resolution, and its git calls, stays in the trust chain until the breaking release. |
 
 ## Decision
 
@@ -57,14 +57,16 @@ The lookup walks up from the target to the first directory that holds `.git`. It
 
 The lookup accepts a git dir only when all of these hold:
 
-- The common dir is the ops fork's `.git`, or the `.git` of a registered clone that is a direct child of the workspace dir.
+- The common dir is the ops fork's `.git`, or the `.git` of a registered clone. A registered clone is a direct child of the workspace dir with its registry name, or the `workspace:` path of its registry entry. A relative `workspace:` path is relative to the ops root.
 - A linked worktree git dir sits under `<common>/worktrees`, and both back-pointers agree.
 - The git dir has `HEAD`, and the common dir has `objects` and `refs`.
 - The current user owns the git dir and the common dir (`[ -O ]`).
 - No symlink sits between the target and the tree root. A `..` that follows a symlinked component is refused, because it would hide the link.
 - A `.git` file holds one `gitdir:` line. A main `.git` directory has no `commondir` file.
 
-The workspace root, each workspace entry and its `.git` must be real directories. `$OPS_ROOT` itself may be an alias, but `$OPS_ROOT/.git` must not be a link. A common dir that matches both roots is refused as ambiguous.
+The workspace root, each workspace entry and its `.git` must be real directories. The same holds for a `workspace:` path and its `.git`. `$OPS_ROOT` itself may be an alias, but `$OPS_ROOT/.git` must not be a link. A common dir that matches more than one root is refused as ambiguous. Examples are the ops fork plus an entry, or two entries.
+
+When a tree fails any of these checks, only its `apexyard-ticket` file stops being trusted. The lookup then runs the old resolution, as described in "Backward compatibility".
 
 ### Security properties
 
@@ -72,11 +74,11 @@ The workspace root, each workspace entry and its `.git` must be real directories
 |----------|-----------|
 | `GIT_*` variables and git config cannot redirect the lookup | No git process runs. |
 | `core.worktree` cannot move the tree | The tree is the directory that holds `.git`. |
-| Only the ops fork or a registered clone counts | The common dir is matched on every call. |
+| Only the ops fork or a registered clone has a trusted new marker | The common dir is matched on every call. |
 | A planted `.git`, `gitdir` or `commondir` is refused | The common dir must be registered, and the back-pointers must agree. |
 | The `.git` write exemption covers only the marker | `active_ticket_is_marker_target` accepts the exact marker and its temporary file. |
 | The library's own functions and state cannot be planted by a parent process | Functions are redefined on every source. The one-time state reset is guarded by the process id in an array element. The context names are internal and unexported. |
-| Failure closes the gate | Every failure sets `REPLY` to empty. |
+| A failed check never trusts the new marker | Every failure discards the tree's `apexyard-ticket`. The old resolution then decides, as it did before the move. |
 
 ### Gap against git
 
@@ -85,31 +87,65 @@ The lookup checks that `HEAD` exists. It does not check that `HEAD` is a valid r
 ### Decisions inside this AgDR
 
 - The ownership check replaces git's `safe.directory`. It is stricter, because the library never reads the git config override. A devcontainer or bind mount with another owner is blocked.
-- The legacy reader is removed in the release after the one that ships this change.
-- The legacy rule gives no cross-project or cross-tree wrong-ticket pass. Inside one project's main clone, an old `tickets/<name>` file still behaves as before until the reader is removed. It can pass a different ticket of the same project.
+- D6 changed: the old resolution and the old-layout writer are removed only in an explicit breaking release. That release notes the change in the CHANGELOG upgrade notes. It is not the next release by default.
+- Until then, the old resolution gives every pass that the old hooks gave, including a stale old file that passes a different ticket. A new marker in a validated tree overrides it.
 - The sandbox allowlist may name only the exact marker and temporary file paths, never `.git/**`.
 - Blocking a `cd <tree> && write` command is out of scope. A follow-up task tracks it.
-- Submodules and nested repos are not trees. Writes inside them are blocked.
+- Submodules and nested repos are not trees for the new marker. Writes inside them use the old resolution, as before.
 - An attacker who controls the hook process environment is out of scope. On bash 5.3 such an attacker can shadow `[`, `declare`, `builtin` or `git` with an inherited `BASH_FUNC_<name>%%` function. This applies to every hook. A possible hardening is to launch hooks as `bash -p <script>`.
 
 This AgDR partly supersedes AgDR-0066 and AgDR-0141, and amends AgDR-0168 and AgDR-0017. It replaces the mechanism that the ticket names (`rev-parse`, `worktree list`, the `GIT_*` unset) with one that reaches the same outcome.
 
 ## Consequences
 
-- Each working tree has one ticket. Removing a worktree removes its ticket.
-- A linked worktree and any project that relied only on `current-ticket` blocks once until you run `/start-ticket` there.
-- Unregistered repos, submodules, nested repos, symlinked roots and repos owned by another user are blocked, each with a reason.
-- Once the context is filled, the lookup makes 0 forks. The first lookup in a workspace clone may resolve the registry path once per process, and that step can fork. A test fails when a lookup function gains a command substitution, a pipe, a subshell or an external command.
+- Each working tree can have its own ticket. Removing a worktree removes its new marker.
+- No target that passed the old hooks is blocked by the new ones. Every session keeps its ticket through `/update` and through a rollback.
+- Unregistered repos, submodules, nested repos, symlinked roots and repos owned by another user get no trusted new marker. They use the old resolution.
+- Once the context is filled, a lookup that finds a new marker makes 0 forks. Without one, the old resolution keeps its old cost, including its git calls. The first lookup in a workspace clone may resolve the registry path once per process, and that step can fork. A test fails when a lookup function gains a command substitution, a pipe, a subshell or an external command.
 - A hook-level test fails when a gated write makes more processes than before.
+
+## Backward compatibility
+
+On 2026-10-08 Nagy reversed D1 and chose full backward compatibility. The first build replaced the old lookup instead of extending it, and real sessions broke. Clones at a registry `workspace:` path were refused. Linked worktrees, unregistered repos, nested repos and forks without the portfolio library lost their ticket.
+
+### Dual read
+
+The lookup reads two layouts.
+
+1. A regular `apexyard-ticket` in the git dir of a validated tree decides. All the guarantees above hold for it.
+2. Otherwise the lookup runs the old resolution, ported unchanged into `_lib-active-ticket.sh` (the `_atd_*` functions). It reads `tickets/<project>/<branch>` for a linked worktree, then `tickets/<project>`, then `current-ticket`. An empty target reads `current-ticket` only. A target that cannot be resolved, such as `~user/x`, reads no marker.
+
+The invariant is that the gate passes whenever the old hooks passed, and blocks whenever they blocked. The one exception is a new marker in a validated tree, which decides. A failed validation is never a block on its own. The main-clone-only rule, the managed-project refusal for `current-ticket` and the repo-match refusal are removed, because the old hooks did not have them. The SessionStart notice and the legacy line of the block message only inform about the move.
+
+### Dual write
+
+`/start-ticket` writes the new marker and the old-layout marker, in the place the old skill used. When the tree fails validation, it writes only the old marker, with a one-line note. `/fan-out` does the same for each writer worktree. A hook from before the move therefore sees every ticket that the new skill starts. This covers a rollback and a session that still runs the old hooks during `/update`.
+
+### Removal
+
+The old resolution and the old-layout writer go away only in an explicit breaking release (D6). That release states it in the CHANGELOG upgrade notes.
+
+### Places where the new hooks differ from the old ones
+
+- A write to `.git/apexyard-ticket` or its temporary file passes with no ticket. The old hooks blocked it. `/start-ticket` needs that write.
+- The spike exemption reads the marker that governs the tree, not any marker in the session dir. This is the cross-project spike-leak fix. An old `current-ticket` still exempts a project that has no marker of its own, as in the ticket gate.
+- The ambient tracker guard reads every old marker, as before, and the new markers on top. It can block more than before, never less.
+- `active_ticket_init` falls back to `resolve_ops_root "$PWD"` when the start directory has no ops root. The old spike exemption did not.
+- The old resolution normalised a path with a newline in it line by line, through awk. The port normalises the whole string.
+- `prepare-worktree.sh` keeps an existing session-level `current-ticket` and does not overwrite it.
+- The `/status` briefing shows a new marker first. Without one, it shows what the old briefing showed.
+
+### Proof
+
+`test_dev_marker_compat.sh` runs the original 27f7565 files of every test that the move edited, unchanged, against the new hooks. The only expected difference is the dispatcher test, which pins the list of SessionStart hooks. `test_dev_compat_rows.sh` runs one row per broken session shape, B1 to B9, against both hook versions.
 
 ## Build notes
 
-- The legacy reader accepts `number=` in the shape `[A-Za-z0-9_-]+` after one leading `#` is removed, not digits only. Jira and Linear ids need that, and the writer and the migration gate use the same shape.
-- The legacy `repo=` match compares case-insensitively and against every slug of a registry entry: `repo:`, each `repos:` item and `primary:`.
 - The registry path and the workspace dir come from the portfolio library, and only when that library is loaded in the same process. An inherited `_PP_REG` or `_PP_WS` is never used. Without a trusted resolver the registry path stays unknown, and a workspace lookup fails closed.
 - The registry is resolved on demand. A workspace clone or an old `current-ticket` file needs it. A Claude session reads the path from the session cache without a fork.
 - The hook-level process count test needs `strace`. It fails on a Linux CI runner without it. Elsewhere it prints an `INFO:` line, because the suite runner treats a line that starts with `SKIP` as a failure. The limits are the merge-base counts measured on a developer machine. Confirm them on the CI ubuntu leg.
 - `/fan-out` creates writer worktrees under `<ops>/.claude/worktrees/`. The ticket gate exempts every path under `.claude/`, so edits in those worktrees pass without a marker. This gap exists today. A follow-up task should narrow that exemption or move the worktrees. The marker is still written, so the gate works once the path is not exempt.
+- The process budget test scans the new-marker lookup for forks. The `_atd_*` functions keep the old cost and are not scanned. A test shows that a lookup that finds a new marker never runs them. The hook-level limits did not change.
 - The ambient tracker guard reads the marker of the tree that runs the command. From the ops fork it also reads the markers of registered workspace clones and their linked worktrees. The reason is that `/start-ticket` run at the ops root writes into the project clone.
 - A tree that fails validation, such as a scratch clone outside the ops fork, has no marker of its own. When the session pin still resolves the ops root, the guard reads the ops fork's marker and every project marker. This keeps the old block for such a clone.
 
@@ -120,4 +156,7 @@ This AgDR partly supersedes AgDR-0066 and AgDR-0141, and amends AgDR-0168 and Ag
 - `.claude/hooks/tests/test_active_ticket_resolver.sh`
 - `.claude/hooks/tests/test_active_ticket_process_budget.sh`
 - `.claude/hooks/tests/test_agdr_marker_supersession.sh`
+- `.claude/hooks/tests/test_legacy_ticket_markers.sh`
+- `.claude/hooks/tests/test_dev_marker_compat.sh` and `.claude/hooks/tests/compat/dev-27f7565/`
+- `.claude/hooks/tests/test_dev_compat_rows.sh`
 - me2resh/apexyard#1576

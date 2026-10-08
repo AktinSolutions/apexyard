@@ -2,14 +2,20 @@
 
 Behaviour change: the active ticket now lives in each working tree's git dir (#1576, AgDR-0216). `/start-ticket` writes `apexyard-ticket` into the git dir of the tree you run it in. Each linked worktree needs its own `/start-ticket`. `git worktree remove` deletes the marker with the worktree.
 
-After you run `/update`, read `/start-ticket` again. Old markers under `.claude/session/` still work in a main clone, for their own project only. A SessionStart notice lists them. A linked worktree, and a project that relied only on `current-ticket`, blocks once until you run `/start-ticket` there. A future release removes the old reader.
+### Upgrade notes
+
+- After you run `/update`, read `/start-ticket` again. It now writes two markers.
+- Nothing that passed the ticket gate before this release is blocked by it. Old markers under `.claude/session/` are still read wherever they were read before. A marker in a tree's git dir wins over them.
+- `/start-ticket` and `/fan-out` still write the old markers too. A rollback to the previous release, or a session that still runs the old hooks after `/update`, keeps its ticket.
+- A SessionStart notice lists the old markers it finds. It is information, not an error.
+- A later, explicitly breaking release stops reading and writing the old markers. Its upgrade notes will say so.
 
 ### Changed
 
 - The ticket gate, the migration gate, the AgDR spike exemptions, the tracker-repo guard and `/status` read the marker through one resolver. It finds the git dir without a git process, so `GIT_DIR` and git config cannot redirect it.
-- The gate now blocks unregistered repos under `workspace/`, submodules and nested repos, symlinked roots or `.git`, and repos owned by another user. Each block names its reason.
+- A marker in a git dir counts only for the ops fork and registered clones. A registered clone sits under the workspace dir, or at the `workspace:` path of its registry entry. Other trees use the old markers, as before.
 - A spike marker in one project no longer exempts a change in another project.
-- `/fan-out` creates each writer worktree from its task's own repo and writes the marker into it.
+- `/fan-out` creates each writer worktree from its task's own repo and writes the markers for it.
 - `/approve-merge` offers to remove the merged PR's worktree. It asks first and never uses `--force`.
 
 ## [v5.7.0] — 2026-09-27
