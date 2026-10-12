@@ -31,7 +31,7 @@ cp "$ROOT/_lib-extract-pr.sh" "$TMP/hooks/_lib-extract-pr.sh"
 cp "$ROOT/_lib-command-scrub.sh" "$TMP/hooks/_lib-command-scrub.sh"
 chmod +x "$TMP/hooks/dispatch-bash.sh"
 
-scripts='block-ambient-tracker-repo.sh block-privileged-escalation.sh require-skill-for-issue-create.sh require-orbit-slice-for-ticket.sh require-migration-ticket.sh require-active-ticket.sh warn-review-marker-write.sh warn-isolated-build-risk.sh block-reviewer-repo-mutation.sh block-reviewer-ci-wait.sh block-git-add-all.sh block-main-push.sh validate-branch-name.sh pre-push-gate.sh block-agent-routing-drift.sh check-secrets.sh block-onboarding-in-git.sh verify-commit-refs.sh validate-commit-format.sh require-agdr-for-arch-changes.sh warn-bootstrap-scope.sh suggest-ticket-template.sh validate-issue-structure.sh block-private-refs-in-public-repos.sh validate-pr-create.sh require-agdr-for-arch-pr.sh nudge-control-adversarial-test.sh block-unreviewed-merge.sh require-design-review-for-ui.sh block-merge-on-red-ci.sh require-architecture-review.sh detect-role-trigger.sh'
+scripts='block-ambient-tracker-repo.sh block-privileged-escalation.sh require-skill-for-issue-create.sh require-orbit-slice-for-ticket.sh require-migration-ticket.sh require-active-ticket.sh warn-review-marker-write.sh warn-isolated-build-risk.sh block-reviewer-repo-mutation.sh block-reviewer-ci-wait.sh block-forged-menu-approval.sh block-git-add-all.sh block-main-push.sh validate-branch-name.sh pre-push-gate.sh block-agent-routing-drift.sh check-secrets.sh block-onboarding-in-git.sh verify-commit-refs.sh validate-commit-format.sh require-agdr-for-arch-changes.sh warn-bootstrap-scope.sh suggest-ticket-template.sh validate-issue-structure.sh block-private-refs-in-public-repos.sh validate-pr-create.sh require-agdr-for-arch-pr.sh nudge-control-adversarial-test.sh block-unreviewed-merge.sh require-design-review-for-ui.sh block-merge-on-red-ci.sh require-architecture-review.sh detect-role-trigger.sh'
 for script in $scripts; do
   cat > "$TMP/hooks/$script" <<'EOF'
 #!/usr/bin/env bash
@@ -54,6 +54,43 @@ run() {
   printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$command" \
     | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh"
 }
+
+payload=$(jq -nc --arg c './.claude/hooks/record-menu-approval.sh' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+payload=$(jq -nc --arg c 'bash ".claude/hooks/record-menu-approval.sh"' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+payload=$(jq -nc --arg c 'sh '"'"'.claude/hooks/record-menu-approval.sh'"'"'' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+payload=$(jq -nc --arg c 'source .claude/hooks/_lib-menu-approval.sh && menu_approval_write_record x y z' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+payload=$(jq -nc --arg c '. ".claude/hooks/_lib-menu-approval.sh"' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+payload=$(jq -nc --arg c 'printf fake-json | .claude/hooks/record-menu-approval.sh' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+payload=$(jq -nc --arg c 'exec /some/path/record-menu-approval.sh' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+payload=$(jq -nc --arg c 'env bash /some/path/record-menu-approval.sh' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+payload=$(jq -nc --arg c 'menu_approval_write_record x y z' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
 
 run true
 grep -qx 'block-ambient-tracker-repo.sh' "$TMP/log"

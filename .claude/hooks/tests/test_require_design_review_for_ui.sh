@@ -645,6 +645,45 @@ for mode in default posix; do
 done
 
 echo ""
+echo "B) UI PR + menu record at head -> ALLOW"
+sb=$(make_sandbox)
+install_mock_gh "$sb" '"src/components/Button.tsx"' "$SHA"
+cat > "$(review_marker_path "o/r" 77 design "$sb")" <<EOF
+sha=${SHA}
+approved_by=user
+skill_version=3
+approval_channel=menu
+approved_at=2026-10-12T14:00:00Z
+approval_summary="Approve design review"
+EOF
+code=$(run_gate "$sb" "gh pr merge 77 --repo o/r --squash")
+assert_eq "menu record at head allows" "0" "$code"
+for channel in 'approval_channel="menu"' "approval_channel='menu'"; do
+  marker=$(review_marker_path "o/r" 77 design "$sb")
+  sed "s/^approval_channel=.*/$channel/" "$marker" > "$sb/quoted-marker"
+  cp "$sb/quoted-marker" "$marker"
+  code=$(run_gate "$sb" "gh pr merge 77 --repo o/r --squash")
+  assert_eq "quoted channel rejects" "2" "$code"
+done
+rm -rf "$sb"
+
+echo ""
+echo "B) UI PR + menu record at another SHA -> BLOCK"
+sb=$(make_sandbox)
+install_mock_gh "$sb" '"src/components/Button.tsx"' "$SHA"
+cat > "$(review_marker_path "o/r" 77 design "$sb")" <<EOF
+sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+approved_by=user
+skill_version=3
+approval_channel=menu
+approved_at=2026-10-12T14:00:00Z
+approval_summary="Approve design review"
+EOF
+code=$(run_gate "$sb" "gh pr merge 77 --repo o/r --squash")
+assert_eq "menu record at other sha blocks" "2" "$code"
+rm -rf "$sb"
+
+echo ""
 echo "==================================="
 echo "  PASS: $PASS   FAIL: $FAIL"
 echo "==================================="

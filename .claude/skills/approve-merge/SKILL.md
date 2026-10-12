@@ -18,6 +18,10 @@ Rationale: read docs/skills/approve-merge-rationale.md for gate history and AgDR
 Invoke only on explicit user approval for this PR. A plan-level "go" is not merge approval.
 Stop and ask when the PR or intent is unclear. Only the human can invoke this skill (#1042).
 
+## Menu path
+
+The operator can also approve from one `AskUserQuestion` menu. Ask exactly `Approve and merge <owner>/<repo>#<N> at <40-hex-sha>?` with options `Approve and merge` and `Not yet` only. A hook writes the record; never write it yourself. See AgDR-0234.
+
 ## Process
 
 ### 0. Resolve the configured approver display title (SOFT, prose-only)

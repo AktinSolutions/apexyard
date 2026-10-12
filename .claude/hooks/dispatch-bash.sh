@@ -128,6 +128,12 @@ run_cost_guard_hook() {
   run_hook "$1"
 }
 
+# Text-match backstop for direct calls to the menu record writers (AgDR-0104).
+if printf '%s' "$COMMAND" | grep -qE 'record-menu-approval|_lib-menu-approval|menu_approval_write_record'; then
+  echo "BLOCKED: model Bash calls must not invoke menu approval writers." >&2
+  exit 2
+fi
+
 # APEXYARD_DISPATCH_GATE: Bash|*|block-ambient-tracker-repo.sh
 # APEXYARD_DISPATCH_GATE: Bash|*|block-privileged-escalation.sh
 # APEXYARD_DISPATCH_GATE: Bash|*|require-skill-for-issue-create.sh
@@ -138,6 +144,7 @@ run_cost_guard_hook() {
 # APEXYARD_DISPATCH_GATE: Bash|*|warn-isolated-build-risk.sh
 # APEXYARD_DISPATCH_GATE: Bash|*|block-reviewer-repo-mutation.sh
 # APEXYARD_DISPATCH_GATE: Bash|*|block-reviewer-ci-wait.sh
+# APEXYARD_DISPATCH_GATE: Bash|*|block-forged-menu-approval.sh
 # APEXYARD_DISPATCH_GATE: Bash|git add *|block-git-add-all.sh
 # APEXYARD_DISPATCH_GATE: Bash|git push *|block-main-push.sh
 # APEXYARD_DISPATCH_GATE: Bash|git push *|validate-branch-name.sh
@@ -195,10 +202,14 @@ for script in \
   warn-review-marker-write.sh \
   warn-isolated-build-risk.sh \
   block-reviewer-repo-mutation.sh \
-  block-reviewer-ci-wait.sh; do
+  block-reviewer-ci-wait.sh \
+  block-forged-menu-approval.sh; do
   case "$script" in
     # Ticket-first fails closed (me2resh/apexyard#1623).
     require-active-ticket.sh) run_fail_closed_hook "$script" ;;
+    # Menu-record forgery guard fails closed too (AgDR-0234). A crash must
+    # not let a Bash write of approval_channel=menu through unchecked.
+    block-forged-menu-approval.sh) run_fail_closed_hook "$script" ;;
     # Cost guard: fails open on purpose. See run_cost_guard_hook.
     block-reviewer-ci-wait.sh) run_cost_guard_hook "$script" ;;
     *) run_hook "$script" ;;
