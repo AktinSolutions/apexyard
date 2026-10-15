@@ -44,7 +44,7 @@ FAILED_CASES=""
 FIXED_SHA="abcdef1234567890abcdef1234567890abcdef12"
 WRONG_SHA="0000000000000000000000000000000000000000"
 
-make_sandbox() {
+make_sandbox_template() {
   local sb
   sb=$(mktemp -d)
   # Sandbox blocks creating a path named ".git". Use an explicit gitdir.
@@ -68,8 +68,10 @@ make_sandbox() {
   mkdir -p "$sb/.claude/hooks" "$sb/.claude/session/reviews" "$sb/bin"
   cp "$HOOK_SRC"    "$sb/.claude/hooks/block-unreviewed-merge.sh"
   cp "$LIB_PR"      "$sb/.claude/hooks/_lib-extract-pr.sh"
+  cp "$(dirname "$LIB_PR")/_lib-awk-fallback.sh" "$sb/.claude/hooks/_lib-awk-fallback.sh"
   cp "$LIB_MARKERS" "$sb/.claude/hooks/_lib-review-markers.sh"
   cp "$LIB_BEHIND"  "$sb/.claude/hooks/_lib-merge-behind.sh"
+  cp "$SRC_ROOT/.claude/hooks/_lib-menu-approval.sh" "$sb/.claude/hooks/_lib-menu-approval.sh"
   chmod +x "$sb/.claude/hooks/block-unreviewed-merge.sh"
   # The hook sources the shared config reader (me2resh/apexyard#957, the
   # configurable human_approver_title key) — mirror the same sandbox setup
@@ -88,27 +90,41 @@ make_sandbox() {
   # `gh pr view <N> --json headRefOid -q '.headRefOid'` (or a similar
   # shape) — return the fixed SHA on stdout, no network involved.
   # Also handles headRefName (sync-PR guard) and headRepository (repo extraction, #485).
-  cat > "$sb/bin/gh" <<EOF
+  printf '%s\n' "$FIXED_SHA" > "$sb/mock-FIXED_SHA"
+  cat > "$sb/bin/gh" <<'EOF'
 #!/bin/bash
+sb=${0%/bin/gh}
+IFS= read -r FIXED_SHA < "$sb/mock-FIXED_SHA"
 # Minimal gh shim for test_block_unreviewed_merge.
-case "\$*" in
+case "$*" in
   *"pr view"*"headRefOid"*)        echo "$FIXED_SHA" ;;
   *"pr view"*"headRefName"*)       echo "feature/GH-99-test" ;;
   *"pr view"*"headRepository"*)    echo "me2resh/apexyard" ;;
   *"pr view"*"--json number"*)      echo "1546" ;;
-  *"pr view"*"mergeStateStatus"*)  echo "\${MOCK_MERGE_STATE:-CLEAN}" ;;
-  *"pr view"*"baseRefName"*)       echo "\${MOCK_BASE_BRANCH:-dev}" ;;
+  *"pr view"*"mergeStateStatus"*)  echo "${MOCK_MERGE_STATE:-CLEAN}" ;;
+  *"pr view"*"baseRefName"*)       echo "${MOCK_BASE_BRANCH:-dev}" ;;
   # #1386: is_pr_behind_base reads behind_by from the compare API, not
-  # mergeStateStatus. \$MOCK_BEHIND_BY lets a case say "the PR IS behind"
-  # independent of whatever \$MOCK_MERGE_STATE says — the exact split #1386
+  # mergeStateStatus. $MOCK_BEHIND_BY lets a case say "the PR IS behind"
+  # independent of whatever $MOCK_MERGE_STATE says — the exact split #1386
   # reported (a behind PR whose mergeStateStatus reads CLEAN or BLOCKED).
-  *"api "*"compare/"*)             echo "\${MOCK_BEHIND_BY:-0}" ;;
+  *"api "*"compare/"*)             echo "${MOCK_BEHIND_BY:-0}" ;;
   *) ;;
 esac
 exit 0
 EOF
   chmod +x "$sb/bin/gh"
 
+  echo "$sb"
+}
+
+# Copy a pristine fixture. Each case keeps independent files and Git state.
+FIXTURE_TEMPLATE=$(make_sandbox_template) || exit 1
+trap 'rm -rf "$FIXTURE_TEMPLATE"' EXIT
+
+make_sandbox() {
+  local sb
+  sb=$(mktemp -d) || return 1
+  cp -R "$FIXTURE_TEMPLATE/." "$sb" || return 1
   echo "$sb"
 }
 
@@ -230,6 +246,52 @@ write_rex_marker "$sb" 200
 write_ceo_marker_structured "$sb" 200
 run_case "valid rex + valid v2 ceo → allows" 0 "" "$sb" 200
 
+# 1b. Typed v2 path stays valid. A menu record at the same head also allows.
+# The record is written by record-menu-approval.sh, not by hand.
+write_menu_via_hook() {
+  local sb="$1" pr="$2" sha="$3" repo="${4:-$TEST_REPO}"
+  local q payload
+  q="Approve and merge ${repo}#${pr} at ${sha}?"
+  payload=$(jq -nc --arg q "$q" '{
+    tool_name:"AskUserQuestion",
+    tool_input:{questions:[{question:$q}]},
+    tool_response:{answers:{($q):"Approve and merge"}}
+  }')
+  ( cd "$sb" && bash "$SRC_ROOT/.claude/hooks/record-menu-approval.sh" >/dev/null <<< "$payload" )
+}
+sb=$(make_sandbox)
+write_rex_marker "$sb" 1391
+write_menu_via_hook "$sb" 1391 "$FIXED_SHA"
+run_case "hook-written menu record at head -> allows" 0 "" "$sb" 1391
+for channel in 'approval_channel="menu"' "approval_channel='menu'"; do
+  sb=$(make_sandbox)
+  write_rex_marker "$sb" 1391
+  write_menu_via_hook "$sb" 1391 "$FIXED_SHA"
+  marker=$(review_marker_path "me2resh/apexyard" 1391 ceo "$sb")
+  sed "s/^approval_channel=.*/$channel/" "$marker" > "$sb/quoted-marker"
+  cp "$sb/quoted-marker" "$marker"
+  run_case "quoted menu channel -> blocks" 2 "marker has approval_channel" "$sb" 1391
+done
+
+
+sb=$(make_sandbox)
+write_rex_marker "$sb" 1392
+write_menu_via_hook "$sb" 1392 "$WRONG_SHA"
+run_case "hook-written menu record at other sha -> blocks" 2 "CEO approved commit" "$sb" 1392
+
+sb=$(make_sandbox)
+write_rex_marker "$sb" 1393
+ceo_path=$(review_marker_path "$TEST_REPO" 1393 ceo "$sb")
+cat > "$ceo_path" <<EOF
+sha=${FIXED_SHA}
+approved_by=user
+skill_version=2
+approval_channel=menu
+approved_at=2026-10-12T14:00:00Z
+approval_summary="Approve and merge"
+EOF
+run_case "menu channel with skill_version=2 -> blocks" 2 "menu approval record is invalid" "$sb" 1393
+
 # 2. Missing Rex → blocks
 sb=$(make_sandbox)
 write_ceo_marker_structured "$sb" 201
@@ -289,6 +351,17 @@ sb=$(make_sandbox)
 write_rex_marker "$sb" 208 "$WRONG_SHA"
 write_ceo_marker_structured "$sb" 208
 run_case "rex sha mismatch → blocks" 2 "Code-reviewer approved commit" "$sb" 208
+
+# 9b. me2resh/apexyard#1649 (C1): per-review active-reviewer markers never
+# loosen the merge gate. A Rex approval for a stale head commit still blocks
+# while two active-reviewer markers exist. The gate hook is unchanged.
+sb=$(make_sandbox)
+write_rex_marker "$sb" 218 "$WRONG_SHA"
+write_ceo_marker_structured "$sb" 218
+mkdir -p "$sb/.claude/session/active-reviewers/sess-A"
+printf '%s\n' 'me2resh/apexyard#218:rex' > "$sb/.claude/session/active-reviewers/sess-A/me2resh__apexyard__218-rex"
+printf '%s\n' 'me2resh/apexyard#219:security' > "$sb/.claude/session/active-reviewers/sess-A/me2resh__apexyard__219-security"
+run_case "stale-head rex marker still blocks with per-review markers active" 2 "Code-reviewer approved commit" "$sb" 218
 
 # 10. Non-merge command (e.g. gh pr view) → no-op exit 0
 sb=$(make_sandbox)
@@ -386,6 +459,13 @@ run_case_custom_cmd() {
   echo "PASS [$label]"
   PASS=$((PASS+1))
 }
+
+# #1587: only the API target has approvals. Raw 0x1c must remain opaque.
+sb=$(make_sandbox)
+write_rex_marker "$sb" 7 "$FIXED_SHA"
+write_ceo_marker_structured "$sb" 7 "$FIXED_SHA"
+run_case_custom_cmd "1587 split-line qw with raw sentinel blocks" 2 "" "$sb" \
+  $'gh api repos/me2resh/apexyard/pulls/7/merge -X PUT; perl -e \'system qw(gh\npr merge 5)\'; # \034'
 
 # B1: the branch PR is fully approved. An argv merge targets another PR, so
 # using the branch PR's approvals would authorize the wrong merge.
@@ -566,6 +646,20 @@ EOF
 gh pr merge 42 --repo me2resh/apexyard --squash"
 run_case_custom_cmd "compound-valid-inline-marker" 0 "" "$sb" "$cmd"
 
+# A menu record inside the merge command is not the hook. Block it.
+sb=$(make_sandbox)
+write_rex_marker "$sb" 42
+cmd="cat > $sb/.claude/session/reviews/42-ceo.approved <<EOF
+sha=${FIXED_SHA}
+approved_by=user
+skill_version=3
+approval_channel=menu
+approved_at=2026-10-12T14:00:00Z
+approval_summary=\"Approve and merge\"
+EOF
+gh pr merge 42 --repo me2resh/apexyard --squash"
+run_case_custom_cmd "compound-inline-menu-record" 2 "menu approval cannot be written" "$sb" "$cmd"
+
 # Case: compound command with WRONG SHA in inline marker → should BLOCK
 sb=$(make_sandbox)
 write_rex_marker "$sb" 42
@@ -609,9 +703,14 @@ make_sandbox_with_sync_branch() {
   branch_name="${1:-sync/main-to-dev-after-v2.3.0}"
   sb=$(make_sandbox)
   # Rewrite the gh shim to handle headRefOid, headRefName, and headRepository.
-  cat > "$sb/bin/gh" <<EOF
+  printf '%s\n' "$FIXED_SHA" > "$sb/mock-FIXED_SHA"
+  printf '%s\n' "$branch_name" > "$sb/mock-branch_name"
+  cat > "$sb/bin/gh" <<'EOF'
 #!/bin/bash
-case "\$*" in
+sb=${0%/bin/gh}
+IFS= read -r FIXED_SHA < "$sb/mock-FIXED_SHA"
+IFS= read -r branch_name < "$sb/mock-branch_name"
+case "$*" in
   *"pr view"*"headRefOid"*)     echo "$FIXED_SHA" ;;
   *"pr view"*"headRefName"*)    echo "$branch_name" ;;
   *"pr view"*"headRepository"*) echo "me2resh/apexyard" ;;
@@ -626,9 +725,12 @@ EOF
 make_sandbox_non_sync() {
   local sb
   sb=$(make_sandbox)
-  cat > "$sb/bin/gh" <<EOF
+  printf '%s\n' "$FIXED_SHA" > "$sb/mock-FIXED_SHA"
+  cat > "$sb/bin/gh" <<'EOF'
 #!/bin/bash
-case "\$*" in
+sb=${0%/bin/gh}
+IFS= read -r FIXED_SHA < "$sb/mock-FIXED_SHA"
+case "$*" in
   *"pr view"*"headRefOid"*)     echo "$FIXED_SHA" ;;
   *"pr view"*"headRefName"*)    echo "feature/GH-99-something" ;;
   *"pr view"*"headRepository"*) echo "me2resh/apexyard" ;;
@@ -766,9 +868,14 @@ make_sandbox_for_repo() {
   local repo="${1:-me2resh/apexyard}"
   local sb
   sb=$(make_sandbox)
-  cat > "$sb/bin/gh" <<EOF
+  printf '%s\n' "$FIXED_SHA" > "$sb/mock-FIXED_SHA"
+  printf '%s\n' "$repo" > "$sb/mock-repo"
+  cat > "$sb/bin/gh" <<'EOF'
 #!/bin/bash
-case "\$*" in
+sb=${0%/bin/gh}
+IFS= read -r FIXED_SHA < "$sb/mock-FIXED_SHA"
+IFS= read -r repo < "$sb/mock-repo"
+case "$*" in
   *"pr view"*"headRefOid"*)     echo "$FIXED_SHA" ;;
   *"pr view"*"headRefName"*)    echo "feature/test" ;;
   *"pr view"*"headRepository"*) echo "$repo" ;;
@@ -1500,39 +1607,44 @@ write_gh_mock_head() {
   # forge commit-lookup / branches-tip calls rex_approval_carries_over
   # makes all reflect real SHAs built in the sandbox's own git history.
   local sb="$1" head_sha="$2" base_branch="${3:-dev}"
-  cat > "$sb/bin/gh" <<EOF
+  printf '%s\n' "$head_sha" > "$sb/mock-head_sha"
+  printf '%s\n' "$base_branch" > "$sb/mock-base_branch"
+  cat > "$sb/bin/gh" <<'EOF'
 #!/bin/bash
-case "\$*" in
+sb=${0%/bin/gh}
+IFS= read -r head_sha < "$sb/mock-head_sha"
+IFS= read -r base_branch < "$sb/mock-base_branch"
+case "$*" in
   *"pr view"*"headRefOid"*)        echo "$head_sha" ;;
   *"pr view"*"headRefName"*)       echo "feature/GH-99-test" ;;
   *"pr view"*"headRepository"*)    echo "acme-org/example" ;;
-  *"pr view"*"mergeStateStatus"*)  echo "\${MOCK_MERGE_STATE:-CLEAN}" ;;
+  *"pr view"*"mergeStateStatus"*)  echo "${MOCK_MERGE_STATE:-CLEAN}" ;;
   *"pr view"*"baseRefName"*)       echo "$base_branch" ;;
-  *"api "*"compare/"*)             echo "\${MOCK_BEHIND_BY:-0}" ;;
+  *"api "*"compare/"*)             echo "${MOCK_BEHIND_BY:-0}" ;;
   *"/branches/"*)
-    ref=\$(printf '%s' "\$*" | sed -E 's#.*branches/([^ ]+).*#\1#')
-    ref=\$(printf '%s' "\$ref" | sed 's/%2[Ff]/\//g')
-    sha=\$(git rev-parse "refs/heads/\$ref" 2>/dev/null)
-    [ -z "\$sha" ] && exit 1
-    echo "\$sha"
+    ref=$(printf '%s' "$*" | sed -E 's#.*branches/([^ ]+).*#\1#')
+    ref=$(printf '%s' "$ref" | sed 's/%2[Ff]/\//g')
+    sha=$(git rev-parse "refs/heads/$ref" 2>/dev/null)
+    [ -z "$sha" ] && exit 1
+    echo "$sha"
     ;;
   *"commits/"*)
-    target=\$(printf '%s' "\$*" | sed -E 's#.*commits/([^ ]+).*#\1#')
-    if ! git cat-file -e "\${target}^{commit}" 2>/dev/null; then
+    target=$(printf '%s' "$*" | sed -E 's#.*commits/([^ ]+).*#\1#')
+    if ! git cat-file -e "${target}^{commit}" 2>/dev/null; then
       exit 1
     fi
-    parents=\$(git show -s --format='%P' "\$target")
-    tree=\$(git rev-parse "\${target}^{tree}")
-    p0=\$(printf '%s' "\$parents" | awk '{print \$1}')
-    p1=\$(printf '%s' "\$parents" | awk '{print \$2}')
-    if [ -n "\$p1" ]; then
-      pj="[{\"sha\":\"\$p0\"},{\"sha\":\"\$p1\"}]"
-    elif [ -n "\$p0" ]; then
-      pj="[{\"sha\":\"\$p0\"}]"
+    parents=$(git show -s --format='%P' "$target")
+    tree=$(git rev-parse "${target}^{tree}")
+    p0=$(printf '%s' "$parents" | awk '{print $1}')
+    p1=$(printf '%s' "$parents" | awk '{print $2}')
+    if [ -n "$p1" ]; then
+      pj="[{\"sha\":\"$p0\"},{\"sha\":\"$p1\"}]"
+    elif [ -n "$p0" ]; then
+      pj="[{\"sha\":\"$p0\"}]"
     else
       pj="[]"
     fi
-    printf '{"sha":"%s","parents":%s,"commit":{"tree":{"sha":"%s"}}}\n' "\$target" "\$pj" "\$tree"
+    printf '{"sha":"%s","parents":%s,"commit":{"tree":{"sha":"%s"}}}\n' "$target" "$pj" "$tree"
     ;;
   *) ;;
 esac

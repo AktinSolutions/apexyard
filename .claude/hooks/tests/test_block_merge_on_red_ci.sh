@@ -83,17 +83,27 @@ make_sandbox() {
   mkdir -p "$sb/.claude/hooks" "$sb/bin"
   cp "$HOOK_SRC" "$sb/.claude/hooks/block-merge-on-red-ci.sh"
   cp "$LIB_PR"   "$sb/.claude/hooks/_lib-extract-pr.sh"
+  cp "$(dirname "$LIB_PR")/_lib-awk-fallback.sh" "$sb/.claude/hooks/_lib-awk-fallback.sh"
   chmod +x "$sb/.claude/hooks/block-merge-on-red-ci.sh"
 
-  cat > "$sb/bin/gh" <<EOF
+  printf '%s\n' "$gh_mode" > "$sb/mock-gh_mode"
+  printf '%s\n' "$nocheck_mode" > "$sb/mock-nocheck_mode"
+  printf '%s\n' "$TEST_REPO" > "$sb/mock-TEST_REPO"
+  printf '%s\n' "$TEST_SHA" > "$sb/mock-TEST_SHA"
+  cat > "$sb/bin/gh" <<'EOF'
 #!/bin/bash
-printf '%s\n' "\$*" >> "$sb/gh-calls"
+sb=${0%/bin/gh}
+IFS= read -r gh_mode < "$sb/mock-gh_mode"
+IFS= read -r nocheck_mode < "$sb/mock-nocheck_mode"
+IFS= read -r TEST_REPO < "$sb/mock-TEST_REPO"
+IFS= read -r TEST_SHA < "$sb/mock-TEST_SHA"
+printf '%s\n' "$*" >> "$sb/gh-calls"
 # The API path is the first repos/ argument. A GHE call puts
 # --hostname <host> before it.
 api_path=""
-for a in "\$@"; do case "\$a" in repos/*) api_path="\$a"; break ;; esac; done
-if [ "\$1" = "api" ]; then echo "\$api_path" >> "$sb/api-calls"; fi
-case "\$*" in
+for a in "$@"; do case "$a" in repos/*) api_path="$a"; break ;; esac; done
+if [ "$1" = "api" ]; then echo "$api_path" >> "$sb/api-calls"; fi
+case "$*" in
   *"pr checks"*)
     case "$gh_mode" in
       green) printf 'build\tpass\t1m\thttps://x\n'; exit 0 ;;
@@ -141,7 +151,7 @@ case "\$*" in
   *"actions/runs"*)
     # The exact head filter is part of the contract. An unfiltered query
     # fails here, so the failure-run cases cannot pass without that filter.
-    case "\$api_path" in
+    case "$api_path" in
       "repos/$TEST_REPO/actions/runs?head_sha=$TEST_SHA&per_page=100") ;;
       *) exit 1 ;;
     esac
@@ -184,7 +194,7 @@ case "\$*" in
     esac
     ;;
   *"pr view"*)
-    if [[ " \$* " == *" --json number "* ]]; then echo "77"; exit 0; fi
+    if [[ " $* " == *" --json number "* ]]; then echo "77"; exit 0; fi
     case "$nocheck_mode" in
       bad_sha) echo "deadbeef" ;;
       *)       echo "$TEST_SHA" ;;
@@ -195,9 +205,12 @@ esac
 EOF
   chmod +x "$sb/bin/gh"
 
-  cat > "$sb/bin/glab" <<EOF
+  printf '%s\n' "$glab_mode" > "$sb/mock-glab_mode"
+  cat > "$sb/bin/glab" <<'EOF'
 #!/bin/bash
-case "\$*" in
+sb=${0%/bin/glab}
+IFS= read -r glab_mode < "$sb/mock-glab_mode"
+case "$*" in
   *"mr view"*)
     case "$glab_mode" in
       success)      echo '{"iid":1,"head_pipeline":{"status":"success"}}' ;;
@@ -248,6 +261,14 @@ run_case() {
   if [ -f "$sb/gh-calls" ]; then
     gh_calls=$(wc -l < "$sb/gh-calls")
   fi
+  case "$label" in
+    '#1588:'*)
+      if ! grep -q "pr checks 42 --repo $TEST_REPO" "$sb/gh-calls"; then
+        echo "FAIL [$label]: forge query did not target $TEST_REPO" >&2
+        FAIL=$((FAIL+1)); rm -rf "$sb"; return
+      fi
+      ;;
+  esac
   rm -rf "$sb"
 
   if [ "$got_rc" != "$want_rc" ]; then
@@ -279,6 +300,18 @@ run_case() {
   echo "PASS [$label]"
   PASS=$((PASS+1))
 }
+
+# #1588: each spelling and every ordered pair with identical values allow.
+for repo_a in '-R ' '--repo ' '--repo=' '-R='; do
+  sb=$(make_sandbox green "")
+  run_case "#1588: single $repo_a" 0 "" "$sb" \
+    "gh pr merge 42 ${repo_a}$TEST_REPO --squash"
+  for repo_b in '-R ' '--repo ' '--repo=' '-R='; do
+    sb=$(make_sandbox green "")
+    run_case "#1588: same value $repo_a / $repo_b" 0 "" "$sb" \
+      "gh pr merge 42 ${repo_a}$TEST_REPO ${repo_b}$TEST_REPO --squash"
+  done
+done
 
 # B1: the current branch PR has green checks, but argv targets PR 5 or a
 # runtime value. Neither may inherit the branch PR's green result.
@@ -494,12 +527,15 @@ run_case "#1559: complete page with missing event keeps unverified note" 0 "CI s
 # visible failing run into a silent allow. Only that filter is intercepted.
 sb=$(make_sandbox green "" failure)
 real_jq=$(command -v jq)
-cat > "$sb/bin/jq" <<EOF
+printf '%s\n' "$real_jq" > "$sb/mock-real_jq"
+cat > "$sb/bin/jq" <<'EOF'
 #!/bin/bash
-case "\$*" in
+sb=${0%/bin/jq}
+IFS= read -r real_jq < "$sb/mock-real_jq"
+case "$*" in
   *'group_by([.workflow_id, .event])'*) exit 3 ;;
 esac
-exec "$real_jq" "\$@"
+exec "$real_jq" "$@"
 EOF
 chmod +x "$sb/bin/jq"
 run_case "#1559 B-3: jq run selection failure blocks" 2 "cannot evaluate the head runs" "$sb" \
@@ -699,6 +735,7 @@ make_sandbox_wrapper() {
   mkdir -p "$sb/.claude/hooks" "$sb/bin"
   cp "$HOOK_SRC"      "$sb/.claude/hooks/block-merge-on-red-ci.sh"
   cp "$LIB_PR"        "$sb/.claude/hooks/_lib-extract-pr.sh"
+  cp "$(dirname "$LIB_PR")/_lib-awk-fallback.sh" "$sb/.claude/hooks/_lib-awk-fallback.sh"
   cp "$TRACKER_LIB"   "$sb/.claude/hooks/_lib-tracker.sh"
   cp "$CONFIG_LIB"    "$sb/.claude/hooks/_lib-read-config.sh"
   cp "$PORTFOLIO_LIB" "$sb/.claude/hooks/_lib-portfolio-paths.sh"
@@ -716,9 +753,12 @@ projects:
     tracker:
       kind: glab
 YAML
-  cat > "$sb/bin/glab" <<EOF
+  printf '%s\n' "$glab_mode" > "$sb/mock-glab_mode"
+  cat > "$sb/bin/glab" <<'EOF'
 #!/bin/bash
-case "\$*" in
+sb=${0%/bin/glab}
+IFS= read -r glab_mode < "$sb/mock-glab_mode"
+case "$*" in
   *"mr view"*)
     case "$glab_mode" in
       success) echo '{"iid":1,"head_pipeline":{"status":"success"}}' ;;
@@ -813,6 +853,7 @@ make_sandbox_wrapper_gh_no_yaml_tools() {
   mkdir -p "$sb/.claude/hooks" "$sb/bin"
   cp "$HOOK_SRC"      "$sb/.claude/hooks/block-merge-on-red-ci.sh"
   cp "$LIB_PR"        "$sb/.claude/hooks/_lib-extract-pr.sh"
+  cp "$(dirname "$LIB_PR")/_lib-awk-fallback.sh" "$sb/.claude/hooks/_lib-awk-fallback.sh"
   cp "$TRACKER_LIB"   "$sb/.claude/hooks/_lib-tracker.sh"
   cp "$CONFIG_LIB"    "$sb/.claude/hooks/_lib-read-config.sh"
   cp "$PORTFOLIO_LIB" "$sb/.claude/hooks/_lib-portfolio-paths.sh"
@@ -833,9 +874,14 @@ projects:
     tags:
       - customer-facing
 YAML
-  cat > "$sb/bin/gh" <<EOF
+  printf '%s\n' "$gh_mode" > "$sb/mock-gh_mode"
+  printf '%s\n' "$TEST_SHA" > "$sb/mock-TEST_SHA"
+  cat > "$sb/bin/gh" <<'EOF'
 #!/bin/bash
-case "\$*" in
+sb=${0%/bin/gh}
+IFS= read -r gh_mode < "$sb/mock-gh_mode"
+IFS= read -r TEST_SHA < "$sb/mock-TEST_SHA"
+case "$*" in
   *"pr checks"*)
     case "$gh_mode" in
       green) printf 'build\tpass\t1m\thttps://x\n'; exit 0 ;;

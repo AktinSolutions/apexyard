@@ -26,11 +26,12 @@ reviewer_entries=$(jq '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hook
 
 mkdir -p "$TMP/hooks"
 cp "$ROOT/dispatch-bash.sh" "$TMP/hooks/dispatch-bash.sh"
+cp "$(dirname "$ROOT/dispatch-bash.sh")/_lib-awk-fallback.sh" "$TMP/hooks/_lib-awk-fallback.sh"
 cp "$ROOT/_lib-extract-pr.sh" "$TMP/hooks/_lib-extract-pr.sh"
 cp "$ROOT/_lib-command-scrub.sh" "$TMP/hooks/_lib-command-scrub.sh"
 chmod +x "$TMP/hooks/dispatch-bash.sh"
 
-scripts='block-ambient-tracker-repo.sh block-privileged-escalation.sh require-skill-for-issue-create.sh require-orbit-slice-for-ticket.sh require-migration-ticket.sh require-active-ticket.sh warn-review-marker-write.sh warn-isolated-build-risk.sh block-reviewer-repo-mutation.sh block-git-add-all.sh block-main-push.sh validate-branch-name.sh pre-push-gate.sh block-agent-routing-drift.sh check-secrets.sh block-onboarding-in-git.sh verify-commit-refs.sh validate-commit-format.sh require-agdr-for-arch-changes.sh warn-bootstrap-scope.sh suggest-ticket-template.sh validate-issue-structure.sh block-private-refs-in-public-repos.sh validate-pr-create.sh require-agdr-for-arch-pr.sh nudge-control-adversarial-test.sh block-unreviewed-merge.sh require-design-review-for-ui.sh block-merge-on-red-ci.sh require-architecture-review.sh detect-role-trigger.sh'
+scripts='block-ambient-tracker-repo.sh block-privileged-escalation.sh require-skill-for-issue-create.sh require-orbit-slice-for-ticket.sh require-migration-ticket.sh require-active-ticket.sh warn-review-marker-write.sh warn-isolated-build-risk.sh block-reviewer-repo-mutation.sh block-reviewer-ci-wait.sh block-forged-menu-approval.sh block-git-add-all.sh block-main-push.sh validate-branch-name.sh pre-push-gate.sh block-agent-routing-drift.sh check-secrets.sh block-onboarding-in-git.sh verify-commit-refs.sh validate-commit-format.sh require-agdr-for-arch-changes.sh warn-bootstrap-scope.sh suggest-ticket-template.sh validate-issue-structure.sh block-private-refs-in-public-repos.sh validate-pr-create.sh require-agdr-for-arch-pr.sh nudge-control-adversarial-test.sh block-unreviewed-merge.sh require-design-review-for-ui.sh block-merge-on-red-ci.sh require-architecture-review.sh detect-role-trigger.sh'
 for script in $scripts; do
   cat > "$TMP/hooks/$script" <<'EOF'
 #!/usr/bin/env bash
@@ -53,6 +54,43 @@ run() {
   printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$command" \
     | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh"
 }
+
+payload=$(jq -nc --arg c './.claude/hooks/record-menu-approval.sh' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+payload=$(jq -nc --arg c 'bash ".claude/hooks/record-menu-approval.sh"' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+payload=$(jq -nc --arg c 'sh '"'"'.claude/hooks/record-menu-approval.sh'"'"'' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+payload=$(jq -nc --arg c 'source .claude/hooks/_lib-menu-approval.sh && menu_approval_write_record x y z' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+payload=$(jq -nc --arg c '. ".claude/hooks/_lib-menu-approval.sh"' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+payload=$(jq -nc --arg c 'printf fake-json | .claude/hooks/record-menu-approval.sh' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+payload=$(jq -nc --arg c 'exec /some/path/record-menu-approval.sh' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+payload=$(jq -nc --arg c 'env bash /some/path/record-menu-approval.sh' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+payload=$(jq -nc --arg c 'menu_approval_write_record x y z' '{tool_name:"Bash", tool_input:{command:$c}}')
+rc=0
+printf '%s' "$payload" | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
 
 run true
 grep -qx 'block-ambient-tracker-repo.sh' "$TMP/log"
@@ -187,6 +225,111 @@ done
 cp "$TMP/hooks/block-unreviewed-merge.sh.orig" "$TMP/hooks/block-unreviewed-merge.sh"
 rm -f "$TMP/hooks/block-unreviewed-merge.sh.orig"
 
+# me2resh/apexyard#1623: ticket-first (require-active-ticket.sh) fails CLOSED
+# inside the dispatcher, through the same path as the merge gates. A crash
+# must block (exit 2 plus a BLOCKED line), where run_hook used to WARN and
+# let the Bash call through. block-reviewer-ci-wait.sh is the explicit
+# fail-OPEN exception: it is a cost guard (me2resh/apexyard#1625), so the
+# same crashes must warn and let the call through, and its own exit 2 must
+# still block. Each scenario replaces one stub and restores it afterwards.
+write_crash_stub() {
+  # $1 = stub path, $2 = scenario
+  case "$2" in
+    exit-1)
+      printf '#!/usr/bin/env bash\ncat >/dev/null\nexit 1\n' > "$1" ;;
+    exit-127)
+      printf '#!/usr/bin/env bash\ncat >/dev/null\nthis-command-does-not-exist-anywhere\n' > "$1" ;;
+    syntax-error)
+      printf '#!/usr/bin/env bash\ncat >/dev/null\nif [ 1 -eq 1\n' > "$1" ;;
+    killed-by-signal)
+      printf '#!/usr/bin/env bash\ncat >/dev/null\nkill -TERM $$\n' > "$1" ;;
+  esac
+  chmod +x "$1"
+}
+
+for scenario in exit-1 exit-127 syntax-error killed-by-signal; do
+  # Ticket-first crash -> BLOCKED, exit 2. Use a plain command so no other
+  # route runs.
+  cp "$TMP/hooks/require-active-ticket.sh" "$TMP/hooks/require-active-ticket.sh.orig"
+  write_crash_stub "$TMP/hooks/require-active-ticket.sh" "$scenario"
+  : > "$TMP/log"
+  set +e
+  printf '{"tool_name":"Bash","tool_input":{"command":"echo hello"}}' \
+    | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>"$TMP/stderr"
+  rc=$?
+  set -e
+  cp "$TMP/hooks/require-active-ticket.sh.orig" "$TMP/hooks/require-active-ticket.sh"
+  rm -f "$TMP/hooks/require-active-ticket.sh.orig"
+  if [ "$rc" -ne 2 ]; then
+    echo "FAIL: require-active-ticket.sh ($scenario) did not block (rc=$rc, want 2)" >&2
+    cat "$TMP/stderr" >&2
+    exit 1
+  fi
+  # A bash syntax error already exits 2 by itself, with no BLOCKED line.
+  if [ "$scenario" != syntax-error ] && ! grep -q 'BLOCKED: require-active-ticket.sh' "$TMP/stderr"; then
+    echo "FAIL: require-active-ticket.sh ($scenario) blocked without a BLOCKED line naming it" >&2
+    cat "$TMP/stderr" >&2
+    exit 1
+  fi
+
+  # Cost guard crash -> WARN, exit 0, and the remaining gates still run.
+  # Bash ends a script with a syntax error at exit 2, the blocking code. The
+  # dispatcher cannot tell that from a deliberate block, so it is not a
+  # fail-open scenario.
+  if [ "$scenario" = syntax-error ]; then
+    continue
+  fi
+  cp "$TMP/hooks/block-reviewer-ci-wait.sh" "$TMP/hooks/block-reviewer-ci-wait.sh.orig"
+  write_crash_stub "$TMP/hooks/block-reviewer-ci-wait.sh" "$scenario"
+  : > "$TMP/log"
+  set +e
+  printf '{"tool_name":"Bash","tool_input":{"command":"git add foo"}}' \
+    | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>"$TMP/stderr"
+  rc=$?
+  set -e
+  cp "$TMP/hooks/block-reviewer-ci-wait.sh.orig" "$TMP/hooks/block-reviewer-ci-wait.sh"
+  rm -f "$TMP/hooks/block-reviewer-ci-wait.sh.orig"
+  if [ "$rc" -ne 0 ]; then
+    echo "FAIL: block-reviewer-ci-wait.sh ($scenario) must fail OPEN (rc=$rc, want 0)" >&2
+    cat "$TMP/stderr" >&2
+    exit 1
+  fi
+  if ! grep -q 'WARN: block-reviewer-ci-wait.sh exited' "$TMP/stderr"; then
+    echo "FAIL: block-reviewer-ci-wait.sh ($scenario) crashed without a WARN line" >&2
+    cat "$TMP/stderr" >&2
+    exit 1
+  fi
+  if grep -q 'BLOCKED' "$TMP/stderr"; then
+    echo "FAIL: block-reviewer-ci-wait.sh ($scenario) must not print BLOCKED" >&2
+    cat "$TMP/stderr" >&2
+    exit 1
+  fi
+  grep -qx 'block-git-add-all.sh' "$TMP/log"
+done
+
+# A deliberate exit 2 still blocks from both hooks.
+for gate in require-active-ticket.sh block-reviewer-ci-wait.sh; do
+  cp "$TMP/hooks/$gate" "$TMP/hooks/$gate.orig"
+  printf '#!/usr/bin/env bash\ncat >/dev/null\nexit 2\n' > "$TMP/hooks/$gate"
+  chmod +x "$TMP/hooks/$gate"
+  set +e
+  printf '{"tool_name":"Bash","tool_input":{"command":"echo hello"}}' \
+    | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh" >/dev/null 2>&1
+  rc=$?
+  set -e
+  cp "$TMP/hooks/$gate.orig" "$TMP/hooks/$gate"
+  rm -f "$TMP/hooks/$gate.orig"
+  if [ "$rc" -ne 2 ]; then
+    echo "FAIL: $gate exit 2 did not block (rc=$rc, want 2)" >&2
+    exit 1
+  fi
+done
+
+# A passing ticket-first gate lets the call through.
+: > "$TMP/log"
+run 'echo hello'
+grep -qx 'require-active-ticket.sh' "$TMP/log"
+
 for command in \
   'gh pr merge 42' \
   'gh api repos/example/pulls/42' \
@@ -231,49 +374,18 @@ run_json() {
     | DISPATCH_LOG="$TMP/log" "$TMP/hooks/dispatch-bash.sh"
 }
 
-# Capture the first whole-command grep input. A here-string adds one newline,
-# so compare with the old substitution plus that same newline. The wrapper
-# delegates grep itself to the original executable to keep routing unchanged.
-scan_grep="$(command -v grep)"
-cat > "$TMP/bin/grep" <<'EOF'
-#!/usr/bin/env bash
-if [ "${1:-}" = -qE ] && [ -n "${SCAN_CAPTURE:-}" ] && [ ! -e "$SCAN_CAPTURE" ]; then
-  cat > "$SCAN_CAPTURE"
-  exec "$SCAN_GREP" "$@" < "$SCAN_CAPTURE"
-fi
-exec "$SCAN_GREP" "$@"
-EOF
-chmod +x "$TMP/bin/grep"
-
-join_cases=(
-  ''
-  'echo ok'
-  $'a\\\nb'
-  $'a\\\nb\\\nc'
-  $'a\\'
-  $'a\\b'
-  $'a\nb'
-  $'a\\\\\nb'
-  $'a\\\n\nb'
-)
-for command in "${join_cases[@]}"; do
-  # jq extraction in dispatch-bash.sh uses command substitution, which
-  # removes trailing newlines before the join. These cases retain any
-  # plain newline internally so the captured input is unambiguous.
-  old_scan=${command//$'\\\n'/ }
-  rm -f "$TMP/scan-capture"
-  printf '%s\n' "$old_scan" > "$TMP/scan-expected"
-  jq -nc --arg c "$command" '{tool_name:"Bash",tool_input:{command:$c}}' \
-    | DISPATCH_LOG="$TMP/log" SCAN_CAPTURE="$TMP/scan-capture" SCAN_GREP="$scan_grep" \
-      "$TMP/hooks/dispatch-bash.sh"
-  if ! cmp -s "$TMP/scan-expected" "$TMP/scan-capture"; then
-    echo 'FAIL: whole-command join differs from the old substitution' >&2
-    od -An -tx1 "$TMP/scan-expected" >&2
-    od -An -tx1 "$TMP/scan-capture" >&2
-    exit 1
-  fi
+# broad-space retains older routing, even where Bash removes the pair.
+# Prefix routing cannot see these later verbs, so this exercises the join.
+for command in $'echo ok; git\\\npush' $"echo 'git"$'\\\n'$"push'"; do
+  : > "$TMP/log"
+  run_json "$command"
+  [ "$(grep -c '^block-main-push.sh$' "$TMP/log")" -eq 1 ]
 done
-rm -f "$TMP/bin/grep"
+for command in $'echo ok; git\\\ncommit' $'echo # git\\\ncommit'; do
+  : > "$TMP/log"
+  run_json "$command"
+  [ "$(grep -c '^validate-commit-format.sh$' "$TMP/log")" -eq 1 ]
+done
 
 # A failed or unavailable awk must route both gate groups. Construct the
 # subcommand at runtime so this test does not submit one to live hooks.

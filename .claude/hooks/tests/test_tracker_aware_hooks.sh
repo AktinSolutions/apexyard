@@ -75,6 +75,7 @@ YAML
     cp "$TRACKER_LIB"   .claude/hooks/_lib-tracker.sh
     cp "$CONFIG_LIB"    .claude/hooks/_lib-read-config.sh
     cp "$PR_CREATE_HOOK"   .claude/hooks/validate-pr-create.sh
+    cp "$(dirname "$PR_CREATE_HOOK")/_lib-awk-fallback.sh" .claude/hooks/_lib-awk-fallback.sh
     cp "$(dirname "$PR_CREATE_HOOK")/_lib-review-markers.sh" .claude/hooks/
     cp "$COMMIT_REFS_HOOK" .claude/hooks/verify-commit-refs.sh
     cp "$BRANCH_NAME_HOOK" .claude/hooks/validate-branch-name.sh
@@ -103,10 +104,21 @@ YAML
 install_mock() {
   local sb="$1" name="$2" body="$3"
   mkdir -p "$sb/bin"
-  cat > "$sb/bin/$name" <<EOF
+  if [[ "$body" =~ ^exit\ [0-9]+$ ]]; then
+    printf '%s\n' "${body#exit }" > "$sb/mock-$name-exit"
+    cat > "$sb/bin/$name" <<'EOF'
+#!/bin/bash
+sb=${0%/bin/*}
+name=${0##*/}
+IFS= read -r code < "$sb/mock-$name-exit"
+exit "$code"
+EOF
+  else
+    cat > "$sb/bin/$name" <<EOF
 #!/bin/bash
 $body
 EOF
+  fi
   chmod +x "$sb/bin/$name"
 }
 

@@ -18,6 +18,7 @@ mkdir -p "$sb/.claude/hooks" "$sb/workspace"
 cp "$src/.claude/hooks/require-orbit-slice-for-ticket.sh" "$src/.claude/hooks/_lib-read-config.sh" \
   "$src/.claude/hooks/_lib-portfolio-paths.sh" "$src/.claude/hooks/_lib-ops-root.sh" \
   "$src/.claude/hooks/_lib-resolution-cache.sh" "$src/.claude/hooks/_lib-registry-parser.sh" \
+  "$src/.claude/hooks/_lib-flag-value.sh" \
   "$sb/.claude/hooks/"
 cp "$src/.claude/project-config.defaults.json" "$sb/.claude/"
 printf '{}\n' > "$sb/.claude/project-config.json"
@@ -69,6 +70,27 @@ check slice_missing 2 "$(make_cmd Slice 'plain body')"
 check bold 0 "$(make_cmd Task '**ORBIT slice:** `slice-demo-o1`')"
 check missing 2 "$(make_cmd Feature 'ORBIT slice: slice-demo-o9')"
 check nondefault 2 "$(make_cmd Task 'ORBIT slice: slice-demo-o2')"
+git -C "$project" update-ref refs/remotes/origin/dev HEAD
+check dev_only 0 "$(make_cmd Task 'ORBIT slice: slice-demo-o2')"
+check neither_branch 2 "$(make_cmd Task 'ORBIT slice: slice-demo-o9')"
+git -C "$project" update-ref -d refs/remotes/origin/dev
+# A colon selects a tree path on the old code.
+mkdir -p "$project/b/docs/orbit/slices"
+cp "$project/docs/orbit/slices/slice-demo-o2.json" "$project/b/docs/orbit/slices/"
+git -C "$project" add b/docs/orbit/slices/slice-demo-o2.json
+git -C "$project" commit -qm colon-fixture
+git -C "$project" update-ref refs/remotes/origin/a HEAD
+git -C "$project" config apexyard.integrationBranch "a:b"
+check invalid_integration_colon 2 "$(make_cmd Task 'ORBIT slice: slice-demo-o2')"
+git -C "$project" config apexyard.integrationBranch feature/../x
+check invalid_integration_parent 2 "$(make_cmd Task 'ORBIT slice: slice-demo-o2')"
+git -C "$project" update-ref refs/remotes/origin/dev HEAD
+check invalid_integration_dev_fallback 0 "$(make_cmd Task 'ORBIT slice: slice-demo-o2')"
+git -C "$project" config apexyard.integrationBranch release/test
+git -C "$project" update-ref refs/remotes/origin/release/test HEAD
+check valid_integration 0 "$(make_cmd Task 'ORBIT slice: slice-demo-o2')"
+git -C "$project" config --unset apexyard.integrationBranch
+git -C "$project" update-ref -d refs/remotes/origin/dev
 check no_line 2 "$(make_cmd Feature 'plain body')"
 check empty_reason 2 "$(make_cmd Task 'ORBIT slice: none —   ')"
 check none 0 "$(make_cmd Feature 'ORBIT slice: none — urgent repair')"
@@ -76,6 +98,29 @@ if ! grep -q 'urgent repair' "$sb/err"; then echo 'FAIL exception reason log'; f
 check none_ascii 0 "$(make_cmd Feature 'ORBIT slice: none -- urgent repair')"
 check bug 0 "$(make_cmd Bug 'plain body')"
 check spike 0 "$(make_cmd Spike 'plain body')"
+check default_enhancement 0 "$(make_cmd Enhancement 'plain body')"
+printf '{"orbit":{"governed_prefixes":["Feature","Task","Slice","Enhancement"]}}\n' > "$sb/.claude/project-config.json"
+check fork_missing 2 "$(make_cmd Enhancement 'plain body')"
+check fork_valid 0 "$(make_cmd Enhancement 'ORBIT slice: slice-demo-o1')"
+check fork_ungoverned 0 "$(make_cmd Improvement 'plain body')"
+check fork_bug 0 "$(make_cmd Bug 'plain body')"
+check fork_spike 0 "$(make_cmd Spike 'plain body')"
+check fork_mixed_case 2 "$(make_cmd eNhAnCeMeNt 'plain body')"
+check fork_fullwidth 2 "gh issue $verb --repo demo-org/demo --title '［ENHANCEMENT］ Demo' --body 'plain body'"
+check fork_cjk 2 "gh issue $verb --repo demo-org/demo --title '【Enhancement】 Demo' --body 'plain body'"
+for value in '[]' '[""]' 'null' '"unreadable"'; do
+  printf '{"orbit":{"governed_prefixes":%s}}\n' "$value" > "$sb/.claude/project-config.json"
+  for prefix in Feature Task Slice; do
+    check "fallback_${value}_${prefix}" 2 "$(make_cmd "$prefix" 'plain body')"
+  done
+done
+jq 'del(.orbit.governed_prefixes)' "$sb/.claude/project-config.defaults.json" > "$sb/defaults.tmp"
+mv "$sb/defaults.tmp" "$sb/.claude/project-config.defaults.json"
+printf '{}\n' > "$sb/.claude/project-config.json"
+for prefix in Feature Task Slice; do
+  check "fallback_missing_$prefix" 2 "$(make_cmd "$prefix" 'plain body')"
+done
+cp "$src/.claude/project-config.defaults.json" "$sb/.claude/"
 check traversal_parent 2 "$(make_cmd Feature 'ORBIT slice: ../x')"
 check traversal_slash 2 "$(make_cmd Task 'ORBIT slice: a/b')"
 printf 'ORBIT slice: slice-demo-o1\n' > "$body_file"

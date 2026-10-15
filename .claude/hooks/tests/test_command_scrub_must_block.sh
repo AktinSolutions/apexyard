@@ -53,14 +53,14 @@ setup_ticket_sandbox() {
   : > "$dest/onboarding.yaml"
   : > "$dest/apexyard.projects.yaml"
   cp "$CONFIG_DEFAULTS" "$dest/.claude/project-config.defaults.json"
-  for file in require-active-ticket.sh _lib-detect-bash-write.sh \
+  for file in require-active-ticket.sh _lib-awk-fallback.sh _lib-detect-bash-write.sh \
     _lib-command-scrub.sh _lib-mask-quoted.sh _lib-read-config.sh \
     _lib-path-resolve.sh _lib-active-ticket.sh _lib-ticket-path-exemptions.sh \
     _lib-ops-root.sh; do
     [ -f "$hooks_src/$file" ] && cp "$hooks_src/$file" "$dest/.claude/hooks/$file"
   done
   # No active ticket — writes to src/app.ts must block.
-  rm -f "$dest/.claude/session/current-ticket"
+  rm -f "$dest/.git/apexyard-ticket"
   seed_git_repo "$dest"
 }
 
@@ -77,6 +77,7 @@ setup_dispatch_sandbox() {
   rm -rf "$dest"
   mkdir -p "$dest/hooks"
   cp "$hooks_src/dispatch-bash.sh" "$dest/hooks/dispatch-bash.sh"
+  cp "$(dirname "$hooks_src/dispatch-bash.sh")/_lib-awk-fallback.sh" "$dest/hooks/_lib-awk-fallback.sh"
   [ -f "$hooks_src/_lib-extract-pr.sh" ] && cp "$hooks_src/_lib-extract-pr.sh" "$dest/hooks/_lib-extract-pr.sh"
   [ -f "$hooks_src/_lib-command-scrub.sh" ] && cp "$hooks_src/_lib-command-scrub.sh" "$dest/hooks/_lib-command-scrub.sh"
   # _lib-extract-pr.sh sources the tracker library. Copy it so the sandbox
@@ -88,6 +89,7 @@ setup_dispatch_sandbox() {
     require-skill-for-issue-create.sh require-orbit-slice-for-ticket.sh require-migration-ticket.sh \
     require-active-ticket.sh warn-review-marker-write.sh \
     warn-isolated-build-risk.sh block-reviewer-repo-mutation.sh \
+    block-reviewer-ci-wait.sh block-forged-menu-approval.sh \
     block-git-add-all.sh block-main-push.sh validate-branch-name.sh \
     pre-push-gate.sh block-agent-routing-drift.sh check-secrets.sh \
     block-onboarding-in-git.sh verify-commit-refs.sh validate-commit-format.sh \

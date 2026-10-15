@@ -16,43 +16,25 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 
-# Normalize backslash line-continuation sequences so multi-line gh commands
-# parse as a single logical line for all subsequent flag extraction.
-# Replaces every '\<newline>' pair with a single space.
-# Fixes apexyard#743 Bug 2: without normalization, a --repo value split onto
-# its own continuation line could be mis-extracted (the trailing '\' captured
-# instead of the repo slug, yielding garbled TRACKER_REPO like "(hook)").
-# A one-line lookahead joins each backslash-newline pair in one linear awk
-# pass. The extra final record marks the artificial newline added by printf;
-# it is never emitted. The C locale accepts invalid UTF-8 on macOS awk.
+# Keep the older broad scan: gh pr\<newline>create must remain visible,
+# including pairs inside quoted data. Removal would hide the create verb.
+. "$(dirname "${BASH_SOURCE[0]}")/_lib-awk-fallback.sh"
+for fn in _run_awk_or_fallback join_shell_continuations _join_shell_continuations_fallback; do
+  if ! declare -F "$fn" >/dev/null 2>&1; then
+    printf 'BLOCKED: missing required awk helper %s. Restore _lib-awk-fallback.sh and retry.\n' "$fn" >&2
+    exit 2
+  fi
+done
+_vpc_join_fallback() {
+  _join_shell_continuations_fallback "$1" broad-space
+  return 1
+}
 _vpc_join_failed=0
-if _vpc_joined=$(printf '%s\n.' "$COMMAND" | LC_ALL=C awk '
-    function emit_line(line) {
-      if (sub(/\\$/, " ", line)) printf "%s", line
-      else printf "%s\n", line
-    }
-    NR == 1 { previous = $0; next }
-    {
-      if (NR > 2) emit_line(before)
-      before = previous
-      previous = $0
-    }
-    END { if (NR > 1) printf "%s", before }
-  '); then
+if _vpc_joined=$(join_shell_continuations "$COMMAND" broad-space _vpc_join_fallback); then
   COMMAND=$_vpc_joined
 else
   _vpc_join_failed=1
-  # A failed awk must not let a continued PR verb bypass validation.
-  # Replacing every backslash and newline with a space is broader than the
-  # normal join, so a PR verb remains visible to the gate.
-  if _vpc_joined=$(printf '%s' "$COMMAND" | LC_ALL=C tr '\\\n' '  '); then
-    COMMAND=$_vpc_joined
-  else
-    # Core utilities are unavailable: keep the exact old behavior as a
-    # final fail-safe, even though this rare path is slower on Bash 3.2.
-    _vpc_nl=$'\n'; COMMAND="${COMMAND//\\$_vpc_nl/ }"
-    unset _vpc_nl
-  fi
+  COMMAND=$_vpc_joined
 fi
 unset _vpc_joined
 
@@ -293,6 +275,11 @@ fi
 if [ -z "$CONFIG_ROOT" ]; then
   CONFIG_ROOT="$REPO_ROOT"
 fi
+ORBIT_TITLE=0
+if [ -f "$HOOK_DIR/_lib-orbit-records.sh" ]; then
+  # shellcheck source=./_lib-orbit-records.sh
+  . "$HOOK_DIR/_lib-orbit-records.sh"
+fi
 PR_TYPES=""
 if [ -f "$HOOK_DIR/_lib-read-config.sh" ]; then
   # shellcheck disable=SC1090,SC1091
@@ -515,13 +502,48 @@ EOF
         _vpc_listed_lc _vpc_origin_lc
 fi
 
+BRANCH_DIR=""
+if [ -n "$CD_TARGET" ]; then
+  CD_TOPLEVEL=$(git -C "$CD_TARGET" rev-parse --show-toplevel 2>/dev/null)
+  if [ -n "$CD_TOPLEVEL" ]; then
+    BRANCH_DIR="$CD_TOPLEVEL"
+  fi
+fi
+HEAD_FLAG=$(echo "$COMMAND" | sed -nE 's/.*--head[[:space:]]+([^[:space:]]+).*/\1/p' | head -1)
+if [ -n "$HEAD_FLAG" ]; then
+  CURRENT_BRANCH="$HEAD_FLAG"
+elif [ -n "$BRANCH_DIR" ]; then
+  CURRENT_BRANCH=$(git -C "$BRANCH_DIR" branch --show-current 2>/dev/null)
+else
+  CURRENT_BRANCH=$(git branch --show-current 2>/dev/null)
+fi
+ORBIT_RECORDS_OK=0
+ORBIT_RECORDS_REASON=""
+if declare -F orbit_records_branch_shape >/dev/null 2>&1 &&
+   orbit_records_branch_shape "$CURRENT_BRANCH"; then
+  ORBIT_TRUNKS=$(config_get '.branch.trunk_whitelist[]' 2>/dev/null)
+  if [ -z "$ORBIT_TRUNKS" ]; then
+    ORBIT_TRUNKS=$'main\nmaster\ndevelop\ndev\ndevelopment'
+  fi
+  if orbit_records_only "${BRANCH_DIR:-.}" "$CURRENT_BRANCH" "$ORBIT_TRUNKS"; then
+    ORBIT_RECORDS_OK=1
+  fi
+fi
+ORBIT_BODY_INITIATIVE=""
+if [ "$ORBIT_RECORDS_OK" = 1 ] && [[ "$TITLE" == "docs(orbit/$ORBIT_INITIATIVE): "* ]]; then
+  ORBIT_BODY_INITIATIVE="plan-$ORBIT_INITIATIVE"
+fi
 TICKET_REF=""
 if [ -n "$EXTERNAL_TARGET" ]; then
   echo "NOTE: validate-pr-create.sh: ${CMD_REPO} is listed in .external_contributions — this framework's PR-title convention is not applied. Follow that project's own CONTRIBUTING.md." >&2
 elif [ -n "$TITLE" ]; then
   if ! echo "$TITLE" | grep -qE "^(${PR_TYPES})\(([A-Z]{2,10}-[0-9]+|#[0-9]+)\)!?:"; then
-    ERRORS="${ERRORS}PR title '$TITLE' doesn't match format: type(TICKET-ID): description\n"
-    ERRORS="${ERRORS}Accepted types (from .claude/project-config.*.json → .pr.title_type_whitelist): ${PR_TYPES//|/, }\n"
+    if printf '%s\n' "$TITLE" | grep -qE '^docs\(orbit/[a-z0-9]+(-[a-z0-9]+)*\): [^[:space:]]'; then
+      ORBIT_TITLE=1
+    else
+      ERRORS="${ERRORS}PR title '$TITLE' doesn't match format: type(TICKET-ID): description\n"
+      ERRORS="${ERRORS}Accepted types (from .claude/project-config.*.json → .pr.title_type_whitelist): ${PR_TYPES//|/, }\n"
+    fi
   else
     # Extract the ticket reference so we can verify it exists
     TICKET_REF=$(echo "$TITLE" | sed -nE 's/^[a-z]+\(([^)]+)\):.*/\1/p')
@@ -913,7 +935,7 @@ if echo "$COMMAND" | grep -qE '\-\-body(-file)?\b|[[:space:]]-F[[:space:]]'; the
     ERRORS="${ERRORS}  Fix the path (check for a typo, or make it absolute) and retry.\n"
   else
     if [ -n "$BODY_FILE" ]; then
-      review_validate_body pr "$BODY_FILE" "$REQUIRED_SECTIONS" 2>/dev/null
+      review_validate_body pr "$BODY_FILE" "$REQUIRED_SECTIONS" "${ORBIT_BODY_INITIATIVE:-}" 2>/dev/null
     else
       # review_validate_body requires a regular file (-f). A process-substitution
       # fd is not a regular file on Linux, so materialise HAYSTACK via mktemp.
@@ -922,7 +944,7 @@ if echo "$COMMAND" | grep -qE '\-\-body(-file)?\b|[[:space:]]-F[[:space:]]'; the
         exit 2
       }
       printf '%s\n' "$HAYSTACK" > "$_pr_body_temp"
-      review_validate_body pr "$_pr_body_temp" "$REQUIRED_SECTIONS" 2>/dev/null
+      review_validate_body pr "$_pr_body_temp" "$REQUIRED_SECTIONS" "${ORBIT_BODY_INITIATIVE:-}" 2>/dev/null
       rm -f "$_pr_body_temp"
     fi
     if [ "$REVIEW_VALIDATION_RESULT" != complete ]; then
@@ -1051,20 +1073,11 @@ fi
 # the PR-title check above is independent of cwd.
 # CD_TARGET was extracted early (near top of script) for --body-file path
 # resolution; reuse it here for the branch-name fallback below.
-BRANCH_DIR=""
-if [ -n "$CD_TARGET" ]; then
-  CD_TOPLEVEL=$(git -C "$CD_TARGET" rev-parse --show-toplevel 2>/dev/null)
-  if [ -n "$CD_TOPLEVEL" ]; then
-    BRANCH_DIR="$CD_TOPLEVEL"
+if [ "$ORBIT_TITLE" = 1 ] && [ -z "$ORBIT_BODY_INITIATIVE" ]; then
+  ERRORS="${ERRORS}PR title 'docs(orbit/<initiative-id>): ...' is allowed only on an orbit/<initiative-id>-<description> branch that changes only files under docs/orbit/. Use the normal shape type(TICKET-ID): description and a {type}/{TICKET-ID}-{description} branch.\n"
+  if [ -n "$ORBIT_RECORDS_REASON" ]; then
+    ERRORS="${ERRORS}${ORBIT_RECORDS_REASON}\n"
   fi
-fi
-HEAD_FLAG=$(echo "$COMMAND" | sed -nE 's/.*--head[[:space:]]+([^[:space:]]+).*/\1/p' | head -1)
-if [ -n "$HEAD_FLAG" ]; then
-  CURRENT_BRANCH="$HEAD_FLAG"
-elif [ -n "$BRANCH_DIR" ]; then
-  CURRENT_BRANCH=$(git -C "$BRANCH_DIR" branch --show-current 2>/dev/null)
-else
-  CURRENT_BRANCH=$(git branch --show-current 2>/dev/null)
 fi
 if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "main" ] && [ "$CURRENT_BRANCH" != "master" ]; then
   # Release-cut branches are exempt — same recognition `validate-branch-name.sh`
@@ -1080,8 +1093,13 @@ if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "main" ] && [ "$CURRENT_BR
     :  # External contribution (#1448/#1451 B3): the branch belongs to the
        # contributor's own fork and the destination project has its own
        # naming conventions, so a framework ticket ID is not required here.
+  elif [ "$ORBIT_RECORDS_OK" = 1 ]; then
+    : # Records branch, validated against remote trunk refs.
   elif ! echo "$CURRENT_BRANCH" | grep -qE '[A-Z]{2,10}-[0-9]+|GH-[0-9]+|#[0-9]+'; then
     ERRORS="${ERRORS}Branch '$CURRENT_BRANCH' missing ticket ID.\n"
+    case "$CURRENT_BRANCH" in
+      orbit/*) ERRORS="${ERRORS}Use the normal shape {type}/{TICKET-ID}-{description}.\n" ;;
+    esac
   fi
 fi
 

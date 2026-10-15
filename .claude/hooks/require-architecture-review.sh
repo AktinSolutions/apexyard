@@ -99,8 +99,10 @@ _require_lib() {
 # the jq-independent fallback detector when the parse can't be trusted —
 # see #965.
 _require_lib "$(dirname "$0")/_lib-extract-pr.sh" \
-  is_merge_command is_merge_command_raw _scrub_merge_command _normalize_json_escapes \
-  merge_command_uses_variable extract_pr_number resolve_merge_repo resolve_pr_head
+  is_merge_command is_merge_command_raw \
+  _run_awk_or_fallback join_shell_continuations _join_shell_continuations_fallback \
+  _scrub_merge_command _normalize_json_escapes \
+  has_conflicting_repo_flags merge_command_uses_variable extract_pr_number resolve_merge_repo resolve_pr_head
 # Repo-qualified marker path helper (#485).
 _require_lib "$(dirname "$0")/_lib-review-markers.sh" \
   review_marker_path unqualified_marker_hint
@@ -168,6 +170,11 @@ fi
 
 if ! is_merge_command "$COMMAND"; then
   exit 0
+fi
+
+if has_conflicting_repo_flags "$COMMAND"; then
+  echo "BLOCKED: merge command has conflicting repo flags. Re-run with one repo value." >&2
+  exit 2
 fi
 
 if merge_command_uses_variable "$COMMAND"; then
@@ -290,6 +297,9 @@ To unblock:
      AgDR linkage, risk, trade-offs, traceability, migration safety).
   2. On an APPROVED verdict, Tariq writes the marker automatically. A human
      architect can instead record it with /approve-architecture ${PR_NUMBER}.
+     Or show the approval menu. The question must name the repo, the PR,
+     and the full head SHA. record-menu-approval.sh writes the marker
+     when the operator selects the approve option. Do not write it yourself.
   3. Retry the merge.
 
 To customize which file patterns count as a "design artifact":
@@ -317,7 +327,26 @@ fi
 # local HEAD (see #55). If that resolution fails we BLOCK rather than fall back
 # to the local HEAD (#1091) — a local value is agent-controlled, so falling
 # back would silently void the check.
-APPROVED_SHA=$(tr -d '[:space:]' < "$APPROVAL")
+#
+# Tariq and /approve-architecture write a bare SHA. The menu path
+# (AgDR-0234) writes a structured record. This gate still requires an
+# exact head match.
+if grep -q '^approval_channel=' "$APPROVAL" 2>/dev/null; then
+  _menu_lib="$(dirname "$0")/_lib-menu-approval.sh"
+  if [ ! -r "$_menu_lib" ]; then
+    echo "BLOCKED: architecture gate cannot load _lib-menu-approval.sh." >&2
+    exit 2
+  fi
+  # shellcheck source=/dev/null
+  . "$_menu_lib"
+  APPROVED_SHA=$(menu_approval_record_sha "$APPROVAL") || {
+    echo "BLOCKED: architecture approval menu record is invalid." >&2
+    echo "Re-run the approval menu or /approve-architecture ${PR_NUMBER}." >&2
+    exit 2
+  }
+else
+  APPROVED_SHA=$(tr -d '[:space:]' < "$APPROVAL")
+fi
 CURRENT_SHA=$(resolve_pr_head "$PR_NUMBER" "$CMD_REPO")
 if [ -z "$CURRENT_SHA" ]; then
   cat >&2 <<MSG

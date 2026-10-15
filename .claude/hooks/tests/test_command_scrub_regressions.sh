@@ -59,6 +59,14 @@ for opener in '<<"TEXT"' '<<TEXT' '<<-TEXT'; do
 done
 unterminated=$(printf "cat <<'TEXT'\n> src/app.ts")
 check 'unterminated heredoc falls back' write "$(write_result "$unterminated")"
+# zsh ties these names to PATH or a search array. A literal assignment
+# must stay raw, so a redirect inside a quoted heredoc stays visible.
+for zname in path fpath cdpath manpath module_path mailpath psvar; do
+  check "zsh $zname assignment stays raw" write \
+    "$(write_result "$(printf "%s=/x; cat <<'TEXT'\n> src/app.ts\nTEXT" "$zname")")"
+done
+check 'ordinary lowercase path assignment stays data' read \
+  "$(write_result "$(printf "d=/x; cat <<'TEXT'\n> src/app.ts\nTEXT")")"
 ambiguous_delimiter=$(printf "cat <<'X'Y\npayload\nXY\necho x > src/app.ts\nX")
 check 'unsupported delimiter falls back' write \
   "$(write_result "$ambiguous_delimiter")"
@@ -69,8 +77,8 @@ check 'adjacent redirects yield both targets' '/tmp/x,src/app.ts' \
 mkdir -p "$TMP/.claude/session"
 : > "$TMP/onboarding.yaml"
 : > "$TMP/apexyard.projects.yaml"
-printf 'repo=acme-org/example\n' > "$TMP/.claude/session/current-ticket"
 (cd "$TMP" && git init -q --template=)
+printf 'repo=acme-org/example\n' > "$TMP/.git/apexyard-ticket"
 export APEXYARD_OPS_DISABLE_PIN=1
 unset CLAUDE_CODE_SESSION_ID || true
 tracker_result() {
@@ -106,9 +114,9 @@ check 'real PR command triggers review' 2 "$(review_result 'gh pr create --title
 
 # The ticket gate must evaluate an unextractable write even when another
 # redirect names an exempt scratch target.
-rm -f "$TMP/.claude/session/current-ticket"
+rm -f "$TMP/.git/apexyard-ticket"
 mkdir -p "$TMP/.claude/hooks"
-for file in require-active-ticket.sh _lib-detect-bash-write.sh \
+for file in require-active-ticket.sh _lib-awk-fallback.sh _lib-detect-bash-write.sh \
   _lib-command-scrub.sh _lib-mask-quoted.sh _lib-read-config.sh \
   _lib-path-resolve.sh _lib-active-ticket.sh _lib-ticket-path-exemptions.sh \
   _lib-ops-root.sh; do

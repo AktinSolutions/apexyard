@@ -202,6 +202,7 @@ make_validate_sandbox() {
   # Copy hook + libs into the sandbox so it can run self-contained.
   mkdir -p "$sb/.claude/hooks"
   cp "$VALIDATE_HOOK" "$sb/.claude/hooks/validate-pr-create.sh"
+  cp "$(dirname "$VALIDATE_HOOK")/_lib-awk-fallback.sh" "$sb/.claude/hooks/_lib-awk-fallback.sh"
   cp "$(dirname "$VALIDATE_HOOK")/_lib-review-markers.sh" "$sb/.claude/hooks/"
   chmod +x "$sb/.claude/hooks/validate-pr-create.sh"
   for lib in \
@@ -508,7 +509,8 @@ chmod +x "$SB_C1/.claude/hooks/require-agdr-for-arch-pr.sh"
 for lib in \
   _lib-read-config.sh \
   _lib-ops-root.sh \
-  _lib-pr-repo.sh; do
+  _lib-pr-repo.sh \
+  _lib-flag-value.sh; do
   [ -f "$REPO_ROOT/.claude/hooks/$lib" ] && cp "$REPO_ROOT/.claude/hooks/$lib" "$SB_C1/.claude/hooks/$lib"
 done
 [ -f "$REPO_ROOT/.claude/project-config.defaults.json" ] && \

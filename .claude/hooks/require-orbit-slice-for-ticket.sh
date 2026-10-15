@@ -1,5 +1,5 @@
 #!/bin/bash
-# Require a merged ORBIT slice for Feature, Task, and ORBIT Slice issues.
+# Require a merged ORBIT slice for governed ticket prefixes.
 # Use the same command matcher as require-skill-for-issue-create.sh.
 
 set -u
@@ -61,28 +61,15 @@ case "$matched" in
     esac ;;
 esac
 
-# Extract one shell flag value. This follows validate-issue-structure.sh's
-# quoted flag handling and keeps multiline bodies on stdin, not argv.
-flag_value() {
-  printf '%s' "$command" | awk -v flag="$1" -v sq="'" '
-    { s = s (NR == 1 ? "" : "\n") $0 }
-    END {
-      re = "(" flag ")[[:space:]]+\"(.*)\"([[:space:]]+-{1,2}[a-zA-Z]|[[:space:]]*$)"
-      if (match(s, re)) {
-        v=substr(s,RSTART,RLENGTH); sub("^(" flag ")[[:space:]]+\"","",v)
-        sub("\"([[:space:]]+-{1,2}[a-zA-Z].*)?$","",v); sub("\"[[:space:]]*$","",v)
-        print v; exit
-      }
-      re = "(" flag ")[[:space:]]+" sq "(.*)" sq "([[:space:]]+-{1,2}[a-zA-Z]|[[:space:]]*$)"
-      if (match(s, re)) {
-        v=substr(s,RSTART,RLENGTH); sub("^(" flag ")[[:space:]]+" sq,"",v)
-        sub(sq "([[:space:]]+-{1,2}[a-zA-Z].*)?$","",v); sub(sq "[[:space:]]*$","",v)
-        print v; exit
-      }
-      re = "(" flag ")[[:space:]]+[^[:space:]]+"
-      if (match(s, re)) { v=substr(s,RSTART,RLENGTH); sub("^(" flag ")[[:space:]]+","",v); print v }
-    }'
-}
+# Quoted flag values. Same anchor as validate-issue-structure.sh (`either`):
+# a single-dash follower closes the value. See _lib-flag-value.sh.
+flag_lib="$hook_dir/_lib-flag-value.sh"
+if [ ! -r "$flag_lib" ]; then
+  echo 'BLOCKED: _lib-flag-value.sh is missing. Cannot read ORBIT ticket flags.' >&2
+  exit 2
+fi
+# shellcheck source=./_lib-flag-value.sh
+. "$flag_lib"
 
 # tracker_create takes repo, title, body_file as positional arguments.
 tracker_arg() {
@@ -192,8 +179,8 @@ if [ "$repo_flags" -gt 1 ]; then
   echo 'BLOCKED: ORBIT ticket has ambiguous repo flags.' >&2
   exit 2
 fi
-repo=$(flag_value '--repo|-R')
-title=$(flag_value '--title|-t')
+repo=$(extract_flag_value '--repo|-R' "$command" sub either)
+title=$(extract_flag_value '--title|-t' "$command" sub either)
 if [ "$repo_flags" -gt 0 ]; then repo=$repo_from_words; fi
 if [ "$title_flags" -gt 0 ]; then title=$title_from_words; fi
 if [ "$matched" = tracker_create ]; then
@@ -358,10 +345,23 @@ fi
 # Treat malformed bracketed variants as governed tickets too. Otherwise a
 # leading space or changed case skips this gate.
 lower_title=$(printf '%s' "$title" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+governed_prefixes=$(config_get '.orbit.governed_prefixes[]' 2>/dev/null)
+if [ -z "$(printf '%s' "$governed_prefixes" | tr -d '[:space:]')" ]; then
+  governed_prefixes=$(printf 'Feature\nTask\nSlice')
+fi
+governed=0
+while IFS= read -r prefix; do
+  [ -n "$prefix" ] || continue
+  prefix=$(printf '%s' "$prefix" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+  case "$lower_title" in
+    *"[${prefix}]"*|*"［${prefix}］"*|*"【${prefix}】"*) governed=1; break ;;
+  esac
+done <<EOF
+$governed_prefixes
+EOF
 case "$lower_title" in
-  *'[feature]'*|*'[task]'*|*'[slice]'*|*'［feature］'*|*'［task］'*|*'［slice］'*|*'【feature】'*|*'【task】'*|*'【slice】'*) : ;;
   '') : ;; # An interactive title cannot prove this is a Bug or Spike.
-  *) exit 0 ;;
+  *) [ "$governed" -eq 1 ] || exit 0 ;;
 esac
 if [ -z "$title" ]; then
   echo 'BLOCKED: ORBIT ticket title cannot be read.' >&2
@@ -417,8 +417,8 @@ if [ "$body_sources" -gt 1 ]; then
   exit 2
 fi
 
-body=$(flag_value '--body|-b')
-body_file=$(flag_value '--body-file')
+body=$(extract_flag_value '--body|-b' "$command" sub either)
+body_file=$(extract_flag_value '--body-file' "$command" sub either)
 if [ "$is_issue_create" -eq 1 ]; then
   body=$body_from_words
   body_file=$body_file_from_words
@@ -434,7 +434,7 @@ case "$matched" in
     ;;
 esac
 if [ -z "$body_file" ]; then
-  body_file=$(flag_value '-F')
+  body_file=$(extract_flag_value '-F' "$command" sub either)
   case "$body_file" in *=*) body_file="" ;; esac
 fi
 if [ -n "$body_file" ]; then
@@ -469,7 +469,7 @@ case "$directive" in
     fi ;;
 esac
 if ! printf '%s' "$directive" | LC_ALL=C grep -Eq '^slice-[a-z0-9]+(-[a-z0-9]+)*$'; then
-  echo "BLOCKED: [Feature], [Task], and [Slice] tickets for $project need ORBIT slice: <id> or ORBIT slice: none — <reason>. Run /orbit slice." >&2
+  echo "BLOCKED: Governed tickets for $project need ORBIT slice: <id> or ORBIT slice: none — <reason>. Run /orbit slice." >&2
   exit 2
 fi
 
@@ -485,7 +485,17 @@ fi
 branch=$(git -C "$workspace" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
 record_path="docs/orbit/slices/$directive.json"
 record_mode=$(git -C "$workspace" ls-tree "refs/remotes/$branch" -- "$record_path" 2>/dev/null | awk 'NR==1 { print $1 }')
-if [ -z "$branch" ] || [ "$record_mode" != 100644 ] && [ "$record_mode" != 100755 ]; then
+if [ "$record_mode" != 100644 ] && [ "$record_mode" != 100755 ]; then
+  integration=$(git -C "$workspace" config apexyard.integrationBranch 2>/dev/null) || integration=""
+  if [[ ! "$integration" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] || [[ "$integration" == *..* ]]; then
+    integration=dev
+  fi
+  integration_commit=$(git -C "$workspace" rev-parse --verify --quiet "refs/remotes/origin/$integration^{commit}" 2>/dev/null) || integration_commit=""
+  if [ -n "$integration_commit" ]; then
+    record_mode=$(git -C "$workspace" ls-tree "$integration_commit" -- "$record_path" 2>/dev/null | awk 'NR==1 { print $1 }')
+  fi
+fi
+if [ "$record_mode" != 100644 ] && [ "$record_mode" != 100755 ]; then
   echo "BLOCKED: ORBIT slice $directive is not on $project's default branch. Merge its record, then file the ticket with /orbit slice." >&2
   exit 2
 fi

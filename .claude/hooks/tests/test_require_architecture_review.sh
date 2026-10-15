@@ -104,6 +104,7 @@ make_sandbox() {
   mkdir -p "$sb/.claude/hooks" "$sb/.claude/session/reviews"
   # Copy libs needed by the hook.
   cp "$SRC_ROOT/.claude/hooks/_lib-extract-pr.sh" "$sb/.claude/hooks/_lib-extract-pr.sh"
+  cp "$(dirname "$SRC_ROOT/.claude/hooks/_lib-extract-pr.sh")/_lib-awk-fallback.sh" "$sb/.claude/hooks/_lib-awk-fallback.sh"
   cp "$SRC_ROOT/.claude/hooks/_lib-review-markers.sh" "$sb/.claude/hooks/_lib-review-markers.sh"
   if [ -f "$SRC_ROOT/.claude/hooks/_lib-ops-root.sh" ]; then
     cp "$SRC_ROOT/.claude/hooks/_lib-ops-root.sh" "$sb/.claude/hooks/_lib-ops-root.sh"
@@ -453,6 +454,7 @@ for lib in _lib-extract-pr.sh _lib-review-markers.sh _lib-pr-repo.sh; do
     mkdir -p "$sb/.claude/hooks"
     cp "$HOOK_SRC" "$sb/.claude/hooks/require-architecture-review.sh"
     cp "$SRC_ROOT/.claude/hooks/_lib-extract-pr.sh" "$sb/.claude/hooks/_lib-extract-pr.sh"
+    cp "$(dirname "$SRC_ROOT/.claude/hooks/_lib-extract-pr.sh")/_lib-awk-fallback.sh" "$sb/.claude/hooks/_lib-awk-fallback.sh"
     cp "$SRC_ROOT/.claude/hooks/_lib-review-markers.sh" "$sb/.claude/hooks/_lib-review-markers.sh"
     cp "$SRC_ROOT/.claude/hooks/_lib-pr-repo.sh" "$sb/.claude/hooks/_lib-pr-repo.sh"
     chmod +x "$sb/.claude/hooks/require-architecture-review.sh"
@@ -474,6 +476,45 @@ for lib in _lib-extract-pr.sh _lib-review-markers.sh _lib-pr-repo.sh; do
     fi
   done
 done
+
+echo ""
+echo "H) design artifact + menu record at head -> ALLOW"
+sb=$(make_sandbox)
+install_mock_gh "$sb" '"projects/foo/docs/technical-design-x.md"' "$SHA"
+cat > "$(review_marker_path "o/r" 77 architecture "$sb")" <<EOF
+sha=${SHA}
+approved_by=user
+skill_version=3
+approval_channel=menu
+approved_at=2026-10-12T14:00:00Z
+approval_summary="Approve architecture review"
+EOF
+code=$(run_gate "$sb" "gh pr merge 77 --repo o/r --squash")
+assert_eq "architecture menu record at head allows" "0" "$code"
+for channel in 'approval_channel="menu"' "approval_channel='menu'"; do
+  marker=$(review_marker_path "o/r" 77 architecture "$sb")
+  sed "s/^approval_channel=.*/$channel/" "$marker" > "$sb/quoted-marker"
+  cp "$sb/quoted-marker" "$marker"
+  code=$(run_gate "$sb" "gh pr merge 77 --repo o/r --squash")
+  assert_eq "quoted channel rejects" "2" "$code"
+done
+rm -rf "$sb"
+
+echo ""
+echo "H) design artifact + menu record at another SHA -> BLOCK"
+sb=$(make_sandbox)
+install_mock_gh "$sb" '"projects/foo/docs/technical-design-x.md"' "$SHA"
+cat > "$(review_marker_path "o/r" 77 architecture "$sb")" <<EOF
+sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+approved_by=user
+skill_version=3
+approval_channel=menu
+approved_at=2026-10-12T14:00:00Z
+approval_summary="Approve architecture review"
+EOF
+code=$(run_gate "$sb" "gh pr merge 77 --repo o/r --squash")
+assert_eq "architecture menu record at other sha blocks" "2" "$code"
+rm -rf "$sb"
 
 echo ""
 echo "==================================="

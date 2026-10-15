@@ -122,6 +122,7 @@ make_sandbox() {
   git -C "$sb" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
   mkdir -p "$sb/.claude/hooks" "$sb/.claude/session/reviews"
   cp "$SRC_ROOT/.claude/hooks/_lib-extract-pr.sh" "$sb/.claude/hooks/_lib-extract-pr.sh"
+  cp "$(dirname "$SRC_ROOT/.claude/hooks/_lib-extract-pr.sh")/_lib-awk-fallback.sh" "$sb/.claude/hooks/_lib-awk-fallback.sh"
   cp "$SRC_ROOT/.claude/hooks/_lib-review-markers.sh" "$sb/.claude/hooks/_lib-review-markers.sh"
   cp "$SRC_ROOT/.claude/hooks/_lib-pr-repo.sh" "$sb/.claude/hooks/_lib-pr-repo.sh"
   cp "$SRC_ROOT/.claude/hooks/_lib-ui-paths.sh" "$sb/.claude/hooks/_lib-ui-paths.sh"
@@ -589,6 +590,7 @@ for lib in _lib-extract-pr.sh _lib-review-markers.sh _lib-pr-repo.sh; do
     mkdir -p "$sb/.claude/hooks"
     cp "$HOOK_SRC" "$sb/.claude/hooks/require-design-review-for-ui.sh"
     cp "$SRC_ROOT/.claude/hooks/_lib-extract-pr.sh" "$sb/.claude/hooks/_lib-extract-pr.sh"
+    cp "$(dirname "$SRC_ROOT/.claude/hooks/_lib-extract-pr.sh")/_lib-awk-fallback.sh" "$sb/.claude/hooks/_lib-awk-fallback.sh"
     cp "$SRC_ROOT/.claude/hooks/_lib-review-markers.sh" "$sb/.claude/hooks/_lib-review-markers.sh"
     cp "$SRC_ROOT/.claude/hooks/_lib-pr-repo.sh" "$sb/.claude/hooks/_lib-pr-repo.sh"
     chmod +x "$sb/.claude/hooks/require-design-review-for-ui.sh"
@@ -641,6 +643,45 @@ for mode in default posix; do
     FAIL=$((FAIL+1))
   fi
 done
+
+echo ""
+echo "B) UI PR + menu record at head -> ALLOW"
+sb=$(make_sandbox)
+install_mock_gh "$sb" '"src/components/Button.tsx"' "$SHA"
+cat > "$(review_marker_path "o/r" 77 design "$sb")" <<EOF
+sha=${SHA}
+approved_by=user
+skill_version=3
+approval_channel=menu
+approved_at=2026-10-12T14:00:00Z
+approval_summary="Approve design review"
+EOF
+code=$(run_gate "$sb" "gh pr merge 77 --repo o/r --squash")
+assert_eq "menu record at head allows" "0" "$code"
+for channel in 'approval_channel="menu"' "approval_channel='menu'"; do
+  marker=$(review_marker_path "o/r" 77 design "$sb")
+  sed "s/^approval_channel=.*/$channel/" "$marker" > "$sb/quoted-marker"
+  cp "$sb/quoted-marker" "$marker"
+  code=$(run_gate "$sb" "gh pr merge 77 --repo o/r --squash")
+  assert_eq "quoted channel rejects" "2" "$code"
+done
+rm -rf "$sb"
+
+echo ""
+echo "B) UI PR + menu record at another SHA -> BLOCK"
+sb=$(make_sandbox)
+install_mock_gh "$sb" '"src/components/Button.tsx"' "$SHA"
+cat > "$(review_marker_path "o/r" 77 design "$sb")" <<EOF
+sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+approved_by=user
+skill_version=3
+approval_channel=menu
+approved_at=2026-10-12T14:00:00Z
+approval_summary="Approve design review"
+EOF
+code=$(run_gate "$sb" "gh pr merge 77 --repo o/r --squash")
+assert_eq "menu record at other sha blocks" "2" "$code"
+rm -rf "$sb"
 
 echo ""
 echo "==================================="

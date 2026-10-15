@@ -53,21 +53,18 @@ make_sandbox_with_gh() {
   local sb
   sb=$(mktemp -d)
   mkdir -p "$sb/bin"
-  if [ "$behind_by" = "FAIL" ]; then
-    cat > "$sb/bin/gh" <<'EOF'
+  printf '%s\n' "$behind_by" > "$sb/mock-behind_by"
+  cat > "$sb/bin/gh" <<'EOF'
 #!/bin/bash
-exit 1
-EOF
-  else
-    cat > "$sb/bin/gh" <<EOF
-#!/bin/bash
-case "\$*" in
+sb=${0%/bin/gh}
+IFS= read -r behind_by < "$sb/mock-behind_by"
+if [ "$behind_by" = "FAIL" ]; then exit 1; fi
+case "$*" in
   *"api "*"compare/"*) echo "$behind_by" ;;
   *) ;;
 esac
 exit 0
 EOF
-  fi
   chmod +x "$sb/bin/gh"
   echo "$sb"
 }
@@ -229,50 +226,58 @@ carry_over_in() {
 #   - `... branches/<name> -q .commit.sha` -> that branch's real tip SHA
 #     (via refs/heads/<name> so a tag cannot shadow)
 #   - `... commits/<sha>` (no -q)          -> real parents + tree, as JSON
-# <base_branch_override>, if given, is a SHA-or-name gh should report an
-# error for instead of resolving (models "the tip cannot be resolved").
+# <base_branch_override>, if given, is a branch name or commit SHA that
+# makes the corresponding API lookup fail.
 make_rex_carry_gh_mock() {
   local sb="$1" repo_dir="$2" unresolvable="${3:-}"
   mkdir -p "$sb/bin"
-  cat > "$sb/bin/gh" <<EOF
+  printf '%s\n' "$repo_dir" > "$sb/mock-repo_dir"
+  printf '%s\n' "$unresolvable" > "$sb/mock-unresolvable"
+  cat > "$sb/bin/gh" <<'EOF'
 #!/bin/bash
+sb=${0%/bin/gh}
+IFS= read -r repo_dir < "$sb/mock-repo_dir"
+IFS= read -r unresolvable < "$sb/mock-unresolvable"
 REPO_DIR="$repo_dir"
 UNRESOLVABLE="$unresolvable"
-args="\$*"
-case "\$args" in
+args="$*"
+case "$args" in
   *"/branches/"*)
-    ref=\$(printf '%s' "\$args" | sed -E 's#.*branches/([^ ]+).*#\1#')
+    ref=$(printf '%s' "$args" | sed -E 's#.*branches/([^ ]+).*#\1#')
     # Minimal URL-decode for test branch names that contain '/'.
-    ref=\$(printf '%s' "\$ref" | sed 's/%2[Ff]/\//g')
-    if [ -n "\$UNRESOLVABLE" ] && [ "\$ref" = "\$UNRESOLVABLE" ]; then
+    ref=$(printf '%s' "$ref" | sed 's/%2[Ff]/\//g')
+    if [ -n "$UNRESOLVABLE" ] && [ "$ref" = "$UNRESOLVABLE" ]; then
       exit 1
     fi
     # Fully-qualified heads/ — a tag with the same name must not win.
-    sha=\$(GIT_DIR="\$REPO_DIR/gitdir" GIT_WORK_TREE="\$REPO_DIR" git rev-parse "refs/heads/\$ref" 2>/dev/null)
-    [ -z "\$sha" ] && exit 1
-    echo "\$sha"
+    sha=$(GIT_DIR="$REPO_DIR/gitdir" GIT_WORK_TREE="$REPO_DIR" git rev-parse "refs/heads/$ref" 2>/dev/null)
+    [ -z "$sha" ] && exit 1
+    echo "$sha"
     exit 0
     ;;
   *"commits/"*)
-    target=\$(printf '%s' "\$args" | sed -E 's#.*commits/([^ ]+).*#\1#')
-    if ! GIT_DIR="\$REPO_DIR/gitdir" GIT_WORK_TREE="\$REPO_DIR" git cat-file -e "\${target}^{commit}" 2>/dev/null; then
+    target=$(printf '%s' "$args" | sed -E 's#.*commits/([^ ]+).*#\1#')
+    if [ -n "$UNRESOLVABLE" ] && [ "$target" = "$UNRESOLVABLE" ]; then
       exit 1
     fi
-    parents=\$(GIT_DIR="\$REPO_DIR/gitdir" GIT_WORK_TREE="\$REPO_DIR" git show -s --format='%P' "\$target")
-    tree=\$(GIT_DIR="\$REPO_DIR/gitdir" GIT_WORK_TREE="\$REPO_DIR" git rev-parse "\${target}^{tree}")
-    p0=\$(printf '%s' "\$parents" | awk '{print \$1}')
-    p1=\$(printf '%s' "\$parents" | awk '{print \$2}')
-    p2=\$(printf '%s' "\$parents" | awk '{print \$3}')
-    if [ -n "\$p2" ]; then
-      pj="[{\"sha\":\"\$p0\"},{\"sha\":\"\$p1\"},{\"sha\":\"\$p2\"}]"
-    elif [ -n "\$p1" ]; then
-      pj="[{\"sha\":\"\$p0\"},{\"sha\":\"\$p1\"}]"
-    elif [ -n "\$p0" ]; then
-      pj="[{\"sha\":\"\$p0\"}]"
+    if ! GIT_DIR="$REPO_DIR/gitdir" GIT_WORK_TREE="$REPO_DIR" git cat-file -e "${target}^{commit}" 2>/dev/null; then
+      exit 1
+    fi
+    parents=$(GIT_DIR="$REPO_DIR/gitdir" GIT_WORK_TREE="$REPO_DIR" git show -s --format='%P' "$target")
+    tree=$(GIT_DIR="$REPO_DIR/gitdir" GIT_WORK_TREE="$REPO_DIR" git rev-parse "${target}^{tree}")
+    p0=$(printf '%s' "$parents" | awk '{print $1}')
+    p1=$(printf '%s' "$parents" | awk '{print $2}')
+    p2=$(printf '%s' "$parents" | awk '{print $3}')
+    if [ -n "$p2" ]; then
+      pj="[{\"sha\":\"$p0\"},{\"sha\":\"$p1\"},{\"sha\":\"$p2\"}]"
+    elif [ -n "$p1" ]; then
+      pj="[{\"sha\":\"$p0\"},{\"sha\":\"$p1\"}]"
+    elif [ -n "$p0" ]; then
+      pj="[{\"sha\":\"$p0\"}]"
     else
       pj="[]"
     fi
-    printf '{"sha":"%s","parents":%s,"commit":{"tree":{"sha":"%s"}}}\n' "\$target" "\$pj" "\$tree"
+    printf '{"sha":"%s","parents":%s,"commit":{"tree":{"sha":"%s"}}}\n' "$target" "$pj" "$tree"
     exit 0
     ;;
   *) exit 1 ;;
@@ -282,6 +287,81 @@ EOF
 }
 
 if command -v git >/dev/null 2>&1; then
+
+  # #1682: real histories with the same forge mock cover the chain limit
+  # and failures below a clean head merge.
+  for scenario in two three ten eleven nonmerge mismatch api offbase octopus; do
+    repo=$(make_git_repo)
+    echo base > "$repo/base.txt"
+    g "$repo" add base.txt
+    g "$repo" commit -q -m base
+    g "$repo" checkout -q -b pr-branch
+    echo pr > "$repo/pr.txt"
+    g "$repo" add pr.txt
+    g "$repo" commit -q -m "reviewed work"
+    OLD_SHA=$(g "$repo" rev-parse HEAD)
+    count=3
+    expected=true
+    fail_sha=""
+    case "$scenario" in
+      two) count=2 ;;
+      ten) count=10 ;;
+      eleven) count=11; expected=false ;;
+      nonmerge|mismatch|offbase|octopus) expected=false ;;
+      api) expected=unknown ;;
+    esac
+    for ((step=1; step<=count; step++)); do
+      g "$repo" checkout -q main
+      echo "$step" > "$repo/base-$step.txt"
+      g "$repo" add "base-$step.txt"
+      g "$repo" commit -q -m "base step $step"
+      g "$repo" checkout -q pr-branch
+      if [ "$scenario" = nonmerge ] && [ "$step" -eq 2 ]; then
+        echo extra > "$repo/extra.txt"
+        g "$repo" add extra.txt
+        g "$repo" commit -q -m "unreviewed work"
+      fi
+      if [ "$step" -eq 2 ] && { [ "$scenario" = offbase ] || [ "$scenario" = octopus ]; }; then
+        # Put an unreviewed side merge in the middle of a three-step chain.
+        # Its tree is clean, so only the per-step ancestry check rejects it.
+        g "$repo" checkout -q -b side-one
+        echo side > "$repo/side-one.txt"
+        g "$repo" add side-one.txt
+        g "$repo" commit -q -m "unreviewed side work"
+        g "$repo" checkout -q pr-branch
+        if [ "$scenario" = octopus ]; then
+          # Three parents below a valid head must also be rejected.
+          g "$repo" checkout -q -b side-two
+          echo side > "$repo/side-two.txt"
+          g "$repo" add side-two.txt
+          g "$repo" commit -q -m "second side work"
+          g "$repo" checkout -q pr-branch
+          g "$repo" merge -q --no-ff side-one side-two -m "middle octopus merge"
+        else
+          g "$repo" merge -q --no-ff side-one -m "middle off-base merge"
+        fi
+      else
+        g "$repo" merge -q --no-ff main -m "base merge $step"
+      fi
+      if [ "$scenario" = mismatch ] && [ "$step" -eq 2 ]; then
+        # Amend a conflict-free merge with an extra change. Its tree differs
+        # from merge-tree, although the final head merge remains clean.
+        echo extra > "$repo/extra.txt"
+        g "$repo" add extra.txt
+        g "$repo" commit -q --amend --no-edit
+      fi
+      if [ "$scenario" = api ] && [ "$step" -eq 2 ]; then
+        fail_sha=$(g "$repo" rev-parse HEAD)
+      fi
+    done
+    NEW_SHA=$(g "$repo" rev-parse HEAD)
+    sb=$(mktemp -d)
+    make_rex_carry_gh_mock "$sb" "$repo" "$fail_sha"
+    got=$(carry_over_in "$repo" "$OLD_SHA" "$NEW_SHA" main "$sb/bin")
+    rm -rf "$repo" "$sb"
+    [ "$got" = "$expected" ] && mark_pass "carry-over chain $scenario -> $expected" \
+                             || mark_fail "carry-over chain $scenario" "got '$got', expected '$expected'"
+  done
 
   # -------------------------------------------------------------------------
   # Case 8: clean base merge, forge-verified parent[0]==old_sha AND
@@ -665,17 +745,22 @@ POISON
   # Custom mock: branches/main -> real branch tip; commits/main -> tag tip
   # (models the commits/{ref} shadowing the hardened code must not use).
   mkdir -p "$sb/bin"
-  cat > "$sb/bin/gh" <<EOF
+  printf '%s\n' "$repo" > "$sb/mock-repo"
+  printf '%s\n' "$TAG_TIP" > "$sb/mock-TAG_TIP"
+  cat > "$sb/bin/gh" <<'EOF'
 #!/bin/bash
+sb=${0%/bin/gh}
+IFS= read -r repo < "$sb/mock-repo"
+IFS= read -r TAG_TIP < "$sb/mock-TAG_TIP"
 REPO_DIR="$repo"
-args="\$*"
-case "\$args" in
+args="$*"
+case "$args" in
   *"/branches/"*)
-    ref=\$(printf '%s' "\$args" | sed -E 's#.*branches/([^ ]+).*#\1#')
-    ref=\$(printf '%s' "\$ref" | sed 's/%2[Ff]/\//g')
-    sha=\$(GIT_DIR="\$REPO_DIR/gitdir" GIT_WORK_TREE="\$REPO_DIR" git rev-parse "refs/heads/\$ref" 2>/dev/null)
-    [ -z "\$sha" ] && exit 1
-    echo "\$sha"
+    ref=$(printf '%s' "$args" | sed -E 's#.*branches/([^ ]+).*#\1#')
+    ref=$(printf '%s' "$ref" | sed 's/%2[Ff]/\//g')
+    sha=$(GIT_DIR="$REPO_DIR/gitdir" GIT_WORK_TREE="$REPO_DIR" git rev-parse "refs/heads/$ref" 2>/dev/null)
+    [ -z "$sha" ] && exit 1
+    echo "$sha"
     exit 0
     ;;
   *"-q .sha"*|*"commits/main"*)
@@ -684,20 +769,20 @@ case "\$args" in
     exit 0
     ;;
   *"commits/"*)
-    target=\$(printf '%s' "\$args" | sed -E 's#.*commits/([^ ]+).*#\1#')
-    if ! GIT_DIR="\$REPO_DIR/gitdir" GIT_WORK_TREE="\$REPO_DIR" git cat-file -e "\${target}^{commit}" 2>/dev/null; then
+    target=$(printf '%s' "$args" | sed -E 's#.*commits/([^ ]+).*#\1#')
+    if ! GIT_DIR="$REPO_DIR/gitdir" GIT_WORK_TREE="$REPO_DIR" git cat-file -e "${target}^{commit}" 2>/dev/null; then
       exit 1
     fi
-    parents=\$(GIT_DIR="\$REPO_DIR/gitdir" GIT_WORK_TREE="\$REPO_DIR" git show -s --format='%P' "\$target")
-    tree=\$(GIT_DIR="\$REPO_DIR/gitdir" GIT_WORK_TREE="\$REPO_DIR" git rev-parse "\${target}^{tree}")
-    p0=\$(printf '%s' "\$parents" | awk '{print \$1}')
-    p1=\$(printf '%s' "\$parents" | awk '{print \$2}')
-    if [ -n "\$p1" ]; then
-      pj="[{\"sha\":\"\$p0\"},{\"sha\":\"\$p1\"}]"
+    parents=$(GIT_DIR="$REPO_DIR/gitdir" GIT_WORK_TREE="$REPO_DIR" git show -s --format='%P' "$target")
+    tree=$(GIT_DIR="$REPO_DIR/gitdir" GIT_WORK_TREE="$REPO_DIR" git rev-parse "${target}^{tree}")
+    p0=$(printf '%s' "$parents" | awk '{print $1}')
+    p1=$(printf '%s' "$parents" | awk '{print $2}')
+    if [ -n "$p1" ]; then
+      pj="[{\"sha\":\"$p0\"},{\"sha\":\"$p1\"}]"
     else
-      pj="[{\"sha\":\"\$p0\"}]"
+      pj="[{\"sha\":\"$p0\"}]"
     fi
-    printf '{"sha":"%s","parents":%s,"commit":{"tree":{"sha":"%s"}}}\n' "\$target" "\$pj" "\$tree"
+    printf '{"sha":"%s","parents":%s,"commit":{"tree":{"sha":"%s"}}}\n' "$target" "$pj" "$tree"
     exit 0
     ;;
   *) exit 1 ;;
@@ -810,9 +895,10 @@ mkdir -p "$sb/bin"
 cat > "$sb/bin/gen_files.py" <<'PYEOF'
 print("{\"files\": [" + ",".join('{"filename":"f%d.txt"}' % i for i in range(300)) + "]}")
 PYEOF
-cat > "$sb/bin/gh" <<EOF
+cat > "$sb/bin/gh" <<'EOF'
 #!/bin/bash
-case "\$*" in
+sb=${0%/bin/gh}
+case "$*" in
   *"pulls/1/files"*) echo "src/pr_only.txt" ;;
   *"compare/"*) python3 "$sb/bin/gen_files.py" 2>/dev/null || echo '{"files":[]}' ;;
 esac

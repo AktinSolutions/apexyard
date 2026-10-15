@@ -40,11 +40,26 @@ if [ -e "$HOOK_DIR/_lib-extract-pr.sh" ] && [ ! -r "$HOOK_DIR/_lib-extract-pr.sh
   echo "permissions on the file and retry." >&2
   exit 2
 fi
+# The merge parser and continuation router require the shared awk helper.
+if [ ! -r "$HOOK_DIR/_lib-awk-fallback.sh" ] || ! . "$HOOK_DIR/_lib-awk-fallback.sh"; then
+  echo "BLOCKED: dispatcher cannot load _lib-awk-fallback.sh. Restore the library and retry." >&2
+  exit 2
+fi
+for fn in _run_awk_or_fallback join_shell_continuations _join_shell_continuations_fallback; do
+  if ! declare -F "$fn" >/dev/null 2>&1; then
+    printf 'BLOCKED: dispatcher missing required awk helper %s. Restore the library and retry.\n' "$fn" >&2
+    exit 2
+  fi
+done
 if [ -r "$HOOK_DIR/_lib-extract-pr.sh" ]; then
   # shellcheck source=/dev/null
   . "$HOOK_DIR/_lib-extract-pr.sh"
 fi
 
+# run_hook is the FAIL-OPEN path, for advisory checks and cost guards. A crash
+# or timeout in one of these hooks warns and the dispatcher carries on.
+# Gates that must fail closed use run_fail_closed_hook instead. The dispatch
+# loop and the gate functions below choose between the two by script name.
 run_hook() {
   local script="$1" rc=0
   # A hook may warn or fail for an unrelated reason, but only exit 2 blocks
@@ -54,7 +69,7 @@ run_hook() {
     block-main-push.sh)
       if APEXYARD_OPS_SCOPE_GUARD=1 "$HOOK_DIR/$script" <<<"$INPUT"; then :; else rc=$?; fi
       ;;
-    block-reviewer-repo-mutation.sh)
+    block-reviewer-repo-mutation.sh|block-reviewer-ci-wait.sh)
       if APEXYARD_REVIEW_OPS_ROOT="$(cd "$HOOK_DIR/../.." && pwd -P)" "$HOOK_DIR/$script" <<<"$INPUT"; then :; else rc=$?; fi
       ;;
     *)
@@ -69,28 +84,55 @@ run_hook() {
   fi
 }
 
-# run_merge_gate_hook: the four MERGE-GATE hooks fail CLOSED, not open, on
-# any exit other than 0 or 2 (me2resh/apexyard#1403, AgDR-0169).
+# run_fail_closed_hook: the FAIL-CLOSED path (me2resh/apexyard#1403,
+# AgDR-0169; extended to ticket-first by me2resh/apexyard#1623).
 #
 # run_hook above WARNS and continues past a non-2 non-zero exit, which is
 # right for an advisory check but wrong for a gate whose only job is to
-# decide whether a merge may proceed. A merge gate that cannot run its own
-# check (a missing sourced library under POSIX mode, for one) still exits
-# non-zero, just not 2 — and a normal Claude Code session never sets
-# POSIXLY_CORRECT, but other harnesses and CI shells may. `run_hook` would
-# log that as a WARN and let the merge through unreviewed. This wrapper
-# treats it as a BLOCKED instead.
-run_merge_gate_hook() {
+# decide whether a tool call may proceed. A gate that cannot run its own
+# check (a missing sourced library under POSIX mode, a crash, a syntax
+# error, a kill signal) still exits non-zero, just not 2. run_hook would log
+# that as a WARN and let the call through unchecked. This wrapper treats it
+# as a BLOCKED instead.
+#
+# A gate that hangs is not caught here. The dispatcher sets no timer of its
+# own. The "timeout" and "onFailure": "block" fields on the dispatcher entry
+# in .claude/settings.json end a hung gate and block the call. See
+# docs/hooks-fail-closed.md.
+#
+# Fail-closed gates: the four merge gates (run_merge_gate_hook) and
+# require-active-ticket.sh (ticket-first).
+run_fail_closed_hook() {
   local script="$1" rc=0
   if "$HOOK_DIR/$script" <<<"$INPUT"; then :; else rc=$?; fi
   if [ "$rc" -eq 2 ]; then
     exit 2
   fi
   if [ "$rc" -ne 0 ]; then
-    printf 'BLOCKED: %s exited %s instead of a normal PASS. A merge gate that cannot run its own check fails closed, not open.\n' "$script" "$rc" >&2
+    printf 'BLOCKED: %s exited %s instead of a normal PASS. A gate that cannot run its own check fails closed, not open.\n' "$script" "$rc" >&2
     exit 2
   fi
 }
+
+# The four merge gates keep their own name for readers of the AgDR-0169 trail.
+run_merge_gate_hook() {
+  run_fail_closed_hook "$1"
+}
+
+# run_cost_guard_hook: the explicit FAIL-OPEN exception. block-reviewer-ci-wait.sh
+# is a cost guard (me2resh/apexyard#1625). If it crashes, the reviewer pays for
+# a CI poll. No safety property is lost. A crash must not block a whole review
+# run, so a crash warns and the dispatcher continues. Its own exit 2 still
+# blocks. Do not move this hook to run_fail_closed_hook.
+run_cost_guard_hook() {
+  run_hook "$1"
+}
+
+# Text-match backstop for direct calls to the menu record writers (AgDR-0104).
+if printf '%s' "$COMMAND" | grep -qE 'record-menu-approval|_lib-menu-approval|menu_approval_write_record'; then
+  echo "BLOCKED: model Bash calls must not invoke menu approval writers." >&2
+  exit 2
+fi
 
 # APEXYARD_DISPATCH_GATE: Bash|*|block-ambient-tracker-repo.sh
 # APEXYARD_DISPATCH_GATE: Bash|*|block-privileged-escalation.sh
@@ -101,6 +143,8 @@ run_merge_gate_hook() {
 # APEXYARD_DISPATCH_GATE: Bash|*|warn-review-marker-write.sh
 # APEXYARD_DISPATCH_GATE: Bash|*|warn-isolated-build-risk.sh
 # APEXYARD_DISPATCH_GATE: Bash|*|block-reviewer-repo-mutation.sh
+# APEXYARD_DISPATCH_GATE: Bash|*|block-reviewer-ci-wait.sh
+# APEXYARD_DISPATCH_GATE: Bash|*|block-forged-menu-approval.sh
 # APEXYARD_DISPATCH_GATE: Bash|git add *|block-git-add-all.sh
 # APEXYARD_DISPATCH_GATE: Bash|git push *|block-main-push.sh
 # APEXYARD_DISPATCH_GATE: Bash|git push *|validate-branch-name.sh
@@ -157,8 +201,19 @@ for script in \
   require-active-ticket.sh \
   warn-review-marker-write.sh \
   warn-isolated-build-risk.sh \
-  block-reviewer-repo-mutation.sh; do
-  run_hook "$script"
+  block-reviewer-repo-mutation.sh \
+  block-reviewer-ci-wait.sh \
+  block-forged-menu-approval.sh; do
+  case "$script" in
+    # Ticket-first fails closed (me2resh/apexyard#1623).
+    require-active-ticket.sh) run_fail_closed_hook "$script" ;;
+    # Menu-record forgery guard fails closed too (AgDR-0234). A crash must
+    # not let a Bash write of approval_channel=menu through unchecked.
+    block-forged-menu-approval.sh) run_fail_closed_hook "$script" ;;
+    # Cost guard: fails open on purpose. See run_cost_guard_hook.
+    block-reviewer-ci-wait.sh) run_cost_guard_hook "$script" ;;
+    *) run_hook "$script" ;;
+  esac
 done
 
 _merge_gates_ran=0
@@ -263,8 +318,16 @@ esac
 # The option list accepts `-C`, `-c` and the long options that take a
 # separate-word value, plus any `-x`, `--opt` or `--opt=value`.
 _scan_failed=0
-if _scan_cmd=$(printf '%sX' "$COMMAND" | LC_ALL=C awk '{ if (sub(/\\$/, "")) printf "%s ", $0; else printf "%s\n", $0 }'); then
-  _scan_cmd=${_scan_cmd%X}
+# Preserve broad routing for git\<newline>push and quoted/commented pairs.
+# Bash removal could hide verbs that the existing dispatcher routes.
+_dispatch_join_failure() { return 1; }
+if [ -r "$HOOK_DIR/_lib-awk-fallback.sh" ]; then
+  . "$HOOK_DIR/_lib-awk-fallback.sh"
+  if _scan_cmd=$(join_shell_continuations "$COMMAND" broad-space _dispatch_join_failure); then
+    :
+  else
+    _scan_failed=1
+  fi
 else
   _scan_failed=1
 fi

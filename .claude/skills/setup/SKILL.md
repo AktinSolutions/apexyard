@@ -6,9 +6,7 @@ argument-hint: "[--reset] [--enable-lsp]"
 effort: medium
 ---
 
-## Writing rule
-
-When this skill writes a durable artifact, read .claude/rules/writing-standard.md. Use the controlled technical writing profile.
+Writing: read docs/skills/shared/writing-rule.md before you write a durable artifact.
 
 # /setup — ApexYard First-Run Bootstrap
 
@@ -89,6 +87,20 @@ bash bin/install-git-hooks.sh
 ```
 
 Idempotent — a re-run on an already-configured clone reports "no change" and exits 0. If it exits 1 (a real, different `core.hooksPath` the operator configured on purpose), report that plainly and move on without `--force` — overriding a deliberate adopter choice isn't this step's call to make silently. **If it exits 4, treat this as a hard failure of the step, not a warning**: exit 4 means the `git config core.hooksPath` write did not take effect (a stale `.git/config.lock`, a multi-valued key) and the installer is refusing to report success on an unverified write — this clone is **NOT** protected. Show the operator the installer's own error output verbatim and ask them to retry (`bash bin/install-git-hooks.sh`) before continuing `/setup`; do not silently proceed as if the clone were covered. See `bin/install-git-hooks.sh --help` and me2resh/apexyard#1086 for the full state machine (fresh / idempotent / stale-repair / deliberate-third-party / write-failed).
+
+### Step 0.6: Write this clone's rule exclude (REQUIRED)
+
+Ensure the presence-only ops marker exists before resolving a fresh clone without `onboarding.yaml`.
+Run the advisory writer once from the ops fork:
+
+```bash
+[ -f .apexyard-fork ] || touch .apexyard-fork
+bash .claude/hooks/write-rule-excludes.sh
+```
+
+The writer changes only `claudeMdExcludes` in gitignored `.claude/settings.local.json`.
+A warning does not block setup. Restart the session after setup to apply the exclude.
+SessionStart repairs missing or relocated entries. See AgDR-0233.
 
 ### Step 1: Check current state
 
@@ -517,6 +529,28 @@ Which harness(es) do you run ApexYard with?
 
 Record the pick (comma-separated list, or `claude-code` if 1/default) as `$SELECTED_HARNESSES` for the Step 4 summary line.
 
+### Step 2e: Status band (optional, Claude Code only)
+
+Skip this step when `$SELECTED_HARNESSES` does not include `claude-code`.
+
+Use `AskUserQuestion` with one yes/no question. Recommend "n" first. Use this prompt only when the harness lacks the tool:
+
+```
+Show the ApexYard status band above the prompt? (y/n)
+```
+
+- **"n" or empty** → continue to Step 3.
+- **"y"** → run these two commands from the ops-fork root, then continue to Step 3:
+
+  ```bash
+  claude plugin marketplace add ./ --scope local
+  claude plugin install apexyard-status@apexyard --scope local
+  ```
+
+  `local` scope writes only to the uncommitted `.claude/settings.local.json`. Do not enable the plugin in `.claude/settings.json`. If a command fails, print the error and the two commands, then continue. The band is optional.
+
+Record the answer as `$STATUS_BAND` (`on` or `off`) for the Step 4 summary line, for example `Status band: on (local scope)`. See `plugins/apexyard-status/README.md` and AgDR-0227.
+
 ### Step 3: Parse and map to defaults
 
 From the user's description, extract:
@@ -562,6 +596,7 @@ AgDR gate: ON (default architecture paths)
 Commit types: framework defaults (feat, fix, refactor, test, docs, chore, style, perf, build, ci, revert)
 LSP: enabled (typescript via typescript-language-server, env var in ~/.zshrc, plugin: manual)
 Harness: Claude Code (native — no adapter needed)
+Status band: off
 
 Use these defaults, or customize?
 ```

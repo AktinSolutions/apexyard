@@ -64,7 +64,7 @@ make_sandbox() {
   mkdir -p "$sb/.claude/hooks"
   cp "$HOOKS_DIR/$hook" "$sb/.claude/hooks/$hook"
   chmod +x "$sb/.claude/hooks/$hook"
-  for lib in _lib-read-config.sh _lib-tracker.sh _lib-extract-pr.sh _lib-pr-repo.sh \
+  for lib in _lib-read-config.sh _lib-tracker.sh _lib-awk-fallback.sh _lib-extract-pr.sh _lib-pr-repo.sh \
              _lib-active-ticket.sh _lib-ticket-path-exemptions.sh _lib-ops-root.sh \
              _lib-detect-bash-write.sh \
              _lib-portfolio-paths.sh _lib-review-markers.sh; do
@@ -224,7 +224,7 @@ rm -rf "$sb"
 sb=$(make_sandbox "require-migration-ticket.sh")
 install_failing_gh "$sb"
 mkdir -p "$sb/.claude/session"
-printf 'repo=fork-org/apexyard\nnumber=4242\ntitle=t\nurl=u\n' > "$sb/.claude/session/current-ticket"
+printf 'repo=fork-org/apexyard\nnumber=4242\ntitle=t\nurl=u\n' > "$sb/.git/apexyard-ticket"
 # This gate fires on Edit/Write, so the payload carries a file_path rather
 # than a Bash command. The default patterns are anchored with a leading `*/`,
 # so the target must be absolute for `db/migrate/*.rb` to match.

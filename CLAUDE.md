@@ -2,7 +2,7 @@
 
 You are the **Chief of Staff** running a portfolio of projects inside apexyard. You don't add apexyard to a project — projects get forged *inside* it. Your job: ensure every project ships production-ready MVPs under a strict SDLC, with shared memory across the portfolio so projects learn from each other's experience. Processes are followed, quality is maintained, and work moves efficiently from idea to production.
 
-Load a named file under `.claude/rules/` when the work matches that rule. Do not load every rule at session start. `.claude/settings.json` sets `claudeMdExcludes` for `**/.claude/rules/**` so Claude Code does not auto-inject those bodies. This same exclude also drops personal `~/.claude/rules/` files and a managed project's own `workspace/<name>/.claude/rules/` files from the session; keep personal instructions in `~/.claude/CLAUDE.md` instead (AgDR-0160's 2026-09-25 scope note; a per-clone fix is tracked in #1388). Mechanical gates live in `.claude/hooks/*.sh`. See AgDR-0160.
+Load a named file under `.claude/rules/` when the work matches that rule. Do not load every rule at session start. `/setup` and SessionStart write this clone's absolute rule-directory exclude into the gitignored `.claude/settings.local.json`. Personal and managed-project rules remain eligible to load. Existing user exclusions still apply. A newly written or repaired exclude takes effect in the next session. Mechanical gates live in `.claude/hooks/*.sh`. See AgDR-0160 and AgDR-0233.
 
 ---
 
@@ -90,7 +90,7 @@ Work on ONE ticket at a time. Each PR = one ticket only.
 
 ## RULES INDEX
 
-Read the named file when the work matches. Do not auto-import these files. Claude Code would auto-load them without `claudeMdExcludes` in `.claude/settings.json` (AgDR-0160 correction, #1354).
+Read the named file when the work matches. Do not auto-import these files. Claude Code would auto-load them without `claudeMdExcludes` in `.claude/settings.local.json` (AgDR-0160 correction, #1354).
 
 | File | Load when |
 |------|-----------|
@@ -169,10 +169,10 @@ ApexYard ships with a `.claude/` directory containing the Claude Code primitives
 | Rules | `.claude/rules/` | 22 modular rule files (AgDR triggers, agent role selection, build-handbook discovery, code standards, evidence grounding, git conventions, glossary lookup, isolated builds, leak protection, loop mode, parallel work, plan mode, PR quality, PR workflow, reconcile before build, reporting style, right-size ceremony, role triggers, skill first, ticket vocabulary, workflow gates, writing standard) |
 | Handbooks | `handbooks/` | Adopter-authored coding standards consumed by Rex during code review. Discovery by path-convention (`architecture/` + `general/` always-load; `language/<lang>/` loads on diff-match). Advisory by default; opt in to blocking via `ENFORCEMENT: blocking` marker. See [`handbooks/README.md`](handbooks/README.md). |
 | Agents | `.claude/agents/` | 23 sub-agents (4 utility incl. Hakim post-consolidation + Naqid the Contrarian + 7 engineering + 1 architecture (Tariq) + 6 product-design + 5 security-data). Per AgDR-0050 + the #347 PR 3 Hatim→Hakim consolidation decision + AgDR-0054 (Solution Architect) + AgDR-0078 (The Contrarian) + AgDR-0105 (retiring the pr-manager + ticket-manager lifecycle agents). |
-| Skills | `.claude/skills/` | 67 slash commands — see the full list below |
+| Skills | `.claude/skills/` | 68 slash commands — see the full list below |
 | Settings | `.claude/settings.json` | Wires hooks to `PreToolUse`, `PostToolUse`, and `SessionStart` events |
 
-### Available skills (67)
+### Available skills (68)
 
 One-line summary per skill; canonical details live in each `.claude/skills/<name>/SKILL.md`.
 
@@ -214,6 +214,7 @@ One-line summary per skill; canonical details live in each `.claude/skills/<name
 | `/tickets-batch` | Bulk-file 5–20 structured tickets in one shared-context flow |
 | `/migration` | Create a labelled migration ticket + migration AgDR (required by migration gate) |
 | `/spike` | Create a time-boxed, hypothesis-driven spike ticket — answers "will it technically work?" (throwaway; exempt from AgDR + coverage gates) |
+| `/scaffold` | Interview the owner and generate the project floor from a validated scaffold spec |
 | `/spike-close` | Disposition gate for spikes — `--promote` files a feature, `--discard` writes a memo |
 | `/prototype` | Create a throwaway UX/demo prototype ticket — answers "what should it look/feel like?" (throwaway; same AgDR + coverage exemptions as `/spike`) |
 | `/prototype-close` | Disposition gate for prototypes — `--promote` files a feature, `--discard` writes a memo (mirror of `/spike-close`) |
@@ -246,7 +247,7 @@ One-line summary per skill; canonical details live in each `.claude/skills/<name
 | `/stakeholder-update` | Generate weekly / monthly / launch stakeholder updates |
 | `/fan-out` | Spawn N parallel agents in one message (per-task agent type, worktree isolation) |
 
-The hooks, agents, and skills are picked up automatically by Claude Code when this directory lives at the project root. Rule bodies stay on disk and are excluded from auto-load via `claudeMdExcludes` in `.claude/settings.json`. CLAUDE.md indexes them by name. Load a rule file when the work needs it.
+The hooks, agents, and skills are picked up automatically by Claude Code when this directory lives at the project root. Rule bodies stay on disk and are excluded from auto-load via `claudeMdExcludes` in `.claude/settings.local.json`. CLAUDE.md indexes them by name. Load a rule file when the work needs it.
 
 See `docs/getting-started.md` for the integration model — including how to install the `.claude/` layer alongside the rest of the stack.
 
@@ -282,7 +283,7 @@ Copy whichever you need into your project's `.github/workflows/`. Full details i
 | Rules (modular, framework-wide) | `.claude/rules/` |
 | **Adopter handbooks** (consumed by Rex during code review) | `handbooks/` — see [`handbooks/README.md`](handbooks/README.md) for the discovery + advisory/blocking conventions |
 | Agents | `.claude/agents/` |
-| Skills (67 slash commands) | `.claude/skills/` |
+| Skills (68 slash commands) | `.claude/skills/` |
 | Hook wiring | `.claude/settings.json` |
 | **Per-project docs** | `projects/<name>/` |
 | **Live working copies** (gitignored) | `workspace/<name>/` |

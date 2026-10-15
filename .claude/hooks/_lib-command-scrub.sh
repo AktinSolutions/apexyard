@@ -61,7 +61,7 @@ _command_scrub_allowlist_ok() {
              t == "true" || t == "false" || t == "test" || t == "[" || \
              t == "cd" || t == "pwd" || t == "mkdir" || t == "touch" || \
              t == "tee" || t == "cp" || t == "mv" || t == "rm" || \
-             t == "git" || t == "gh"
+             t == "git" || t == "gh" || t == "orbit"
     }
     # read_word may skip ahead through quotes. Reject a consumed word that
     # still holds executing $( / backticks / process substitution / <<<
@@ -373,8 +373,18 @@ _command_scrub_allowlist_ok() {
           if (word_executes(WORD)) { ok = 0; break }
           w = norm_word(WORD)
           if (w == "") { ok = 0; break }
-          # A leading assignment can name a program (GIT_PAGER, EDITOR). Return raw.
+          # Only a standalone lowercase scalar with a literal path value
+          # is data. zsh ties path, fpath, cdpath, manpath, module_path,
+          # mailpath and psvar to PATH or a search array, so those
+          # assignments stay raw. Environment prefixes, uppercase special
+          # variables, expansions, array assignments and executable values
+          # stay raw too.
           if (is_assign(WORD) && WORD !~ /^[A-Za-z_][A-Za-z0-9_]*==/) {
+            skip_ws()
+            after = substr(s, pos, 1)
+            if (WORD ~ /^[a-z_][a-z0-9_]*=[A-Za-z0-9_.\/-]+$/ &&
+                WORD !~ /^(path|fpath|cdpath|manpath|module_path|mailpath|psvar)=/ &&
+                (after == ";" || after == "\n" || after == "")) { continue }
             ok = 0
             break
           }
