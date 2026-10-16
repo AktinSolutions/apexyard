@@ -75,3 +75,42 @@ _resolve_real_path() {
     printf '%s' "$dir"
   fi
 }
+
+# Map a Windows drive-letter path to the Git Bash form.
+# C:/Users/a b/repo and C:\Users\a b\repo both become /c/Users/a b/repo.
+# A POSIX path is unchanged. A drive-relative path such as C:foo is unchanged:
+# it is not absolute. This is a string transform. It does not call cygpath
+# and it does not touch the filesystem. The same rule is in
+# _portfolio_canonicalize (me2resh/apexyard#1018). Callers that compare a
+# git toplevel with a pwd -P path must run both sides through this function
+# first (me2resh/apexyard#1724, #1725, #1737).
+_windows_path_to_posix() {
+  local p="$1" drive rest
+  [ -n "$p" ] || return 0
+  case "$p" in
+    [A-Za-z]:/*|[A-Za-z]:\\*)
+      drive="${p%%:*}"
+      rest="${p#*:}"
+      rest="$(printf '%s' "$rest" | tr '\\' '/')"
+      drive="$(printf '%s' "$drive" | tr '[:upper:]' '[:lower:]')"
+      printf '/%s%s' "$drive" "$rest"
+      ;;
+    *)
+      printf '%s' "$p"
+      ;;
+  esac
+}
+
+# Return 0 when CANDIDATE is ROOT or a path under ROOT.
+# Both sides are compared after _windows_path_to_posix. An empty side is
+# not contained. This rejects a prefix trick such as /repo-evil under /repo.
+path_is_under_root() {
+  local root="$1" candidate="$2"
+  root=$(_windows_path_to_posix "$root")
+  candidate=$(_windows_path_to_posix "$candidate")
+  [ -n "$root" ] && [ -n "$candidate" ] || return 1
+  case "$candidate" in
+    "$root"|"$root"/*) return 0 ;;
+  esac
+  return 1
+}

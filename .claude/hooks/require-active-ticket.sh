@@ -509,6 +509,13 @@ _ratc_evaluate_target() {
     return 0
   fi
 
+  # A drive-letter path is absolute. The slash tests below do not see a
+  # leading slash in C:\..., so the old code joined that path onto $PWD.
+  # A source write from a non-git directory then looked ungoverned.
+  if [ -n "$FILE_PATH" ] && command -v _windows_path_to_posix >/dev/null 2>&1; then
+    FILE_PATH=$(_windows_path_to_posix "$FILE_PATH")
+  fi
+
   # Normalise to repo-relative path when possible.
   #
   # BUG #744 FIX: derive REPO_ROOT from the FILE_PATH's directory, NOT the
@@ -752,6 +759,7 @@ _ratc_evaluate_target() {
       local _og_in_ws_res=0
       local _og_in_git=0
       local _og_real_ops="" _og_real_ws="" _og_probe _og_git_root=""
+      local _og_drive="" _og_drive_seen=1
 
       # Canonicalize the boundary anchors ONCE — used as the comparison
       # basis for both the raw-target check and the resolved-target check.
@@ -817,7 +825,20 @@ _ratc_evaluate_target() {
         _og_in_git=1
       fi
 
-      if [ "$_og_has_symlink" = 0 ] \
+      # Git Bash mounts C: at /c. If that drive root is not on this machine,
+      # the path was not shown to sit outside a repository. Do not exempt it.
+      # On Windows the drive root exists, so a real outside file still can.
+      case "$_og_abs_target" in
+        /[a-z]/*)
+          _og_drive="${_og_abs_target#/}"
+          _og_drive="${_og_drive%%/*}"
+          _og_drive="/${_og_drive}"
+          [ -d "$_og_drive" ] || _og_drive_seen=0
+          ;;
+      esac
+
+      if [ "$_og_drive_seen" = 1 ] \
+         && [ "$_og_has_symlink" = 0 ] \
          && [ "$_og_in_ops_raw" = 0 ] && [ "$_og_in_ws_raw" = 0 ] \
          && [ "$_og_in_ops_res" = 0 ] && [ "$_og_in_ws_res" = 0 ] \
          && [ "$_og_in_git" = 0 ]; then

@@ -207,3 +207,41 @@ with tempfile.TemporaryDirectory() as temporary:
     git(root, 'add', '-f', '.claude/settings.local.json')
     assert len(run().stderr.splitlines()) == 1 and target.read_bytes() == saved
     print('PASS: requirements 1–12 (load-order limitation documented separately).')
+
+    class _Flags:
+        O_RDONLY = 1
+
+    assert writer.open_read_flags(_Flags) == 1
+    _Flags.O_NOFOLLOW = 4
+    _Flags.O_NONBLOCK = 8
+    assert writer.open_read_flags(_Flags) == 13
+
+    probe = base / 'flag-probe'
+    probe.mkdir()
+    regular = probe / 'settings.json'
+    regular.write_bytes(b'{"ok":true}\n')
+    link = probe / 'link.json'
+    link.symlink_to(regular)
+    assert writer.read_safe(regular) == b'{"ok":true}\n'
+    try:
+        writer.read_safe(link)
+        raise AssertionError('symlink was read')
+    except ValueError as exc:
+        assert 'unsafe' in str(exc)
+    saved_flags = {}
+    for name in ('O_NOFOLLOW', 'O_NONBLOCK'):
+        if hasattr(os, name):
+            saved_flags[name] = getattr(os, name)
+            delattr(os, name)
+    try:
+        assert not hasattr(os, 'O_NOFOLLOW')
+        assert writer.read_safe(regular) == b'{"ok":true}\n'
+        try:
+            writer.read_safe(link)
+            raise AssertionError('symlink was read without O_NOFOLLOW')
+        except ValueError as exc:
+            assert 'unsafe' in str(exc)
+    finally:
+        for name, value in saved_flags.items():
+            setattr(os, name, value)
+    print('PASS: read_safe without O_NOFOLLOW')
