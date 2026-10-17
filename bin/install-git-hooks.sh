@@ -281,13 +281,25 @@ fi
 # missing" case for the pinned regression test.
 # ---------------------------------------------------------------------------
 HOOKS_DIR_RESOLVED=$(_resolve_real_path "$TARGET_ROOT/$HOOKS_DIR_NAME")
-case "$HOOKS_DIR_RESOLVED" in
-  "$TARGET_ROOT"/*|"$TARGET_ROOT") : ;;
-  *)
-    echo "ERROR: --hooks-dir '$HOOKS_DIR_NAME' resolves to '$HOOKS_DIR_RESOLVED', which is outside $TARGET_ROOT. Refusing to point core.hooksPath outside the repo tree." >&2
-    exit 2
-    ;;
-esac
+# git rev-parse prints C:/... on Windows. pwd -P prints /c/... for the same
+# directory. Compare those forms with path_is_under_root. An empty resolve
+# still fails this check, which is what keeps a missing path lib from
+# reaching ghp_classify (the load-bearing ordering above).
+_hooks_contained=1
+if command -v path_is_under_root >/dev/null 2>&1; then
+  if ! path_is_under_root "$TARGET_ROOT" "$HOOKS_DIR_RESOLVED"; then
+    _hooks_contained=0
+  fi
+else
+  case "$HOOKS_DIR_RESOLVED" in
+    "$TARGET_ROOT"/*|"$TARGET_ROOT") ;;
+    *) _hooks_contained=0 ;;
+  esac
+fi
+if [ "$_hooks_contained" != 1 ]; then
+  echo "ERROR: --hooks-dir '$HOOKS_DIR_NAME' resolves to '$HOOKS_DIR_RESOLVED', which is outside $TARGET_ROOT. Refusing to point core.hooksPath outside the repo tree." >&2
+  exit 2
+fi
 
 # #1089: reaching this line at all already proves _resolve_real_path
 # resolved a real path above — see the LOAD-BEARING ORDERING comment on

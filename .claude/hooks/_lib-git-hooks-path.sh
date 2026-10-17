@@ -119,19 +119,30 @@ fi
 # ------------------------------------------------------------------------
 ghp_classify() {
   local repo_root="$1" hooks_dir_name="$2"
-  local current current_resolved target_resolved
+  local current current_resolved target_resolved repo_cmp
 
+  # git rev-parse can print C:/... while pwd -P prints /c/... for the same
+  # directory. Compare both sides after that map. A drive-letter hooks path
+  # is absolute. Joining it onto the repo makes an existing directory look
+  # missing, and the installer then replaces it without --force.
+  repo_cmp="$repo_root"
+  if command -v _windows_path_to_posix >/dev/null 2>&1; then
+    repo_cmp=$(_windows_path_to_posix "$repo_root")
+  fi
   current=$(git -C "$repo_root" config --get core.hooksPath 2>/dev/null || true)
-  target_resolved=$(_resolve_real_path "$repo_root/$hooks_dir_name")
+  target_resolved=$(_resolve_real_path "$repo_cmp/$hooks_dir_name")
 
   if [ -z "$current" ]; then
     printf 'unset'
     return 0
   fi
 
+  if command -v _windows_path_to_posix >/dev/null 2>&1; then
+    current=$(_windows_path_to_posix "$current")
+  fi
   case "$current" in
     /*) current_resolved=$(_resolve_real_path "$current") ;;
-    *)  current_resolved=$(_resolve_real_path "$repo_root/$current") ;;
+    *)  current_resolved=$(_resolve_real_path "$repo_cmp/$current") ;;
   esac
 
   if [ -n "$current_resolved" ] && [ "$current_resolved" = "$target_resolved" ]; then
@@ -148,7 +159,7 @@ ghp_classify() {
   # real directory the adopter (or a script) deliberately created in this
   # very repo. Ambiguous-by-design: third-party, not stale.
   case "$current_resolved" in
-    "$repo_root"/*)
+    "$repo_cmp"/*)
       printf 'third-party:%s:%s' "$current" "$current_resolved"
       return 0
       ;;
