@@ -1,4 +1,5 @@
 #!/bin/bash
+
 # PreToolUse hook on `git commit`: validates the commit message subject line
 # against the conventional commit format defined in
 # .claude/rules/git-conventions.md:
@@ -20,19 +21,32 @@
 # superset — if a project wants to use scopes in commits, that's fine, but
 # the scope is not required.
 
-INPUT=$(cat)
+# Run one target check. The visitor isolates each call in a subshell.
+_git_gate_body() {
+INPUT="$_GIT_GATE_INPUT"
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -r "$HOOK_DIR/_lib-git-global.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$HOOK_DIR/_lib-git-global.sh"
+fi
 
 if [ -z "$COMMAND" ]; then
   . "$(dirname "$0")/_lib-fail-closed-json.sh"
-  if raw_payload_command_matches "$INPUT" 'git[[:space:]]+commit'; then
+  _fmt_pat='git[[:space:]]+commit'
+  if command -v git_subcommand_payload_pattern >/dev/null 2>&1; then
+    _fmt_pat="$(git_subcommand_payload_pattern commit)"
+  fi
+  if raw_payload_command_matches "$INPUT" "$_fmt_pat"; then
     echo "BLOCKED: commit-format hook cannot parse this commit command. Restore jq and retry." >&2
     exit 2
   fi
   exit 0
 fi
 
-if ! echo "$COMMAND" | grep -qE '\bgit\s+commit\b'; then
+if command -v command_has_git_subcommand >/dev/null 2>&1; then
+  command_has_git_subcommand "$COMMAND" commit || exit 0
+elif ! echo "$COMMAND" | grep -qE '\bgit\s+commit\b'; then
   exit 0
 fi
 
@@ -142,7 +156,11 @@ fi
 # is uncommon (mostly Claude Code's own commit-message authoring path), and
 # the more important goal is keeping the hook from misfiring on a legitimate
 # multi-line commit produced from within a worktree.
-if echo "$COMMAND" | grep -qE 'git[[:space:]]+commit\b[^|;&]*-m\b[^|;&]*\$\(cat[[:space:]]+<<-?[[:space:]]*'\''?[A-Za-z_][A-Za-z0-9_]*'\''?'; then
+_fmt_heredoc_re='git[[:space:]]+commit\b[^|;&]*-m\b[^|;&]*\$\(cat[[:space:]]+<<-?[[:space:]]*'\''?[A-Za-z_][A-Za-z0-9_]*'\''?'
+if command -v git_subcommand_re >/dev/null 2>&1; then
+  _fmt_heredoc_re="$(git_subcommand_re commit)"'[^|;&]*-m\b[^|;&]*\$\(cat[[:space:]]+<<-?[[:space:]]*'\''?[A-Za-z_][A-Za-z0-9_]*'\''?'
+fi
+if printf '%s\n' "$COMMAND" | LC_ALL=C grep -qE "$_fmt_heredoc_re"; then
   echo "INFO: heredoc-substitution detected in -m; skipping subject validation. Use 'git commit -F <file>' for validation on multi-line messages." >&2
   exit 0
 fi
@@ -240,11 +258,29 @@ fi
 
 token_count=${#COMMAND_TOKENS[@]}
 commit_index=-1
-for ((i=0; i + 1 < token_count; i++)); do
-  if [ "${COMMAND_TOKENS[i]}" = "git" ] && [ "${COMMAND_TOKENS[i + 1]}" = "commit" ]; then
-    commit_index=$((i + 2))
+for ((i=0; i < token_count; i++)); do
+  [ "${COMMAND_TOKENS[i]}" = "git" ] || continue
+  j=$((i + 1))
+  while [ "$j" -lt "$token_count" ]; do
+    tok="${COMMAND_TOKENS[j]}"
+    width=0
+    if command -v git_global_option_width >/dev/null 2>&1; then
+      width=$(git_global_option_width "$tok")
+    fi
+    if [ "$width" -eq 2 ]; then
+      j=$((j + 2))
+      continue
+    fi
+    if [ "$width" -eq 1 ]; then
+      j=$((j + 1))
+      continue
+    fi
+    if [ "$tok" = "commit" ]; then
+      commit_index=$((j + 1))
+    fi
     break
-  fi
+  done
+  [ "$commit_index" -ge 0 ] && break
 done
 
 if [ "$commit_index" -lt 0 ]; then
@@ -397,3 +433,17 @@ MSG_END
 fi
 
 exit 0
+
+}
+
+_GIT_GATE_INPUT=$(cat)
+_GIT_GATE_LIB="$(cd "$(dirname "$0")" && pwd)/_lib-git-global.sh"
+if [ -r "$_GIT_GATE_LIB" ]; then
+  # shellcheck disable=SC1090
+  . "$_GIT_GATE_LIB"
+fi
+if command -v git_visit_invocations >/dev/null 2>&1; then
+  git_visit_invocations _git_gate_body block "$_GIT_GATE_INPUT" commit
+  exit $?
+fi
+_git_gate_body

@@ -1,4 +1,5 @@
 #!/bin/bash
+
 # CLASS: BACKSTOP — blocking, but not the primary control (AgDR-0114).
 #
 # Blocks direct pushes and commits to long-lived integration branches from
@@ -72,13 +73,30 @@
 #   prefix, resolve the current branch from that path (same pattern used by
 #   the commit section above).
 
-INPUT=$(cat)
+# Run one target check. The visitor isolates each call in a subshell.
+_git_gate_body() {
+INPUT="$_GIT_GATE_INPUT"
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
+
+_PUSH_HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -r "$_PUSH_HOOK_DIR/_lib-git-global.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$_PUSH_HOOK_DIR/_lib-git-global.sh"
+fi
 
 if [ -z "$COMMAND" ]; then
   . "$(dirname "$0")/_lib-fail-closed-json.sh"
-  if raw_payload_command_matches "$INPUT" 'git[[:space:]]+push'; then
+  _push_pat='git[[:space:]]+push'
+  if command -v git_subcommand_payload_pattern >/dev/null 2>&1; then
+    _push_pat="$(git_subcommand_payload_pattern push)"
+  fi
+  if raw_payload_command_matches "$INPUT" "$_push_pat"; then
     echo "BLOCKED: protected-branch hook cannot parse this push command. Restore jq and retry." >&2
+    exit 2
+  fi
+  if command -v git_subcommand_payload_pattern >/dev/null 2>&1 \
+    && raw_payload_command_matches "$INPUT" "$(git_subcommand_payload_pattern commit)"; then
+    echo "BLOCKED: protected-branch hook cannot parse this commit command. Restore jq and retry." >&2
     exit 2
   fi
   exit 0
@@ -253,7 +271,12 @@ fi
 # ---------------------------------------------------------------------------
 PUSH_DST=""
 SKIP_PUSH_BRANCH_CHECK=0
-if echo "$COMMAND" | grep -qE '\bgit\s+push\b'; then
+if command -v command_has_git_subcommand >/dev/null 2>&1; then
+  command_has_git_subcommand "$COMMAND" push && _HAS_GIT_PUSH=1 || _HAS_GIT_PUSH=0
+else
+  echo "$COMMAND" | grep -qE '\bgit\s+push\b' && _HAS_GIT_PUSH=1 || _HAS_GIT_PUSH=0
+fi
+if [ "$_HAS_GIT_PUSH" -eq 1 ]; then
   # Source the shared push-ref extractor if available.
   if [ -f "$HOOK_DIR/_lib-extract-push-ref.sh" ]; then
     # shellcheck disable=SC1090,SC1091
@@ -436,17 +459,26 @@ MSG
       # for #549. Uses the RAW command — see the file-level note on why
       # cd-detection never consults heredoc-stripped text.
       PUSH_WORKTREE_PATH=""
-      if echo "$COMMAND" | grep -qE '(^|[;&|[:space:]])cd[[:space:]]+\S'; then
+      PAYLOAD_CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // .tool_input.cwd // empty' 2>/dev/null || true)
+      if command -v git_prepare_invocation >/dev/null 2>&1; then
+        git_prepare_invocation "$COMMAND" push "$PAYLOAD_CWD"
+        if [ -n "${GIT_DASH_C:-}" ]; then
+          PUSH_WORKTREE_PATH="$GIT_DASH_C"
+        fi
+      fi
+      if [ -z "$PUSH_WORKTREE_PATH" ] && echo "$COMMAND" | grep -qE '(^|[;&|[:space:]])cd[[:space:]]+\S'; then
         PUSH_WORKTREE_PATH=$(echo "$COMMAND" \
           | grep -oE "cd[[:space:]]+(\"[^\"]*\"|'[^']*'|[^[:space:];&|]+)" \
           | tail -n 1 \
           | sed -E "s/^cd[[:space:]]+//; s/^[\"']//; s/[\"']\$//")
       fi
-      if [ -n "$PUSH_WORKTREE_PATH" ]; then
+      if [ -n "${GIT_DASH_C:-}${_GIT_RAW_GIT_DIR:-}${_GIT_RAW_WORK_TREE:-}" ]; then
+        TARGET_PUSH_BRANCH=$(git_target branch --show-current 2>/dev/null)
+      elif [ -n "$PUSH_WORKTREE_PATH" ]; then
         TARGET_PUSH_BRANCH=$(git -C "$PUSH_WORKTREE_PATH" branch --show-current 2>/dev/null)
       else
         # Plain `git push -u origin` with no `cd` prefix — use session cwd.
-        TARGET_PUSH_BRANCH=$(git branch --show-current 2>/dev/null)
+        TARGET_PUSH_BRANCH=$(if command -v git_target >/dev/null 2>&1; then git_target branch --show-current; else git branch --show-current; fi 2>/dev/null)
       fi
     fi
 
@@ -490,7 +522,12 @@ fi
 # For plain `git commit` (no `cd` prefix) fall back to the session cwd —
 # preserving the original behaviour for the normal single-worktree case.
 # ---------------------------------------------------------------------------
-if echo "$COMMAND" | grep -qE '\bgit\s+commit\b'; then
+if command -v command_has_git_subcommand >/dev/null 2>&1; then
+  command_has_git_subcommand "$COMMAND" commit && _HAS_GIT_COMMIT=1 || _HAS_GIT_COMMIT=0
+else
+  echo "$COMMAND" | grep -qE '\bgit\s+commit\b' && _HAS_GIT_COMMIT=1 || _HAS_GIT_COMMIT=0
+fi
+if [ "$_HAS_GIT_COMMIT" -eq 1 ]; then
   # Detect `cd <path>` prefix in compound commands, e.g.:
   #   cd ../wt && git commit -m "msg"
   #   cd /abs/path && git commit …
@@ -500,7 +537,14 @@ if echo "$COMMAND" | grep -qE '\bgit\s+commit\b'; then
   # is nothing here for heredoc-stripping to safely improve, only a
   # presence question that must stay on raw text.
   WORKTREE_PATH=""
-  if echo "$COMMAND" | grep -qE '(^|[;&|[:space:]])cd[[:space:]]+\S'; then
+  PAYLOAD_CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // .tool_input.cwd // empty' 2>/dev/null || true)
+  if command -v git_prepare_invocation >/dev/null 2>&1; then
+    git_prepare_invocation "$COMMAND" commit "$PAYLOAD_CWD"
+    if [ -n "${GIT_DASH_C:-}" ]; then
+      WORKTREE_PATH="$GIT_DASH_C"
+    fi
+  fi
+  if [ -z "$WORKTREE_PATH" ] && echo "$COMMAND" | grep -qE '(^|[;&|[:space:]])cd[[:space:]]+\S'; then
     # Resolve the LAST `cd <path>` in the chain (so `cd a && cd b && git commit`
     # targets b, not a) and STRIP surrounding quotes. Quote-stripping is the
     # security-critical part: without it, `cd "path" && git commit` would pass
@@ -515,12 +559,14 @@ if echo "$COMMAND" | grep -qE '\bgit\s+commit\b'; then
       | sed -E "s/^cd[[:space:]]+//; s/^[\"']//; s/[\"']\$//")
   fi
 
-  if [ -n "$WORKTREE_PATH" ]; then
+  if [ -n "${GIT_DASH_C:-}${_GIT_RAW_GIT_DIR:-}${_GIT_RAW_WORK_TREE:-}" ]; then
+    CURRENT_BRANCH=$(git_target branch --show-current 2>/dev/null)
+  elif [ -n "$WORKTREE_PATH" ]; then
     # Resolve branch in the target worktree, not the session cwd.
     CURRENT_BRANCH=$(git -C "$WORKTREE_PATH" branch --show-current 2>/dev/null)
   else
     # Plain `git commit` with no `cd` — use session cwd (original behaviour).
-    CURRENT_BRANCH=$(git branch --show-current 2>/dev/null)
+    CURRENT_BRANCH=$(if command -v git_target >/dev/null 2>&1; then git_target branch --show-current; else git branch --show-current; fi 2>/dev/null)
   fi
 
   if is_protected_branch "$CURRENT_BRANCH"; then
@@ -553,3 +599,17 @@ MSG
 fi
 
 exit 0
+
+}
+
+_GIT_GATE_INPUT=$(cat)
+_GIT_GATE_LIB="$(cd "$(dirname "$0")" && pwd)/_lib-git-global.sh"
+if [ -r "$_GIT_GATE_LIB" ]; then
+  # shellcheck disable=SC1090
+  . "$_GIT_GATE_LIB"
+fi
+if command -v git_visit_invocations >/dev/null 2>&1; then
+  git_visit_invocations _git_gate_body block "$_GIT_GATE_INPUT" push commit
+  exit $?
+fi
+_git_gate_body
