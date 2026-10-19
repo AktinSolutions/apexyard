@@ -16,8 +16,9 @@ fi
 _LIB_GIT_GLOBAL_LOADED=1
 
 # Share this expression with the dispatcher and the gates.
-_git_opt_val='("[^"]*"|'"'"'[^'"'"']*'"'"'|\$\([^)]*\)|`[^`]*`|[^[:space:];&|"'"'"']+)+'
-_git_sub_re='(^|[^[:alnum:]_.-])git([[:space:]]+((-[Cc]|--(git-dir|work-tree|namespace|super-prefix|config-env))[[:space:]]+'"${_git_opt_val}"'|--(git-dir|work-tree|namespace|super-prefix|config-env)='"${_git_opt_val}"'|--?[A-Za-z][A-Za-z-]*(=[^[:space:];&|]+)?))*[[:space:]]+'
+# #1748: escaped pairs and quoted values belong to a single option word.
+_git_opt_val='(\\.|"[^"]*"|'"'"'[^'"'"']*'"'"'|\$\([^)]*\)|`[^`]*`|[^[:space:];&|"'"'"']+)+'
+_git_sub_re='(^|[^[:alnum:]_.-])git([[:space:]]+((-[Cc]|--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source))[[:space:]]+'"${_git_opt_val}"'|--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source)='"${_git_opt_val}"'|--?[A-Za-z][A-Za-z-]*(='"${_git_opt_val}"')?))*[[:space:]]+'
 
 # Regex for `git [global options] <sub>` on raw text.
 # The match may include one leading boundary character.
@@ -40,7 +41,8 @@ command_has_git_subcommand() {
 # Stays inside a JSON string. Covers the same global-option forms.
 git_subcommand_payload_pattern() {
   local sub="$1"
-  printf '%s' 'git([[:space:]]+((-[Cc]|--(git-dir|work-tree|namespace|super-prefix|config-env))[[:space:]]+(\\.|[^"\\[:space:]])+|--?[A-Za-z][A-Za-z-]*(=(\\.|[^"\\[:space:]])+)?))*[[:space:]]+'"$sub"'([^[:alnum:]_.-]|$)'
+  # #1748: a JSON-escaped quoted value (-C \"a b\") is one option word.
+  printf '%s' 'git([[:space:]]+((-[Cc]|--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source))[[:space:]]+(\\"([^"\\]|\\[^"])*\\"|\\.|[^"\\[:space:]])+|--?[A-Za-z][A-Za-z-]*(=(\\"([^"\\]|\\[^"])*\\"|\\.|[^"\\[:space:]])+)?))*[[:space:]]+'"$sub"'([^[:alnum:]_.-]|$)'
 }
 
 # 2 when the token takes the next token as its value.
@@ -48,7 +50,7 @@ git_subcommand_payload_pattern() {
 # 0 when the token is not a global option.
 git_global_option_width() {
   case "$1" in
-    -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)
+    -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env|--attr-source)
       printf '2'
       ;;
     --*|-?)
@@ -72,6 +74,7 @@ _git_take_value() {
       continue
     fi
     case "$char" in
+      \\) return 1 ;; # #1748: unresolved shell escapes fail closed.
       \"|\') quote="$char" ;;
       [[:space:]]|';'|'&'|'|') break ;;
       *) taken+="$char" ;;
@@ -106,7 +109,7 @@ _git_take_global() {
       _GIT_SCAN="${_GIT_SCAN:2}"
       _git_take_value || return 1
       ;;
-    --git-dir[[:space:]]*|--work-tree[[:space:]]*|--namespace[[:space:]]*|--super-prefix[[:space:]]*|--config-env[[:space:]]*)
+    --git-dir[[:space:]]*|--work-tree[[:space:]]*|--namespace[[:space:]]*|--super-prefix[[:space:]]*|--config-env[[:space:]]*|--attr-source[[:space:]]*)
       name="${_GIT_SCAN%%[[:space:]]*}"
       _GIT_SCAN="${_GIT_SCAN#"$name"}"
       _git_take_value || return 1
@@ -115,7 +118,7 @@ _git_take_global() {
         --work-tree) _GIT_RAW_WORK_TREE="$_GIT_TAKEN" ;;
       esac
       ;;
-    --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--config-env=*)
+    --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--config-env=*|--attr-source=*)
       name="${_GIT_SCAN%%=*}"
       _GIT_SCAN="${_GIT_SCAN#"$name="}"
       _git_take_value || return 1
