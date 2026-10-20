@@ -1072,7 +1072,7 @@ For Asana (per-task lookup by GID):
 
 If your tracker has no CLI, use `kind: "custom"` with a `view_command` that calls `curl` and a `normalise_jq` filter to map the response into `{state, title, url, labels}`. If you want to disable existence verification entirely (rare — accepted gap when no CLI exists), set `kind: "none"` — the hooks fall back to shape-only validation via `tracker.id_pattern`. The registry-level `ticket_prefix` field is still respected per-project for the `/start-ticket` branch-suggestion step.
 
-#### Optional milestone for new tickets
+### Optional milestone for new tickets
 
 Some trackers need a milestone at creation time. Add `milestone` to a project's `tracker:` block in `apexyard.projects.yaml` to opt in:
 
