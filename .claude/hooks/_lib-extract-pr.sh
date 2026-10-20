@@ -1052,7 +1052,7 @@ _has_split_merge_phrase() {
   local result
   if [ "${#1}" -gt 120000 ]; then return 2; fi
   result=$(MERGE_SPLIT_INPUT="$1" awk '
-    function reset() { stage = 0; active = 1; redirected = 0; option_value = 0; api = 0; phrase_lit = cmd_lit = prefixed = 0 }
+    function reset() { stage = 0; active = 1; redirected = 0; option_value = 0; api = 0; wrapper = wrapper_value = gap = skip_target = 0; phrase_lit = cmd_lit = prefixed = 0 }
     # Start a phrase window at a host word. Return 1 when the word can be a host.
     function open_window(value,    host) {
       host = value; sub(/^.*\//, "", host)
@@ -1072,41 +1072,205 @@ _has_split_merge_phrase() {
       open_window(value)
     }
     function clear_word() { w = raw = ""; changed = opaque_word = opaque_unquoted = 0 }
-    function queue_body(body) {
-      if (body == "") return
-      if (depth >= 3 || np >= 100) scan_error = 1
-      else { pending[++np] = body; levels[np] = depth + 1 }
+    # A body from a here-document is data. Its descendants are data too.
+    # A here-document body keeps the current layer, as the scan before
+    # #1824 read it in place. A tail body runs to the end of its text.
+    # The scan reads each queued body once. The total length of all queued
+    # bodies has a limit of three times the command length, so the total
+    # work stays linear. Above that limit the scan fails closed.
+    function queue_body(body, data, tail) {
+      # A blank body holds no command, for example a blanked inert body.
+      if (body !~ /[^ \t\n]/) return
+      qlen += length(body)
+      if (depth >= 3 || (!data && nq >= 100) || qlen > budget) scan_error = 1
+      else {
+        pending[++np] = body; levels[np] = depth + (data ? 0 : 1)
+        datas[np] = in_data || data; tails[np] = tail
+        if (!data) nq++
+      }
     }
-    function consume_group(endchar,    level,t,start) {
-      start = i + 1; level = 1
+    # Index the lines of the current text once, so that each delimiter
+    # search costs a lookup and not a walk to the end of the text.
+    function index_lines(    k,m,p,key,L) {
+      split("", lpos); split("", lcnt); split("", dpos); split("", dcnt); split("", llen)
+      m = split(s, L, "\n"); p = 1
+      for (k = 1; k <= m; k++) {
+        key = L[k]; llen[p] = length(key)
+        lpos[++lcnt[key], key] = p
+        sub(/^\t+/, "", key)
+        dpos[++dcnt[key], key] = p
+        p += llen[p] + 1
+      }
+      lines_ready = 1
+    }
+    # Read the here-document delimiter after "<<" or "<<-". Quotes and
+    # escapes are removed from the word, as the shell removes them.
+    # Set hd_dash_last for "<<-" and return the word.
+    function heredoc_word(    t,d,wq) {
+      i++; hd_dash_last = 0; d = wq = ""
+      if (substr(s, i + 1, 1) == "-") { i++; hd_dash_last = 1 }
+      while (i < n && substr(s, i + 1, 1) ~ /[ \t]/) i++
+      while (i < n) {
+        t = substr(s, i + 1, 1)
+        if (wq == "" && t ~ /[ \t\n;|&()<>]/) break
+        i++
+        if (wq != "" && t == wq) { wq = ""; continue }
+        if (wq == "" && (t == sq || t == dq)) { wq = t; continue }
+        if (t == bs && wq != sq && i < n) { d = d substr(s, ++i, 1); continue }
+        d = d t
+      }
+      return d
+    }
+    # Move i from a newline to the newline after the delimiter line of one
+    # here-document. Set hd_line to the start of that line. Return 0 when
+    # the delimiter line is missing.
+    function heredoc_end(word, dash,    cnt,lo,hi,mid,p) {
+      if (!lines_ready) index_lines()
+      cnt = dash ? dcnt[word] + 0 : lcnt[word] + 0
+      # Find the first delimiter line that starts after position i.
+      lo = 1; hi = cnt
+      while (lo <= hi) {
+        mid = int((lo + hi) / 2)
+        p = dash ? dpos[mid, word] : lpos[mid, word]
+        if (p > i) hi = mid - 1
+        else lo = mid + 1
+      }
+      if (lo > cnt) { i = n; return 0 }
+      p = dash ? dpos[lo, word] : lpos[lo, word]
+      hd_line = p; i = p + llen[p]
+      if (i > n) i = n
+      return 1
+    }
+    # The substitution walk skips each pending here-document body. The body
+    # is data for the walk. Return 0 when a delimiter line is missing.
+    function skip_heredocs(    k) {
+      for (k = 1; k <= nh; k++) if (!heredoc_end(hd_word[k], hd_dash[k])) { nh = 0; return 0 }
+      nh = 0
+      return 1
+    }
+    # The command scan queues each pending here-document body as its own
+    # nested body, then continues after the delimiter line. A shell can read
+    # the body as commands, and the body quotes must not change the scan of
+    # the next command. Without a delimiter line, the shell reads the body
+    # to the end of the input, so the scan does the same. The scan queues
+    # that tail body once. A tail body reads its own tail in place, as a
+    # fresh nested body would read it. Thus no text is queued again.
+    function take_heredocs(    k,start) {
+      for (k = 1; k <= snh; k++) {
+        start = i + 1
+        if (!heredoc_end(sc_word[k], sc_dash[k])) {
+          if (in_tail) { i = start - 1; walk_failed = 0 }
+          else { queue_body(substr(s, start), 1, 1); i = n }
+          break
+        }
+        queue_body(substr(s, start, hd_line - start), 1, 0)
+      }
+      snh = 0
+    }
+    # Find the end of a substitution body. A backtick body ends at the next
+    # unescaped backtick, as in the shell. A "$(" body walk tracks quotes,
+    # comments, ANSI-C quotes, case words, and here-document bodies. In
+    # command text, a body that does not close fails closed. In a
+    # here-document body, which is data, this scan uses the plain
+    # parenthesis count for that body and all later bodies. That count is
+    # the boundary from before #1824. When the command also has a shell,
+    # eval, or source word, a shell can read the body, so the walk fails
+    # closed there too.
+    function consume_group(endchar,    level,t,start,cq,word,cases,commandpos,comment) {
+      start = i + 1
+      if (endchar == "`") {
+        level = 1
+        while (i < n) {
+          t = substr(s, ++i, 1)
+          if (t == bs) { i++; continue }
+          if (t == "`") { level = 0; break }
+        }
+        if (level && (!in_data || nested)) { scan_error = 1; i = n; return "" }
+        return substr(s, start, i - start)
+      }
+      level = 1; nh = 0
+      if (!walk_failed) {
+        cq = word = ""; cases = comment = 0; commandpos = 1
+        while (i < n && level) {
+          t = substr(s, ++i, 1)
+          if (comment) {
+            if (t != "\n") continue
+            comment = 0
+          }
+          if (t == bs && cq != sq) { word = word "!"; i++; continue }
+          # An ANSI-C quote ends at the next single quote without a
+          # backslash before it.
+          if (cq == "" && t == "$" && substr(s, i + 1, 1) == sq) { word = word "!"; i++; cq = "$"; continue }
+          if (cq == "$") { if (t == sq) cq = ""; continue }
+          if (t == sq || t == dq) {
+            word = word "!"
+            if (cq == t) cq = ""
+            else if (cq == "") cq = t
+            continue
+          }
+          if (cq != "") continue
+          if (t == "#" && (i == start || substr(s, i - 1, 1) ~ /[ \t\n;|&()]/)) {
+            comment = 1; continue
+          }
+          if (t !~ /[ \t\n;|&()<>]/) { word = word t; continue }
+          if (word != "") {
+            if (word == "case" && commandpos) cases++
+            else if (word == "esac" && commandpos && cases) cases--
+            commandpos = 0
+          }
+          word = ""
+          if (t == "<" && substr(s, i + 1, 1) == "<") {
+            if (substr(s, i + 2, 1) == "<") i += 2
+            else {
+              t = heredoc_word()
+              if (t != "") { hd_word[++nh] = t; hd_dash[nh] = hd_dash_last }
+            }
+            continue
+          }
+          if (t == "\n" && nh && !skip_heredocs()) break
+          if (t ~ /[;|&\n()]/) commandpos = 1
+          if (t == "(") level++
+          if (t == ")" && !(cases && level == 1)) level--
+        }
+        if (!level) return substr(s, start, i - start)
+        if (!in_data || nested) { scan_error = 1; i = n; return "" }
+        walk_failed = 1; i = start - 1; level = 1
+      }
       while (i < n && level) {
         t = substr(s, ++i, 1)
-        if (endchar == "`") {
-          if (t == "`") level = 0
-          continue
-        }
-        if ((endchar == ")" && t == "(") || (endchar == "}" && t == "{")) level++
-        if (t == endchar) level--
+        if (t == "(") level++
+        if (t == ")") level--
       }
       return substr(s, start, i - start)
     }
     function finish(    value) {
       if (w == "") {
         if (changed && stage > 0) altered = 1
+        if (changed && skip_target) skip_target = 0
         clear_word(); return
       }
       # Shell arguments can contain another command. Never evaluate them.
-      if (nested && raw ~ /[ \t]/) {
-        if (depth >= 3 || np >= 100) scan_error = 1
-        else { pending[++np] = raw; levels[np] = depth + 1 }
-      }
+      if (nested && raw ~ /[ \t]/) queue_body(raw, 0, 0)
+      if (skip_target) { skip_target = 0; clear_word(); return }
       value = w
       if (api && value ~ /(pulls|merge_requests)\/[0-9]+\/merge/ && changed) hit = 1
       if (active && stage == 0) {
-        # These words keep the next word at command position.
-        if (value ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || value == "env" || value == "command" || value == "exec" || value == "builtin" || value == "time" || value == "nohup" || value == "!" || value == "do" || value == "then" || value == "if" || value == "elif" || value == "else" || value == "while" || value == "until") {
+        # Wrapper options belong to the launcher, not the command window.
+        if (wrapper_value) { wrapper_value = 0; clear_word(); return }
+        if (wrapper && value ~ /^-/) {
+          if ((wrapper == "exec" && value == "-a") ||
+              (wrapper == "env" && value ~ /^(-u|-C|-S|--unset|--chdir|--split-string)$/) ||
+              (wrapper == "sudo" && value ~ /^(-u|-g|-C|-p|-h|-r|-t|-T|-D|-R|-U|--user|--group|--prompt|--host|--role|--type|--command-timeout|--chdir|--chroot|--other-user|--close-from)$/) ||
+              (wrapper == "time" && value ~ /^(-o|-f|--output|--format)$/) ||
+              (wrapper == "nice" && value ~ /^(-n|--adjustment)$/)) wrapper_value = 1
           clear_word(); return
         }
+        # These words keep the next word at command position.
+        if (value ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || value == "env" || value == "command" || value == "exec" || value == "builtin" || value == "time" || value == "nohup" || value == "sudo" || value == "nice" || value == "!" || value == "do" || value == "then" || value == "if" || value == "elif" || value == "else" || value == "while" || value == "until") {
+          if (value !~ /^[A-Za-z_][A-Za-z0-9_]*=/) wrapper = value
+          clear_word(); return
+        }
+        wrapper = 0
         if (!open_window(value)) {
           # Non-host prefix: keep looking for a later phrase window.
           prefixed = 1
@@ -1122,8 +1286,14 @@ _has_split_merge_phrase() {
         } else if (stage == 1 && \
             ((("gh" ~ ("^" cli "$")) && ("pr" ~ ("^" value "$"))) || \
              (("glab" ~ ("^" cli "$")) && ("mr" ~ ("^" value "$"))))) {
+          gap = opaque_word
           stage = 2; altered = altered || changed
           if (!opaque_word) phrase_lit = cmd_lit = 1
+        } else if (stage == 2 && gap && \
+            ((("gh" ~ ("^" cli "$")) && value == "pr") || (("glab" ~ ("^" cli "$")) && value == "mr"))) {
+          # An expansion filled the subcommand slot. A later literal
+          # subcommand word confirms the phrase, also after an opaque host.
+          gap = 0; cmd_lit = phrase_lit = 1; altered = 1
         } else if (stage == 2 && "merge" ~ ("^" value "$")) {
           if (!opaque_word) phrase_lit = 1
           # At command position, any literal phrase word confirms a changed
@@ -1137,6 +1307,9 @@ _has_split_merge_phrase() {
           else restart_window(value)
         } else if (stage == 3) {
           if (value ~ /^[0-9]+$/ && !opaque_word) { hit = 1; active = 0 }
+          # The same gap can shift the verb: a literal verb word after an
+          # expansion in the subcommand slot and the verb slot.
+          else if (gap && value == "merge" && !opaque_word) { hit = 1; active = 0 }
           else restart_window(value)
         } else if (api) {
           # Keep api set so a later path word can still match.
@@ -1163,8 +1336,8 @@ _has_split_merge_phrase() {
         if (t == endchar) level--
       }
     }
-    function scan(text,    c,t,nx,rq,rest,body) {
-      s = text; n = length(s); q = w = raw = ""; changed = opaque_word = opaque_unquoted = 0; reset()
+    function scan(text,    c,nx,t,rest,body) {
+      s = text; n = length(s); q = w = raw = ""; changed = opaque_word = opaque_unquoted = walk_failed = snh = lines_ready = 0; reset()
       for (i = 1; i <= n; i++) {
         c = substr(s, i, 1); nx = substr(s, i + 1, 1)
         if (c == sq || c == dq) {
@@ -1189,8 +1362,19 @@ _has_split_merge_phrase() {
             mark_opaque(); i++
             body = consume_group(")")
             queue_body(body)
+          } else if (nx == sq && q == "") {
+            # An ANSI-C quote ends at the next single quote without a
+            # backslash before it.
+            mark_opaque(); i++
+            while (i < n) {
+              t = substr(s, ++i, 1)
+              if (t == bs) i++
+              else if (t == sq) break
+            }
           } else if (nx == sq || nx == dq) {
-            i++; unknown(nx)
+            # In double quotes, "$" before a single quote is text. A "$"
+            # before a double quote starts a normal double-quoted string.
+            unknown("")
           } else {
             unknown("")
             if (match(rest, /^[A-Za-z_][A-Za-z0-9_]*/)) {
@@ -1219,6 +1403,14 @@ _has_split_merge_phrase() {
           i++
           body = consume_group(")")
           queue_body(body)
+          skip_target = 0
+          continue
+        }
+        if (q == "" && c == "<" && nx == "<" && substr(s, i + 2, 1) != "<") {
+          if (w ~ /^[0-9]+$/) w = ""
+          finish(); redirected = 1
+          body = heredoc_word()
+          if (body != "") { sc_word[++snh] = body; sc_dash[snh] = hd_dash_last }
           continue
         }
         if (q == "" && (c ~ /[<>]/ || (c == "&" && nx == ">"))) {
@@ -1226,32 +1418,21 @@ _has_split_merge_phrase() {
           finish(); redirected = 1
           while (i < n && substr(s, i + 1, 1) ~ /[<>|!&]/) i++
           while (i < n && substr(s, i + 1, 1) ~ /[ \t]/) i++
-          rq = ""; target = ""
-          while (i < n) {
-            t = substr(s, i + 1, 1)
-            if (rq == "" && t ~ /[ \t\n;|&<>]/) break
-            i++
-            if (length(target) < 4096) target = target t
-            else if (nested) scan_error = 1
-            if (t == sq || t == dq) {
-              if (rq == t) rq = ""
-              else if (rq == "") rq = t
-            }
-          }
-          # A shell here-string is another command source.
-          if (nested && target != "") {
-            sub(/^[\047\042]/, "", target); sub(/[\047\042]$/, "", target)
-            queue_body(target)
-          }
+          # Parse the target with the normal word reader. Its substitutions
+          # execute even when the redirect belongs to an ordinary command.
+          skip_target = 1
           continue
         }
         if (q == "" && c ~ /[ \t\n;|&()]/) {
           finish()
           if (c ~ /[\n;|&()]/) reset()
+          if (c == "\n" && snh) take_heredocs()
           continue
         }
         if (length(raw) < 4096) raw = raw c
         else if (nested) scan_error = 1
+        # A long literal path still needs its final host segment.
+        if (c == "/" && length(w) >= 128) w = ""
         if (length(w) < 128) {
           if (c ~ /[A-Za-z0-9_\/=-]/) w = w c
           else if (c == ".") w = w "\\."
@@ -1264,9 +1445,10 @@ _has_split_merge_phrase() {
       sq = sprintf("%c",39); dq = sprintf("%c",34); bs = sprintf("%c",92)
       original = ENVIRON["MERGE_SPLIT_INPUT"]
       nested = original ~ /(^|[ \t;|&\/])(bash|sh|zsh|eval|source)([ \t]|$)/
+      budget = 3 * length(original)
       scan(original)
-      for (j = 1; j <= np && j <= 100 && !hit; j++) {
-        depth = levels[j]; scan(pending[j])
+      for (j = 1; j <= np && !hit && !scan_error; j++) {
+        depth = levels[j]; in_data = datas[j]; in_tail = tails[j]; scan(pending[j])
       }
       print scan_error ? "unavailable" : (hit ? "split" : "clear")
     }

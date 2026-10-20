@@ -47,22 +47,55 @@ AgDR-0204 extends the raw fallback for unquoted `~[`, startup and `.git/hooks/` 
 - The matcher blocks redirections between merge phrase words at command position, including `&>`, `&>>`, and spaced `>&` targets.
 - It joins quoted spans within phrase words and matches the host name after its last slash.
 - Last-segment host rule: a quoted expansion before the last slash keeps the literal last path segment as the host. An unquoted expansion keeps the host opaque. An unquoted glob in the host word also keeps the host opaque, even when the glob leaves a literal last segment.
-- Command position: the first word of a command, after assignments and the words `env`, `command`, `exec`, `builtin`, `time`, `nohup`, `!`, and the control words. Any other first word is a non-host prefix.
+- Command position: the first word of a command, after assignments and the words `env`, `command`, `exec`, `builtin`, `time`, `nohup`, `sudo`, `nice`, `!`, and the control words. Any other first word is a non-host prefix.
 - At command position, a phrase window needs at least one literal phrase word. A window of only opaque phrase words matches only when a bare PR number follows it.
-- Behind a non-host prefix, including a wrapper with its own options, the host word or the subcommand word must be literal. A literal verb word alone does not match, and a bare PR number does not confirm a window of only opaque words. This keeps ordinary argument lists clear. Host options on the merge host still make the target unresolved (#1812).
+- Behind a non-host prefix, the host word or the subcommand word must be literal. A literal verb word alone does not match, and a bare PR number does not confirm a window of only opaque words. This keeps ordinary argument lists clear. Host options on the merge host still make the target unresolved (#1812).
 - Unknown expansions, escapes, brace expressions, and globs in a phrase word that still leaves a literal peer word make a matching merge target unresolved. All four gates block it.
 - Ordinary variable arguments do not start a merge phrase.
-- Nested scan queue: the body of a command substitution, a backtick substitution, or a process substitution in a command word goes into the nested phrase scan. When a shell, eval, or source word appears in the command, each word that holds a space or a tab also goes into it. A redirect target or a here-string word goes into it only in that case. The scan never evaluates shell text.
-- Open class, owned by #1824: a command substitution in a redirect target or a here-string word, in a command with no shell, eval, or source word. The scan reads that word as data.
-- Open class, owned by #1824: a substitution body that holds a closing parenthesis inside quotes or as a `case` pattern. The body scan ends at that parenthesis, so the rest of the body is not scanned as a command.
+- Nested scan queue: command, backtick, and process substitutions enter the queue, including substitutions in redirect targets and here-string words.
+- Shell, eval, and source words enable scanning of spaced argument words. Alias definitions and launcher arguments retain the existing conservative scan.
+- Substitution boundaries track comments, quotes, ANSI-C quotes (`$'...'`), command-position case words, and here-document bodies. An ANSI-C quote ends at the next single quote without a backslash before it, in command text and in the boundary walk. In command text, a `$"..."` string reads as a double-quoted string, and in double quotes a `$` before a single quote is text. A backtick body ends at the next unescaped backtick, as in the shell. In command text, a substitution body that does not close fails closed. The scan never evaluates shell text.
+- A here-document body is data for the boundary walk. The scan queues it as its own nested body, so a shell that reads it is still covered, and its quotes do not change the scan of the next command. A body without a delimiter line runs to the end of the input, as in the shell. The scan queues that tail body once. In a tail body, a later here-document without a delimiter line is read in place, so no text is queued again. In a here-document body, a substitution that does not close uses the parenthesis count from before #1824, because ordinary text can hold unpaired quotes and parentheses. When the command also has a shell, eval, or source word, a shell can read the body, so a substitution that does not close fails closed there too.
 - Open class: at command position, a window of only opaque phrase words with no bare PR number after it stays clear. This includes the form with no PR argument.
 - Open class: behind a non-host prefix, a window whose host word and subcommand word are both opaque stays clear.
 - Commands over 120,000 characters and scanner failures block with “could not scan the command”. The unresolved-target helper also fails closed on any split-scan status other than clear.
-- Nested scans have limits of three layers, 100 queued words, and 4,096 characters per word. Exceeding these limits blocks with that message.
+- Nested scans have limits of three layers and 100 queued substitution bodies or words. Here-document bodies do not count toward the 100. The total length of all queued bodies and words has a limit of three times the command length. In a command with a shell, eval, or source word, a spaced argument word has a limit of 4,096 characters. Exceeding these limits blocks with that message.
+- Bound on the total work: the scan reads the command once and each queued body once. These texts total at most four times the command length. In each text, each boundary walk moves forward, and a failed walk switches that text to the parenthesis count for the rest of the text. Thus the work for each text is a small fixed multiple of its length. The scan indexes the lines of a text once, so a delimiter search is a lookup and not a walk to the end of the text. The 120,000-character command limit then bounds the total work. A chain of nested here-documents whose bodies total more than three times the command length fails closed. On the dispatcher route, the scrubbed view of an inert chain stays clear.
 - The redirect-target guard checks file targets after bash combined-output and zsh clobber operators. Descriptor duplication and closure remain data.
 - A two-step write-then-run can hide a merge: one turn writes merge text to an ordinary file, and a later turn runs that file.
 - A grep option name padded with more than 48 characters of empty quote pairs, before or inside the name, is not recognised (AgDR-0204 reads a fixed window so the check stays linear).
 - A glob such as `?-filter=` expands to an option name only when a matching file exists. The check does not read the file system, so it does not see this.
+
+### #1824 shape-search disposition
+
+A closed syntax context still obeys the opaque-word limits above.
+An opaque word contains an expansion whose value the scanner cannot determine.
+The scanner cannot distinguish every opaque merge from an ordinary command without executing shell text.
+
+| Class | Disposition | Remaining limit or reason |
+|-------|-------------|---------------------------|
+| Two shell layers | Visible peers remain covered. Fully opaque calls remain open. | Ordinary variable-only commands must remain allowed. |
+| Functions and aliases | Function bodies with visible peers remain covered. Alias expansion and fully opaque calls remain open. | The scanner does not resolve definitions or variable values. |
+| Input launchers | Open for input-built commands and split-string launchers. | Input interpretation and fully opaque calls require evaluation. |
+| Shell heredocs | Visible peers remain covered. Fully opaque calls remain open. | Ordinary variable-only commands must remain allowed. |
+| Alternate executable names | Open. Visible definitions remain covered. | A renamed executable is indistinguishable from an ordinary program without external state. |
+| Prefix options and values | Closed for the tested wrapper options, with a confirming phrase or number. | Arbitrary launcher grammars and fully opaque calls without a number remain open. |
+| Word cap | Closed for long literal paths. The scanner retains the final path segment. | Long ordinary arguments remain allowed. |
+| Redirect and here-string substitutions | Closed as scan contexts. Fully opaque calls remain open. | Ordinary variable-only commands must remain allowed. |
+| Quoted and case-pattern parentheses | Closed as boundary contexts. Fully opaque calls remain open. | The bounded parser does not evaluate shell grammar. |
+| Expansion between host and subcommand | Closed for the tested quoted, unquoted, prefixed, and numberless forms. The host word can be literal or an expansion. | A confirming literal subcommand word preserves the phrase window. At command position, a literal verb word after expansions in the subcommand and verb slots also confirms it. |
+| Here-document bodies in substitutions | Data for the boundary walk. Ordinary bodies with unpaired quotes, ticket references in parentheses, or more than 4,096 characters remain allowed. | A here-document body that a shell reads is still scanned as a nested body. |
+| Many and nested here-documents | Linear scan work. 150 ordinary here-documents in one command remain allowed. | A nested chain over the total-length limit fails closed. |
+| ANSI-C quotes | Closed in command text and in the boundary walk. | A data body with a merge-shaped substitution still blocks, as before #1824. |
+
+Behind a non-host prefix, literal host or subcommand words between quoted expansions can still match ordinary argument lists.
+This narrower false-positive class remains conservative because executable wrappers use the same argument structure.
+The private regression sets from the #1807 review were run against this change with the system awk and with mawk.
+At the first #1824 commit, five block cases in those sets passed.
+Three had an expansion as the host word, followed by an expansion word, at command position or behind a non-host prefix.
+The other two are in the open classes above: a window of only opaque phrase words with no PR number, and a prefixed window with an opaque host word and an opaque subcommand word.
+The expansion-host change above closes the first three. The two open-class cases still pass.
+The narrower false-positive class above is the same before and after this change.
 
 Forge controls remain authoritative for these limits.
 
@@ -93,7 +126,7 @@ Round 4 (#1807 review): a bare PR number confirms a window of only opaque words 
 Behind a non-host prefix, the host word or the subcommand word must be literal.
 This stops ordinary argument lists, such as a script with three quoted arguments and a number, from matching.
 The words `builtin`, `time`, `nohup`, and `!` keep the next word at command position.
-The redirect-target and here-string contexts and the quoted-parenthesis body limit stay open under #1824.
+The #1824 disposition above supersedes the redirect-target, here-string, and quoted-parenthesis context limits.
 
 The redirect-target guard now checks combined-output file targets and zsh clobber targets.
 Descriptor duplication and closure retain their existing data behavior.
@@ -149,6 +182,8 @@ zsh uses `typeset -g +x`, which leaves the same empty unexported names.
 - `test_merge_command_data.sh`
 - `test_merge_split_phrase.sh`
 - `test_merge_split_rework.sh`
+- `test_merge_scan_1824.sh`
+- `test_merge_scan_timing_1824.sh`
 - `test_merge_gate_library_functions.sh`
 - `test_merge_known_limits.sh`
 - `test_command_scrub_must_block.sh`
