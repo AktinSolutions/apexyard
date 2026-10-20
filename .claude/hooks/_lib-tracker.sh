@@ -275,8 +275,6 @@ for p in (doc.get("projects") or []):
         break
 PY
 )
-    # First line only, matching the yq path's `head -1`.
-    val=${val%%$'\n'*}
   fi
 
   if [ -z "$val" ] || [ "$val" = "null" ]; then
@@ -905,6 +903,9 @@ tracker_create() {
   # adapter adds a milestone flag.
   if [ -z "$milestone" ]; then
     milestone=$(_tracker_project_value "$repo" milestone 2>/dev/null) || milestone=""
+    # First line only: the python reader can return a multi-line value that
+    # the yq reader would have cut.
+    milestone=${milestone%%$'\n'*}
   fi
 
   local raw rc

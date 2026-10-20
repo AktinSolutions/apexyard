@@ -449,6 +449,25 @@ assert_eq "tracker_create custom template ignoring milestone → exit 0" "0" "$i
 assert_eq "tracker_create custom template ignoring milestone → ref parsed" "6" "$i_ref"
 rm -rf "$SBK"
 
+# Case M5b — a multi-line registry value reaches the CLI as its first line
+# only, whichever reader produced it.
+SBL1=$(make_sandbox)
+install_gh_mock "$SBL1"
+printf 'Body.\n' > "$SBL1/body.md"
+(
+  cd "$SBL1" || exit 1
+  # shellcheck source=/dev/null
+  . "$SBL1/.claude/hooks/_lib-tracker.sh"
+  tracker_clear_cache
+  _tracker_project_value() { printf 'first\nsecond\n'; }
+  PATH="$SBL1/bin:$PATH" GH_CAPTURE="$SBL1/cap" tracker_create "o/r" "ML" "$SBL1/body.md" >/dev/null
+)
+assert_eq "tracker_create multi-line registry milestone → first line only" \
+  "first" "$(awk 'p{print;exit} /^--milestone$/{p=1}' "$SBL1/cap")"
+assert_eq "tracker_create multi-line registry milestone → second line never reaches the CLI" \
+  "0" "$(grep -c '^second$' "$SBL1/cap")"
+rm -rf "$SBL1"
+
 # Case M6 — kind=none ignores a milestone: still shape-only exit 3.
 SBN2=$(make_sandbox)
 printf '{ "tracker": { "kind": "none" } }\n' > "$SBN2/.claude/project-config.defaults.json"
