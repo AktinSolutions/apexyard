@@ -116,7 +116,7 @@ _require_lib() {
 _require_lib "$(dirname "$0")/_lib-extract-pr.sh" \
   is_merge_command is_merge_command_raw \
   _run_awk_or_fallback join_shell_continuations _join_shell_continuations_fallback \
-  _scrub_merge_command _normalize_json_escapes \
+  _scrub_merge_command _has_split_merge_phrase _normalize_json_escapes \
   has_conflicting_repo_flags merge_command_uses_variable extract_pr_number resolve_merge_repo resolve_pr_head \
   prmeta_get prmeta_file_list
 # Repo-qualified marker path helper (#485).
@@ -184,6 +184,13 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 
+_has_split_merge_phrase "$COMMAND"
+scan_status=$?
+if [ "$scan_status" -eq 2 ]; then
+  echo "BLOCKED: merge gate could not scan the command. Check awk and the command size." >&2
+  exit 2
+fi
+
 if ! is_merge_command "$COMMAND"; then
   exit 0
 fi
@@ -193,7 +200,7 @@ if has_conflicting_repo_flags "$COMMAND"; then
   exit 2
 fi
 
-if merge_command_uses_variable "$COMMAND"; then
+if merge_command_uses_variable "$COMMAND" "$scan_status"; then
   echo "BLOCKED: design-review gate cannot resolve a merge command containing an unexpanded PR or repo variable. Re-run with literal values." >&2
   exit 2
 fi

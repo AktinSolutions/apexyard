@@ -144,7 +144,7 @@ _require_lib() {
 _require_lib "$(dirname "$0")/_lib-extract-pr.sh" \
   is_merge_command is_merge_command_raw \
   _run_awk_or_fallback join_shell_continuations _join_shell_continuations_fallback \
-  _scrub_merge_command _normalize_json_escapes \
+  _scrub_merge_command _has_split_merge_phrase _normalize_json_escapes \
   has_conflicting_repo_flags merge_command_uses_variable extract_pr_number resolve_merge_repo \
   resolve_ci_status_glab merge_repo_is_valid prmeta_get
 # Leading cd-target recovery for shared merge-repo resolution (#687/#1151).
@@ -303,6 +303,13 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 
+_has_split_merge_phrase "$COMMAND"
+scan_status=$?
+if [ "$scan_status" -eq 2 ]; then
+  echo "BLOCKED: merge gate could not scan the command. Check awk and the command size." >&2
+  exit 2
+fi
+
 if ! is_merge_command "$COMMAND"; then
   exit 0
 fi
@@ -317,7 +324,7 @@ fi
 # command text — the old code fell back to the CWD's PR and checked an
 # UNRELATED PR's CI (and passed `$REPO` to gh, producing garbage errors). A CI
 # gate must not guess. Block with a clear, accurate instruction instead.
-if merge_command_uses_variable "$COMMAND"; then
+if merge_command_uses_variable "$COMMAND" "$scan_status"; then
   cat >&2 <<'EOF'
 BLOCKED: cannot verify CI on a variable-substituted merge command.
 
