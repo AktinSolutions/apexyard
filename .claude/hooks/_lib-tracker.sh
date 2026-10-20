@@ -275,6 +275,8 @@ for p in (doc.get("projects") or []):
         break
 PY
 )
+    # First line only, matching the yq path's `head -1`.
+    val=${val%%$'\n'*}
   fi
 
   if [ -z "$val" ] || [ "$val" = "null" ]; then
@@ -705,7 +707,8 @@ tracker_state() {
 # Contract: tracker_create <owner/repo> <title> [<body_file>] [<labels_csv>] [<milestone>]
 #   milestone (#1830): opt-in. An explicit 5th argument wins; otherwise the
 #     project's `tracker.milestone` registry value is used; with neither, no
-#     milestone flag reaches the CLI and behaviour is unchanged. gh and glab
+#     milestone flag reaches the CLI and behaviour is unchanged. An empty
+#     argument counts as unset, so one call cannot opt out of the default. gh and glab
 #     pass it as a `--milestone` argument in the create call itself, so an
 #     unknown title makes the CLI fail and nothing is filed. The `custom`
 #     adapter exposes it as $TRACKER_MILESTONE, which a template may ignore.
