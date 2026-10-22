@@ -21,10 +21,34 @@ def escape_root(root):
     return ''.join('[' + c + ']' if c in META else c for c in root)
 
 
+def open_read_flags(os_module=None):
+    """Open flags for a read that does not follow a final-component symlink.
+
+    Windows Python has no O_NOFOLLOW and no O_NONBLOCK. Missing flags
+    contribute 0. POSIX keeps both when the interpreter defines them.
+    """
+    module = os if os_module is None else os_module
+    flags = module.O_RDONLY
+    flags |= getattr(module, 'O_NOFOLLOW', 0)
+    flags |= getattr(module, 'O_NONBLOCK', 0)
+    return flags
+
+
 def read_safe(target):
-    """Read regular files without following a final-component symlink."""
+    """Read a regular file. Refuse a symlink at the final path component.
+
+    lstat runs before open so a Windows interpreter that lacks O_NOFOLLOW
+    still refuses a symlink that is already there. POSIX also passes
+    O_NOFOLLOW, which closes the gap between lstat and open.
+    """
     try:
-        fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.lstat(target)
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise ValueError('unsafe local file')
+    try:
+        fd = os.open(target, open_read_flags())
     except FileNotFoundError:
         return None
     with os.fdopen(fd, 'rb') as stream:

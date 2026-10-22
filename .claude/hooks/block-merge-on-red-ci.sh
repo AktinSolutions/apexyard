@@ -5,6 +5,8 @@
 # warn-review-marker-write.sh is not. Command parsing and GitLab pipeline
 # resolution fail closed. GitHub Actions API failures fail open with an
 # explicit unverified-CI note (AgDR-0213).
+# An unreadable `gh pr checks` result uses commit check-runs and the
+# combined commit status. Those calls fail closed (AgDR-0244).
 #
 # PreToolUse hook on `gh pr merge` / `gh api .../pulls/<N>/merge` AND their
 # GitLab counterparts `glab mr merge` / `glab api .../merge_requests/<N>/merge`:
@@ -35,6 +37,11 @@
 # It allows green checks only when those runs have also finished with an
 # accepted conclusion. The exact no-checks response still allows a repo
 # with no CI. Substring match is NOT enough (#1523).
+# Some gh builds exit 1 when a repo has no checks (#1736).
+# The output is a JSON parse error.
+# Read commit check-runs and the combined status before you block.
+# Keep a real fail row on the red path.
+# Keep a real pending row on the red path.
 # Blocks:
 #   - exit 1 (red CI)
 #   - any check with state FAILURE | CANCELLED | TIMED_OUT
@@ -137,9 +144,9 @@ _require_lib() {
 _require_lib "$(dirname "$0")/_lib-extract-pr.sh" \
   is_merge_command is_merge_command_raw \
   _run_awk_or_fallback join_shell_continuations _join_shell_continuations_fallback \
-  _scrub_merge_command _normalize_json_escapes \
+  _scrub_merge_command _has_split_merge_phrase _normalize_json_escapes \
   has_conflicting_repo_flags merge_command_uses_variable extract_pr_number resolve_merge_repo \
-  resolve_ci_status_glab
+  resolve_ci_status_glab merge_repo_is_valid prmeta_get
 # Leading cd-target recovery for shared merge-repo resolution (#687/#1151).
 # Optional only for standalone hook-test sandboxes that copy a minimal lib set.
 if [ -f "$(dirname "$0")/_lib-pr-repo.sh" ]; then
@@ -296,6 +303,13 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 
+_has_split_merge_phrase "$COMMAND"
+scan_status=$?
+if [ "$scan_status" -eq 2 ]; then
+  echo "BLOCKED: merge gate could not scan the command. Check awk and the command size." >&2
+  exit 2
+fi
+
 if ! is_merge_command "$COMMAND"; then
   exit 0
 fi
@@ -310,7 +324,7 @@ fi
 # command text — the old code fell back to the CWD's PR and checked an
 # UNRELATED PR's CI (and passed `$REPO` to gh, producing garbage errors). A CI
 # gate must not guess. Block with a clear, accurate instruction instead.
-if merge_command_uses_variable "$COMMAND"; then
+if merge_command_uses_variable "$COMMAND" "$scan_status"; then
   cat >&2 <<'EOF'
 BLOCKED: cannot verify CI on a variable-substituted merge command.
 
@@ -427,7 +441,7 @@ fi
 # the current repository; keep the validated value in a Bash argument array.
 GATE_OWNER_REPO="$CMD_REPO"
 if [ -z "$GATE_OWNER_REPO" ]; then
-  GATE_OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)
+  GATE_OWNER_REPO=$(apexyard_gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)
 fi
 # gh accepts [HOST/]OWNER/REPO for --repo (GitHub Enterprise). `gh pr`
 # takes the full value. `gh api` paths take OWNER/REPO, with the host in
@@ -438,10 +452,9 @@ if [[ "$GATE_OWNER_REPO" == */*/* ]]; then
   GATE_HOST="${GATE_OWNER_REPO%%/*}"
   GATE_API_REPO="${GATE_OWNER_REPO#*/}"
 fi
-if [[ ! "$GATE_API_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
-   [[ "$GATE_API_REPO" == ./* || "$GATE_API_REPO" == ../* ||
-      "$GATE_API_REPO" == */. || "$GATE_API_REPO" == */.. ]] ||
-   { [ -n "$GATE_HOST" ] && [[ ! "$GATE_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]; }; then
+# merge_repo_is_valid is the one repo check that this gate and the
+# dispatcher prefetch share (AgDR-0256 D1 item 5).
+if ! merge_repo_is_valid "$GATE_OWNER_REPO"; then
   echo "BLOCKED: PR #${PR_NUMBER} has an invalid owner/repo: ${GATE_OWNER_REPO:-<empty>}. Use a literal [host/]owner/repo and retry." >&2
   exit 2
 fi
@@ -460,8 +473,12 @@ fi
 # contained "no checks reported").
 # ${arr[@]+"${arr[@]}"}: bash 3.2 treats an empty "${arr[@]}" as unbound
 # under set -u. This form expands to nothing when the array is empty.
-CHECKS_OUTPUT=$(gh pr checks "$PR_NUMBER" ${REPO_ARGS[@]+"${REPO_ARGS[@]}"} 2>&1)
+CHECKS_OUTPUT=$(apexyard_gh pr checks "$PR_NUMBER" ${REPO_ARGS[@]+"${REPO_ARGS[@]}"} 2>&1)
 CHECKS_RC=$?
+if [ "$CHECKS_RC" -eq 124 ]; then
+  # apexyard_gh already printed the BLOCKED timeout line (#1796).
+  exit 2
+fi
 
 # "no checks reported on the 'X' branch" — allow only when BOTH: checks
 # exited non-zero, AND the entire trimmed output matches that exact CLI
@@ -484,7 +501,13 @@ fi
 
 # Workflow runs live in the base repo. Validate the head before using it
 # in an API path. A malformed PR head blocks rather than becoming an API fault.
-GATE_HEAD_SHA=$(gh pr view "$PR_NUMBER" ${REPO_ARGS[@]+"${REPO_ARGS[@]}"} --json headRefOid --jq '.headRefOid' 2>/dev/null)
+# With an explicit repo, read the dispatcher snapshot first (AgDR-0256).
+GATE_HEAD_SHA=""
+if [ -n "$CMD_REPO" ] && GATE_HEAD_SHA=$(prmeta_get head "$PR_NUMBER" "$CMD_REPO"); then
+  :
+else
+  GATE_HEAD_SHA=$(apexyard_gh pr view "$PR_NUMBER" ${REPO_ARGS[@]+"${REPO_ARGS[@]}"} --json headRefOid --jq '.headRefOid' 2>/dev/null)
+fi
 if [[ ! "$GATE_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
   echo "BLOCKED: PR #${PR_NUMBER} has an invalid head SHA. Resolve the PR head and retry." >&2
   exit 2
@@ -495,7 +518,7 @@ fi
 WORKFLOW_COUNT=""
 WORKFLOW_ERROR=""
 if [ "$NO_CHECKS" = "1" ]; then
-  WORKFLOWS_JSON=$(gh api ${API_HOST_ARGS[@]+"${API_HOST_ARGS[@]}"} "repos/${GATE_API_REPO}/actions/workflows?per_page=100" 2>/dev/null)
+  WORKFLOWS_JSON=$(apexyard_gh api ${API_HOST_ARGS[@]+"${API_HOST_ARGS[@]}"} "repos/${GATE_API_REPO}/actions/workflows?per_page=100" 2>/dev/null)
   WORKFLOW_RC=$?
   if [ "$WORKFLOW_RC" -ne 0 ]; then
     WORKFLOW_ERROR="workflow query failed"
@@ -516,7 +539,7 @@ fi
 # One head-filtered request per merge. A partial page cannot prove that
 # every run passed, so refuse a merge if the response reports more runs
 # than this request returned.
-RUNS_JSON=$(gh api ${API_HOST_ARGS[@]+"${API_HOST_ARGS[@]}"} "repos/${GATE_API_REPO}/actions/runs?head_sha=${GATE_HEAD_SHA}&per_page=100" 2>/dev/null)
+RUNS_JSON=$(apexyard_gh api ${API_HOST_ARGS[@]+"${API_HOST_ARGS[@]}"} "repos/${GATE_API_REPO}/actions/runs?head_sha=${GATE_HEAD_SHA}&per_page=100" 2>/dev/null)
 RUNS_RC=$?
 RUNS_ERROR=""
 if [ "$RUNS_RC" -ne 0 ]; then
@@ -630,11 +653,255 @@ if [ "$NO_CHECKS" = "1" ]; then
   exit 0
 fi
 
+# Return 0 when every non-empty line is a gh pr checks row.
+# A row has one state word: pass, fail, pending, skipping, or cancel.
+# Return 1 for empty text or for a CLI error.
+_gh_checks_output_is_result() {
+  local text="$1"
+  [ -n "$text" ] || return 1
+  (
+    set -f
+    local line field state saw=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line#"${line%%[![:space:]]*}"}"
+      line="${line%"${line##*[![:space:]]}"}"
+      [ -z "$line" ] && continue
+      state=""
+      # Field split is required. A check row separates columns with spaces or tabs.
+      # shellcheck disable=SC2086
+      for field in $line; do
+        case "$field" in
+          pass|fail|pending|skipping|cancel) state=$field ;;
+        esac
+      done
+      [ -n "$state" ] || exit 1
+      saw=1
+    done <<< "$text"
+    [ "$saw" -eq 1 ]
+  )
+}
+
+# Read every JSON page from gh api --paginate.
+# Print verdict and block rows for the caller.
+# GitHub repeats total_count on every page. Accept that value when the
+# run count equals it. Accept the sum of page totals when the run count
+# equals that sum. Reject every other count.
+_ci_pages_verdict() {
+  local kind="$1"
+  jq -s -r --arg kind "$kind" '
+    def line_string: gsub("[\u0000-\u001f\u007f]"; " ");
+    def int_ok: type == "number" and . >= 0 and floor == .;
+    def totals_match($got):
+      (map(.total_count)) as $totals |
+      ($totals | unique) as $uniq |
+      ($totals | add) as $sum |
+      if ($uniq | length) == 1 and $got == $uniq[0] then true
+      elif $got == $sum then true
+      else false end;
+    def run_page:
+      type == "object" and
+      (.total_count | int_ok) and
+      (.check_runs | type == "array") and
+      all(.check_runs[];
+        type == "object" and
+        (.status | type == "string") and
+        (.conclusion == null or (.conclusion | type == "string")) and
+        (.name == null or (.name | type == "string")) and
+        (.id == null or (.id | type == "number")));
+    def status_page:
+      type == "object" and
+      (.total_count | int_ok) and
+      (.state | type == "string") and
+      (.statuses | type == "array") and
+      all(.statuses[];
+        type == "object" and
+        (.state | type == "string") and
+        (.context == null or (.context | type == "string")));
+    def run_name:
+      ((.name | if type == "string" and . != "" then . else null end) //
+        ((.id | if type == "number" then "check " + tostring else null end) //
+          "check run"));
+    if length == 0 then
+      "verdict\tinvalid"
+    elif $kind == "runs" and any(.[]; run_page | not) then
+      "verdict\tinvalid"
+    elif $kind == "status" and any(.[]; status_page | not) then
+      "verdict\tinvalid"
+    elif $kind == "status" and ((map(.state) | unique | length) != 1) then
+      "verdict\tinvalid"
+    else
+      (if $kind == "runs" then ([.[].check_runs[]] | length)
+       else ([.[].statuses[]] | length) end) as $got |
+      if totals_match($got) | not then
+        "verdict\tincomplete\t\($got)"
+      elif $kind == "runs" then
+        "verdict\tok\t\($got)",
+        (.[].check_runs[] |
+          select(
+            .status != "completed" or
+            (.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")
+          ) |
+          (run_name | line_string) as $n |
+          "block\trun\t\($n)\t\(.status | line_string)\t\((.conclusion // "none") | line_string)")
+      else
+        (.[0].state | line_string) as $state |
+        if $got == 0 or $state == "success" then
+          "verdict\tok\t\($got)\t\($state)"
+        else
+          "verdict\tok\t\($got)\t\($state)",
+          (([.[].statuses[] | select(.state != "success")]) as $bad |
+            if ($bad | length) == 0 then
+              "block\tstatus\tcombined status\t\($state)"
+            else
+              $bad[] |
+              (((.context | if type == "string" and . != "" then . else null end) //
+                "status") as $c |
+              "block\tstatus\t\($c | line_string)\t\(.state | line_string)")
+            end)
+        end
+      end
+    end
+  '
+}
+
+# gh pr checks failed and the text is not a check table.
+# Read check-runs and the combined commit status before a block.
+# Exit 0 when both totals are 0, or when every result passed.
+# Exit 2 when a result is bad, a page is incomplete, or the API cannot be read.
+_commit_check_fallback() {
+  local pr="$1"
+  local checks_json status_json checks_rc status_rc
+  local checks_lines status_lines line
+  local checks_verdict="" status_verdict=""
+  local checks_verdict_seen=0 status_verdict_seen=0
+  local checks_count="" status_count="" status_state=""
+  local block_lines="" tag kind a b c
+
+  if [ -z "$GATE_API_REPO" ] || [ -z "$GATE_HEAD_SHA" ]; then
+    echo "BLOCKED: PR #${pr}: the commit check fallback cannot resolve the repo or the head SHA. The merge stays blocked." >&2
+    exit 2
+  fi
+
+  checks_json=$(apexyard_gh api ${API_HOST_ARGS[@]+"${API_HOST_ARGS[@]}"} --paginate \
+    "repos/${GATE_API_REPO}/commits/${GATE_HEAD_SHA}/check-runs?per_page=100" 2>/dev/null)
+  checks_rc=$?
+  status_json=$(apexyard_gh api ${API_HOST_ARGS[@]+"${API_HOST_ARGS[@]}"} --paginate \
+    "repos/${GATE_API_REPO}/commits/${GATE_HEAD_SHA}/status?per_page=100" 2>/dev/null)
+  status_rc=$?
+  if [ "$checks_rc" -eq 124 ] || [ "$status_rc" -eq 124 ]; then
+    exit 2
+  fi
+  if [ "$checks_rc" -ne 0 ] || [ "$status_rc" -ne 0 ]; then
+    echo "BLOCKED: PR #${pr}: gh pr checks did not return a CI result, and the commit check fallback failed. The merge stays blocked." >&2
+    exit 2
+  fi
+
+  checks_lines=$(printf '%s' "$checks_json" | _ci_pages_verdict runs)
+  checks_rc=$?
+  status_lines=$(printf '%s' "$status_json" | _ci_pages_verdict status)
+  status_rc=$?
+  if [ "$checks_rc" -ne 0 ] || [ "$status_rc" -ne 0 ]; then
+    echo "BLOCKED: PR #${pr}: the commit check fallback response was incomplete or invalid. The merge stays blocked." >&2
+    exit 2
+  fi
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    IFS=$'\t' read -r tag kind a b c <<< "$line"
+    case "$tag" in
+      verdict)
+        # Reject each additional verdict row.
+        if [ "$checks_verdict_seen" -ne 0 ]; then
+          checks_verdict=invalid
+          continue
+        fi
+        checks_verdict_seen=1
+        checks_verdict=$kind
+        checks_count=$a
+        ;;
+      block)
+        block_lines="${block_lines}${a} — status=${b}, conclusion=${c}"$'\n'
+        ;;
+      *)
+        checks_verdict=invalid
+        ;;
+    esac
+  done <<< "$checks_lines"
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    IFS=$'\t' read -r tag kind a b c <<< "$line"
+    case "$tag" in
+      verdict)
+        # Reject each additional verdict row.
+        if [ "$status_verdict_seen" -ne 0 ]; then
+          status_verdict=invalid
+          continue
+        fi
+        status_verdict_seen=1
+        status_verdict=$kind
+        status_count=$a
+        status_state=$b
+        ;;
+      block)
+        block_lines="${block_lines}${a} — state=${b}"$'\n'
+        ;;
+      *)
+        status_verdict=invalid
+        ;;
+    esac
+  done <<< "$status_lines"
+
+  if [ "$checks_verdict" != "ok" ] || [ "$status_verdict" != "ok" ]; then
+    echo "BLOCKED: PR #${pr}: the commit check fallback response was incomplete or invalid. The merge stays blocked." >&2
+    exit 2
+  fi
+  case "$checks_count" in
+    ''|*[!0-9]*)
+      echo "BLOCKED: PR #${pr}: the commit check fallback response was incomplete or invalid. The merge stays blocked." >&2
+      exit 2
+      ;;
+  esac
+  case "$status_count" in
+    ''|*[!0-9]*)
+      echo "BLOCKED: PR #${pr}: the commit check fallback response was incomplete or invalid. The merge stays blocked." >&2
+      exit 2
+      ;;
+  esac
+
+  if [ -n "$block_lines" ]; then
+    cat >&2 <<MSG
+BLOCKED: PR #${pr} has CI that has not passed for commit ${GATE_HEAD_SHA} (commit check fallback):
+${block_lines}
+MSG
+    exit 2
+  fi
+
+  if [ "$checks_count" -eq 0 ] && [ "$status_count" -eq 0 ]; then
+    echo "NOTE: PR #${pr}: used the commit check fallback because gh pr checks did not return a CI result. No check runs and no statuses are reported for commit ${GATE_HEAD_SHA}." >&2
+    exit 0
+  fi
+
+  if [ "$status_count" -eq 0 ] || [ "$status_state" = "success" ]; then
+    exit 0
+  fi
+
+  echo "BLOCKED: PR #${pr}: the commit check fallback found combined status ${status_state:-unknown}. The merge stays blocked." >&2
+  exit 2
+}
+
 if [ "$CHECKS_RC" = "0" ]; then
   exit 0
 fi
 
-# Red CI (exit 1) or unknown non-zero. Emit the raw check output in the
+# The no-checks path already returned.
+# A real fail row or a real pending row keeps the red block below.
+# Any other non-zero result is a CLI error. Read the commit APIs first.
+if ! _gh_checks_output_is_result "$CHECKS_OUTPUT"; then
+  _commit_check_fallback "$PR_NUMBER"
+fi
+
+# Red CI (exit 1) or pending (exit 8). Emit the raw check output in the
 # error message so the user can see exactly which checks are red.
 cat >&2 <<MSG
 BLOCKED: PR #${PR_NUMBER} has red CI. Cannot merge.

@@ -54,6 +54,17 @@ _ticket_path_canonicalize_raw() {
   local p="$1" joined="" dir=""
   [ -n "$p" ] || return 0
 
+  # Claude Code sends Edit and Write paths as C:\... on Windows. That form
+  # is absolute. The /* test below does not treat a drive letter as absolute,
+  # so the old code joined the path onto $PWD and .claude/ and docs/ never
+  # matched (me2resh/apexyard#1724). _windows_path_to_posix lives in
+  # _lib-path-resolve.sh, which require-active-ticket.sh sources first.
+  # When cygpath is present, that helper applies the Git Bash mount table
+  # before this function resolves the path (me2resh/apexyard#1743).
+  if command -v _windows_path_to_posix >/dev/null 2>&1; then
+    p=$(_windows_path_to_posix "$p")
+  fi
+
   case "$p" in
     /*) joined="$p" ;;
     *) joined="${PWD%/}/$p" ;;

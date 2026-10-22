@@ -509,6 +509,15 @@ _ratc_evaluate_target() {
     return 0
   fi
 
+  # A drive-letter path is absolute. The slash tests below do not see a
+  # leading slash in C:\..., so the old code joined that path onto $PWD.
+  # A source write from a non-git directory then looked ungoverned.
+  # _windows_path_to_posix uses cygpath -u when cygpath is present.
+  # That call applies the Git Bash mount table before the slash tests.
+  if [ -n "$FILE_PATH" ] && command -v _windows_path_to_posix >/dev/null 2>&1; then
+    FILE_PATH=$(_windows_path_to_posix "$FILE_PATH")
+  fi
+
   # Normalise to repo-relative path when possible.
   #
   # BUG #744 FIX: derive REPO_ROOT from the FILE_PATH's directory, NOT the
@@ -752,6 +761,7 @@ _ratc_evaluate_target() {
       local _og_in_ws_res=0
       local _og_in_git=0
       local _og_real_ops="" _og_real_ws="" _og_probe _og_git_root=""
+      local _og_drive="" _og_drive_seen=1
 
       # Canonicalize the boundary anchors ONCE — used as the comparison
       # basis for both the raw-target check and the resolved-target check.
@@ -817,7 +827,20 @@ _ratc_evaluate_target() {
         _og_in_git=1
       fi
 
-      if [ "$_og_has_symlink" = 0 ] \
+      # Git Bash mounts C: at /c. If that drive root is not on this machine,
+      # the path was not shown to sit outside a repository. Do not exempt it.
+      # On Windows the drive root exists, so a real outside file still can.
+      case "$_og_abs_target" in
+        /[a-z]/*)
+          _og_drive="${_og_abs_target#/}"
+          _og_drive="${_og_drive%%/*}"
+          _og_drive="/${_og_drive}"
+          [ -d "$_og_drive" ] || _og_drive_seen=0
+          ;;
+      esac
+
+      if [ "$_og_drive_seen" = 1 ] \
+         && [ "$_og_has_symlink" = 0 ] \
          && [ "$_og_in_ops_raw" = 0 ] && [ "$_og_in_ws_raw" = 0 ] \
          && [ "$_og_in_ops_res" = 0 ] && [ "$_og_in_ws_res" = 0 ] \
          && [ "$_og_in_git" = 0 ]; then
@@ -908,14 +931,19 @@ EOF_REVIEW_MARKERS
   # The marker is cleared at SessionStart by clear-bootstrap-marker.sh so
   # a stale marker from an interrupted session can't carry over.
   local BOOTSTRAP_MARKER active_bootstrap
-  BOOTSTRAP_MARKER="$MARKER_HOME/.claude/session/active-bootstrap"
+  # shellcheck source=/dev/null
+  [ ! -r "$_RATC_HOOK_DIR/_lib-session-markers.sh" ] || . "$_RATC_HOOK_DIR/_lib-session-markers.sh"
+  BOOTSTRAP_MARKER=""
+  if command -v active_bootstrap_marker_path >/dev/null 2>&1; then
+    BOOTSTRAP_MARKER=$(active_bootstrap_marker_path "$MARKER_HOME") || BOOTSTRAP_MARKER=""
+  fi
   if [ -f "$BOOTSTRAP_MARKER" ]; then
     active_bootstrap=$(tr -d '[:space:]' < "$BOOTSTRAP_MARKER" 2>/dev/null)
     if [ -n "$active_bootstrap" ]; then
       # Source the config reader and look up bootstrap_skills.
-      if [ -f "$MARKER_HOME/.claude/hooks/_lib-read-config.sh" ]; then
+      if [ -f "$_RATC_HOOK_DIR/_lib-read-config.sh" ]; then
         # shellcheck source=/dev/null
-        . "$MARKER_HOME/.claude/hooks/_lib-read-config.sh"
+        . "$_RATC_HOOK_DIR/_lib-read-config.sh"
         if command -v config_get >/dev/null 2>&1; then
           # `config_get '.ticket.bootstrap_skills[]'` outputs one skill per
           # line. Use grep -wF for whole-word, fixed-string match.
@@ -968,6 +996,11 @@ EOF_REVIEW_MARKERS
     fi
   fi
   if [ -n "$MARKER" ]; then
+    # Advisory only (AgDR-0257 / #1533): warn when the marker belongs to
+    # another session or another branch. Never changes this exit code.
+    if command -v active_ticket_warn_if_mismatch >/dev/null 2>&1; then
+      active_ticket_warn_if_mismatch "$MARKER" "${AT_TREE:-}" "$OPS_ROOT" || true
+    fi
     return 0
   fi
 

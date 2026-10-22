@@ -79,13 +79,14 @@ setup_dispatch_sandbox() {
   cp "$hooks_src/dispatch-bash.sh" "$dest/hooks/dispatch-bash.sh"
   cp "$(dirname "$hooks_src/dispatch-bash.sh")/_lib-awk-fallback.sh" "$dest/hooks/_lib-awk-fallback.sh"
   [ -f "$hooks_src/_lib-extract-pr.sh" ] && cp "$hooks_src/_lib-extract-pr.sh" "$dest/hooks/_lib-extract-pr.sh"
+  [ -f "$hooks_src/_lib-git-global.sh" ] && cp "$hooks_src/_lib-git-global.sh" "$dest/hooks/_lib-git-global.sh"
   [ -f "$hooks_src/_lib-command-scrub.sh" ] && cp "$hooks_src/_lib-command-scrub.sh" "$dest/hooks/_lib-command-scrub.sh"
   # _lib-extract-pr.sh sources the tracker library. Copy it so the sandbox
   # does not depend on finding it through the surrounding git checkout.
   [ -f "$hooks_src/_lib-tracker.sh" ] && cp "$hooks_src/_lib-tracker.sh" "$dest/hooks/_lib-tracker.sh"
   chmod +x "$dest/hooks/dispatch-bash.sh"
   local script
-  for script in block-ambient-tracker-repo.sh block-privileged-escalation.sh \
+  for script in block-protected-target-writes.sh block-ambient-tracker-repo.sh block-privileged-escalation.sh \
     require-skill-for-issue-create.sh require-orbit-slice-for-ticket.sh require-migration-ticket.sh \
     require-active-ticket.sh warn-review-marker-write.sh \
     warn-isolated-build-risk.sh block-reviewer-repo-mutation.sh \
