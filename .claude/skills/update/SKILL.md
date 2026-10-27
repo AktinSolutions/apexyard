@@ -1,6 +1,6 @@
 ---
 name: update
-description: Sync the ApexYard fork with upstream — per-file update by owner class on a sync branch (the default; --git-merge runs the history merge), walk per-version migrations.
+description: Sync the ApexYard fork with upstream. Covers per-file update by owner class on a sync branch (the default; --git-merge runs the history merge). Walks per-version migrations.
 argument-hint: "[--plan] [--dry-run] [--rebase] [--git-merge] [--from-version vN.N.N] [--skip-migrations] [--skip-adapter-sync]"
 allowed-tools: Bash, Read, Write, Edit, AskUserQuestion
 ---
@@ -1254,7 +1254,7 @@ Always remove the bootstrap marker on a clean exit (after the sync branch is rea
 
 ## Related
 
-- `docs/multi-project.md` § "Upgrades — pulling from upstream" — the manual flow this skill automates.
+- `docs/multi-project.md` § "Upgrades: pulling from upstream" — the manual flow this skill automates.
 - `docs/upgrading.md` — adopter-facing reference for the multi-hop migration chain.
 - `docs/agdr/AgDR-0032-update-chain-migrations.md` — design rationale for the version anchor + per-pair migrations.
 - `.claude/hooks/_lib-migration-chain.sh` — the chain detection + run library.
