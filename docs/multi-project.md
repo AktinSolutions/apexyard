@@ -1090,9 +1090,11 @@ The key is optional and off by default. A project without it files tickets exact
 - The ticket-filing skills pass no milestone. They get the project's default from `tracker_create`.
 - `gh` and `glab` pass `--milestone` in the same create call. No follow-up edit runs.
 - An unknown milestone title makes the CLI fail. `tracker_create` returns 1 and files nothing.
-- A `custom` `create_command` reads the value from `$TRACKER_MILESTONE`. The variable is empty when no milestone is set. A template that does not use it needs no change.
+- A `custom` `create_command` reads the value from `$TRACKER_MILESTONE`. The variable stays empty when you set no milestone. A template that does not use it needs no change.
 - The framework creates no milestones. The milestone must already exist in the tracker.
-- Quote a numeric title in YAML, for example `"3"`. The CLI reads a bare number as a milestone number.
+- Quote a title that looks like a number, for example `"1.10"`. The python3 fallback reader can change an unquoted value, for example to `1.1`.
+- Only the registry sets this key. The framework ignores a global `tracker.milestone` in `project-config.json`.
+- The registry read needs `yq`, or `python3` with PyYAML. Without a parser, the read drops the default and tickets file with no milestone.
 
 Do not enable verbose HTTP tracing inside `create_command`, `list_command`, `review_command`, or `view_command`. Commands such as `curl -v` and `set -x` print request headers, including `Authorization`, to stderr. Stderr from those templates reaches the terminal and the agent transcript. Redirect that output yourself if you need it.
 
