@@ -160,6 +160,7 @@ if printf '%s' "$COMMAND" | grep -qE 'record-menu-approval|_lib-menu-approval|me
   exit 2
 fi
 
+# APEXYARD_DISPATCH_GATE: Bash|*|block-protected-target-writes.sh
 # APEXYARD_DISPATCH_GATE: Bash|*|block-ambient-tracker-repo.sh
 # APEXYARD_DISPATCH_GATE: Bash|*|block-privileged-escalation.sh
 # APEXYARD_DISPATCH_GATE: Bash|*|require-skill-for-issue-create.sh
@@ -219,6 +220,7 @@ fi
 
 # Hooks without a command predicate are safety checks for every Bash call.
 for script in \
+  block-protected-target-writes.sh \
   block-ambient-tracker-repo.sh \
   block-privileged-escalation.sh \
   require-skill-for-issue-create.sh \
@@ -232,7 +234,7 @@ for script in \
   block-forged-menu-approval.sh; do
   case "$script" in
     # Ticket-first fails closed (me2resh/apexyard#1623).
-    require-active-ticket.sh) run_fail_closed_hook "$script" ;;
+    block-protected-target-writes.sh|require-active-ticket.sh) run_fail_closed_hook "$script" ;;
     # Menu-record forgery guard fails closed too (AgDR-0234). A crash must
     # not let a Bash write of approval_channel=menu through unchecked.
     block-forged-menu-approval.sh) run_fail_closed_hook "$script" ;;
@@ -494,14 +496,16 @@ esac
 # the subcommand, so `git push;`, `git push&&` and `(git push)` also route.
 #
 # The scan adds routing when its join succeeds. If awk fails, run the push
-# and commit gates unconditionally. The scan does not scrub
-# quoted data, so text that only mentions a push or commit (a heredoc body,
-# an echo, a commit message) also routes. That over-match can cause a false
-# block from a gate that refuses compound commands. A real compound commit
-# such as `git add a && git commit ...` reaches validate-commit-format.sh,
-# which refuses it, as it did before the dispatcher existed.
+# and commit gates unconditionally. #1780 / AgDR-0262: strip a confirmed
+# quoted heredoc body before push/commit routing only when the whole
+# command is one allow-listed data sink, so prose mentions do not start
+# those gates. Any other command keeps the raw command, so text that only
+# mentions a push or commit (an echo, a commit message) still routes. The
+# alias check and push/commit routing read the stripped text. The
+# merge-shape scan reads the raw command. If the strip fails, run both gate
+# groups (fail closed). Unquoted heredocs and here-strings are not stripped.
 #
-# Line continuations are joined first, because grep reads one line at a
+# Line continuations are joined, because grep reads one line at a
 # time and `git \<newline> push` would otherwise put git and push on
 # different lines. Bash 3.2's whole-string substitution is superlinear on
 # thousands of continuations, so use one awk pass. The sentinel preserves
@@ -510,9 +514,13 @@ esac
 # The option list accepts `-C`, `-c` and the long options that take a
 # separate-word value, plus any `-x`, `--opt` or `--opt=value`.
 _scan_failed=0
+_scan_bash_cmd=""
 # Preserve broad routing for git\<newline>push and quoted/commented pairs.
 # Bash removal could hide verbs that the existing dispatcher routes.
 _dispatch_join_failure() { return 1; }
+# A join failure here fails closed before the alias library loads. The
+# route text is joined again after the quoted-heredoc strip below
+# (#1829 B1b).
 if [ -r "$HOOK_DIR/_lib-awk-fallback.sh" ]; then
   . "$HOOK_DIR/_lib-awk-fallback.sh"
   if _scan_cmd=$(join_shell_continuations "$COMMAND" broad-space _dispatch_join_failure); then
@@ -546,10 +554,52 @@ fi
 if ! command -v command_has_git_subcommand >/dev/null 2>&1; then
   _scan_failed=1
 fi
+# #1780: strip quoted heredoc bodies before the alias check and push/commit
+# routing. The raw COMMAND stays for merge-shape matching below.
+if [ "$_scan_failed" -eq 0 ]; then
+  if [ -r "$HOOK_DIR/_lib-strip-heredoc.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$HOOK_DIR/_lib-strip-heredoc.sh"
+    if ! declare -F strip_heredoc_bodies >/dev/null 2>&1; then
+      _scan_failed=1
+    # #1829 B1b: strip the raw command, then join continuations. The
+    # stripper must see each backslash-newline, because bash removes it
+    # before it reads operators: `<\<newline><` is one `<<`. The joined
+    # text hides that operator.
+    elif ! _scan_cmd=$(strip_heredoc_bodies "$COMMAND" quoted); then
+      _scan_failed=1
+    else
+      # #1837: the broad join puts a space where bash puts nothing, so a
+      # continuation inside a word (the verb, a -C value, a redirection
+      # target, a dashed program name) splits that word. Also route on the
+      # text that bash runs. Only a pair that comes directly after a
+      # character that is not a blank needs it. After a blank, both joins
+      # give the same words. The one exception is a comment line, which
+      # AgDR-0269 records as a residual. This keeps the cost off the usual
+      # ` \` line end.
+      case "$_scan_cmd" in
+        *[![:space:]]\\$'\n'*)
+          _scan_bash_cmd=$(join_shell_continuations "$_scan_cmd" bash _dispatch_join_failure) || _scan_failed=1
+          ;;
+      esac
+      if ! _scan_cmd=$(join_shell_continuations "$_scan_cmd" broad-space _dispatch_join_failure); then
+        _scan_failed=1
+      fi
+    fi
+  else
+    _scan_failed=1
+  fi
+fi
 if [ "$_alias_library_loaded" = 1 ] && command -v git_alias_check >/dev/null 2>&1; then
   # cmd and cwd are read by git_alias_check in this shell.
+  # Use the stripped route text, so quoted heredoc prose is not scanned
+  # (#1780). Use the raw command when the strip failed closed.
   # shellcheck disable=SC2034
-  cmd="$COMMAND"
+  if [ "$_scan_failed" -eq 0 ]; then
+    cmd="$_scan_cmd"
+  else
+    cmd="$COMMAND"
+  fi
   # shellcheck disable=SC2034
   cwd=$(jq -r '.cwd // .tool_input.cwd // empty' <<<"$INPUT" 2>/dev/null) || cwd=""
   git_alias_check push commit || exit 2
@@ -565,15 +615,20 @@ if [ "$_scan_failed" -eq 1 ]; then
   run_commit_gates
 else
   # #1816 G2/G3: expansion hides the command word or verb — fail closed.
+  # #1837: each check reads the broad-join text and, when the command holds
+  # a continuation, the bash-join text too. A route from either one counts.
   if command -v git_uncertain_protected_shape >/dev/null 2>&1 \
-    && git_uncertain_protected_shape "$_scan_cmd"; then
+    && { git_uncertain_protected_shape "$_scan_cmd" \
+      || { [ -n "${_scan_bash_cmd:-}" ] && git_uncertain_protected_shape "$_scan_bash_cmd"; }; }; then
     run_push_gates
     run_commit_gates
   else
-    if command_has_git_subcommand "$_scan_cmd" push; then
+    if command_has_git_subcommand "$_scan_cmd" push \
+      || { [ -n "${_scan_bash_cmd:-}" ] && command_has_git_subcommand "$_scan_bash_cmd" push; }; then
       run_push_gates
     fi
-    if command_has_git_subcommand "$_scan_cmd" commit; then
+    if command_has_git_subcommand "$_scan_cmd" commit \
+      || { [ -n "${_scan_bash_cmd:-}" ] && command_has_git_subcommand "$_scan_bash_cmd" commit; }; then
       run_commit_gates
     fi
   fi
@@ -609,7 +664,9 @@ if [ -z "$COMMAND" ]; then
   fi
   if raw_payload_command_matches "$INPUT" "$(git_subcommand_payload_pattern '(-c[[:space:]]+[^[:space:]]*[Aa][Ll][Ii][Aa][Ss]\.[^[:space:]]+|--config-env)')" \
     || raw_payload_command_matches "$INPUT" "$(git_subcommand_payload_pattern push)" \
-    || raw_payload_command_matches "$INPUT" "$(git_subcommand_payload_pattern commit)"; then
+    || raw_payload_command_matches "$INPUT" "$(git_subcommand_payload_pattern commit)" \
+    || raw_payload_command_matches "$INPUT" "$(git_redir_uncertain_payload_pattern)" \
+    || raw_payload_command_matches "$INPUT" "$(git_dashed_payload_pattern)"; then
     echo "BLOCKED: dispatcher cannot parse this git command. Restore jq and retry." >&2
     exit 2
   fi

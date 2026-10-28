@@ -25,6 +25,14 @@ It covers me2resh/apexyard#1623.
 | The four merge gates | Inside the dispatcher, for merge commands | The dispatcher prints `BLOCKED` and exits 2 |
 | `block-forged-menu-approval.sh` | Edit, Write, MultiEdit matcher in `.claude/settings.json` | Claude Code blocks the call (`onFailure` is `block`) |
 | `block-forged-menu-approval.sh` | Inside the dispatcher, for each Bash call | The dispatcher prints `BLOCKED` and exits 2 |
+| `limit-reviewer-writes.sh` | Edit, Write, MultiEdit matcher in `.claude/settings.json` | Claude Code blocks the call (`onFailure` is `block`), for every caller (AgDR-0266) |
+| `block-protected-target-writes.sh` | Edit, Write, MultiEdit, NotebookEdit matcher in `.claude/settings.json` | Claude Code blocks the call (`onFailure` is `block`) |
+| `block-protected-target-writes.sh` | Inside the dispatcher, for each Bash call | The dispatcher prints `BLOCKED` and exits 2 |
+| `block-hook-disabling-config-change.sh` | ConfigChange matcher in `.claude/settings.json` | Claude Code blocks the settings change (`onFailure` is `block`) |
+
+The last three rows are the tamper controls of AgDR-0261 § B (me2resh/apexyard#1806).
+They apply to every caller and have no hatch.
+The operator recovery path is the launch flag in the escape-hatch section below.
 
 The dispatcher has one path for fail-closed gates, `run_fail_closed_hook`.
 The merge gates (`run_merge_gate_hook`), ticket-first, and the menu-record guard use it.
@@ -33,22 +41,30 @@ kill signal.
 A Bash syntax error in a gate already exits 2, so it blocks too.
 
 The dispatcher sets no timer of its own.
-A gate that hangs is ended by the `timeout` on the dispatcher entry.
+The `timeout` on the dispatcher entry ends a gate that hangs.
 `onFailure` set to `block` then blocks the call.
 Timeout values come from a recorded profile.
 See `docs/perf/hook-fail-closed-profile-2026-10.md`.
 
 | Entry | Timeout | Basis |
 |-------|---------|-------|
-| `dispatch-bash.sh` | 60 seconds | 5 x the slowest route p95 (9661 ms, full merge route on a slow network) is 48.3 seconds |
+| `dispatch-bash.sh` | 75 seconds | 5 x the slowest route p95 (9661 ms, full merge route on a slow network) is 48.3 seconds. `.claude/settings.json` sets 75 seconds, which leaves headroom above that |
 | `require-active-ticket.sh` | 10 seconds | 5 x p95 (207 ms) is under the 10 second floor |
+| `block-protected-target-writes.sh` (edit channel) | 10 seconds | 5 x p95 (73 ms) is under the 10 second floor |
+| `block-hook-disabling-config-change.sh` | 10 seconds | 5 x p95 (141 ms) is under the 10 second floor |
+| `limit-reviewer-writes.sh` | 10 seconds | 5 x p95 (80 ms, measured 2026-10-21 on macOS, /bin/bash 3.2, 40 runs) is under the 10 second floor |
+
+The two new rows have measurements from 2026-10-19 on macOS, /bin/bash 3.2, 40 runs each.
+The Bash channel of `block-protected-target-writes.sh` runs inside the
+dispatcher entry and its 75 second timeout. A short command such as
+`git status && ls` measured p95 125 ms.
 
 ### The fail-open exception
 
 `block-reviewer-ci-wait.sh` stays fail open.
 It is a cost guard (me2resh/apexyard#1625). It stops a review agent from
-polling CI. If it crashes, the reviewer pays for a CI poll. No safety
-property is lost.
+polling CI. If it crashes, the reviewer pays for a CI poll. The crash loses
+no safety property.
 A crash in it must not block a whole review run.
 So the dispatcher runs it with `run_cost_guard_hook`.
 A crash prints `WARN` and the dispatcher continues.
@@ -57,9 +73,9 @@ The hook's own exit 2 still blocks.
 
 Do not move this hook to `run_fail_closed_hook`.
 
-### What is not changed
+### What stays the same
 
-- No other hook entry sets `onFailure`.
+- No other hook entry sets `onFailure`. Six entries set it in all, including `limit-reviewer-writes.sh` (AgDR-0266).
 - The `exit 0` in the settings wrapper stays.
   It runs when no `.claude/hooks` directory exists.
   That is deliberate for directories that are not ApexYard forks.
@@ -131,6 +147,7 @@ The fallback knows only built-in types when the library is missing.
 ```
 
 **Warning:** A name shared with a build agent locks that build agent during an active review.
+`limit-reviewer-writes.sh` also limits the Edit, Write and MultiEdit tools of a listed type at all times, with no active review. That type may write only under `.claude/session/reviews/bodies/` (AgDR-0266).
 
 ## Operator escape hatch
 
@@ -144,7 +161,7 @@ claude --settings '{"disableAllHooks": true}'
 `disableAllHooks` turns off all hooks for the session.
 Claude Code documents that the same setting also turns off a custom status
 line and a custom `@` file suggestion command.
-The flag applies to that launch only. Nothing is written to a settings file.
+The flag applies to that launch only. The launch writes nothing to a settings file.
 
 Rules for the escape hatch:
 
@@ -155,7 +172,7 @@ Rules for the escape hatch:
 - There is no environment variable for it. A new variable would be a new way
   for an agent to turn off the gates. The launch flag needs the operator
   to start the session.
-- Do not set `disableAllHooks` in a tracked settings file.
+- Do not set `disableAllHooks` to `true` in a tracked settings file.
 
 `bin/check-escape-hatch.sh` tests the hatch against the real CLI.
 It starts Claude Code twice in the repository with a fake API key.
@@ -175,5 +192,5 @@ claude plugin validate --strict .claude-plugin/marketplace.json
 `--strict` treats a warning as an error.
 A marketplace without a `description` fails this check.
 The workflow also validates each plugin that the marketplace lists with a local path.
-A plugin from a GitHub source is validated in its own repository.
+A plugin from a GitHub source gets its validation in its own repository, not in this workflow.
 To change the pinned version, edit `CLAUDE_CODE_VERSION` in the workflow.

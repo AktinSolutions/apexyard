@@ -7,6 +7,7 @@
 #
 # Presence checks stay on the raw command. Do not strip quotes or heredoc
 # bodies before asking whether a commit or push is present (AgDR-0113).
+# #1772: a redirection before the verb is skipped like the shell does.
 #
 # Not a hook. Hooks source this file.
 
@@ -26,7 +27,22 @@ _git_opt_val='(\\.|"[^"]*"|'"'"'[^'"'"']*'"'"'|\$\([^)]*\)|`[^`]*`|[^[:space:];&
 _git_q='("|'\'')*'
 # shellcheck disable=SC2089
 _git_cmd_word=${_git_q}'\\?[Gg]'${_git_q}'\\?[Ii]'${_git_q}'\\?[Tt]'${_git_q}
-_git_sub_opts='([[:space:]]+((-[Cc]|--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source))[[:space:]]+'"${_git_opt_val}"'|--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source)='"${_git_opt_val}"'|--?[A-Za-z][A-Za-z-]*(='"${_git_opt_val}"')?))*[[:space:]]+'
+# #1772 / #1805: a redirection before the verb is not the verb. Skip it the
+# same way the shell does. Longer operators come first (left-first ERE).
+# Use `[|]` for a literal pipe so ERE `|` does not break the group.
+# Target is required so `git > push` does not treat `push` as the verb.
+# #1805 B2: the target is one full shell word. A quoted part may hold
+# spaces, and a substitution may hold spaces (one level, no parens inside).
+# _git_redir_hides_verb fails closed for a target this unit cannot match.
+_git_redir_word='(\\.|"([^"\\]|\\.)*"|'"'"'[^'"'"']*'"'"'|\$\([^()]*\)|`[^`]*`|[^[:space:];&|<>()"'"'"'`\\])+'
+# #1772 N2: the Bash tool can run zsh. The zsh clobber forms (`>!`, `>>|`,
+# `&>!`, `>&|` and the append forms) are operators too. A named descriptor
+# (`{name}>`) can come before an operator, as a digit can.
+_git_redir_fd='([0-9]*|[{][A-Za-z_][A-Za-z0-9_]*[}])'
+_git_redir_op='(&>>[|!]?|&>[|!]?|>>&[|!]?|>>[|!]?|>&[|!]?|>[|!]|>|<<<|<<-|<<|<&|<)'
+_git_redir="${_git_redir_fd}${_git_redir_op}"'[[:space:]]*'"${_git_redir_word}"
+# Spaces plus a unit, or a redirection glued to `git` (`git>file`).
+_git_sub_opts='(([[:space:]]+((-[Cc]|--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source))[[:space:]]+'"${_git_opt_val}"'|--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source)='"${_git_opt_val}"'|--?[A-Za-z][A-Za-z-]*(='"${_git_opt_val}"')?|'"${_git_redir}"')|'"${_git_redir}"'))*[[:space:]]+'
 _git_sub_re='(^|[^[:alnum:]_.-])'${_git_cmd_word}${_git_sub_opts}
 
 # Letter-quoted literal for a verb. Reuses the same quote grammar as the
@@ -93,16 +109,17 @@ git_token_is_verb() {
 # feeds its script. A shell word in prose, in a heredoc body line that does
 # not start a command, or a script-file run does not count.
 _git_text_has_nested_shell() {
-  local text="$1" word_re='(^|[^[:alnum:]_.-])(pushd|popd|sh|bash|zsh|dash|ksh)([[:space:];&|<>)]|$)'
+  local text="$1" word_re="(^|[^[:alnum:]_.-])(pushd|popd|eval|sh|bash|zsh|dash|ksh)([[:space:];&|<>'\")]|$)"
   # No fork when no candidate word is present.
   [[ "$text" =~ $word_re ]] || return 1
   local at='(^|[;&|(){}!`]|\$\(|[[:space:]]-(exec|execdir|ok|okdir)[[:space:]])[[:space:]]*'
   local wrap='((exec|command|builtin|time|nohup|nice|sudo|xargs|env|timeout|then|do|else|if|while|until)([[:space:]]+[^[:space:];&|()]+)*[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+)*'
-  local shell='([^[:space:];&|()<>`]*/)?(sh|bash|zsh|dash|ksh)'
-  local opts='([[:space:]]+[-+][^[:space:];&|<>()]*)*'
-  local stack="${at}${wrap}(pushd|popd)([[:space:];&|)]|$)"
+  local shell="${_git_q}([^[:space:];&|()<>\`]*/)?(sh|bash|zsh|dash|ksh)${_git_q}"
+  # A separate option value can precede -c (for example a shell option name).
+  local opts="([[:space:]]+((-[oO]|--rcfile|--init-file)[[:space:]]+${_git_opt_val}|[-+][^[:space:];&|<>()]*))*"
+  local stack="${at}${wrap}(pushd|popd|${_git_q}eval${_git_q})([[:space:];&|)]|$)"
   local cmdstr="(^|[^[:alnum:]_.-])${shell}${opts}[[:space:]]+-[A-Za-z]*[cs][A-Za-z]*([[:space:];&|<>)'\"]|$)"
-  local fed="${at}${wrap}${shell}${opts}[[:space:]]*([;&|<>)]|$)"
+  local fed="${at}${wrap}${shell}([[:space:]]+[-+][^[:space:];&|<>()]*)*[[:space:]]*([;&|<>)]|$)"
   printf '%s\n' "$text" | LC_ALL=C grep -qE "${stack}|${cmdstr}|${fed}"
 }
 
@@ -153,10 +170,232 @@ _git_match_hides_words() {
   return 0
 }
 
+# 0 when a redirection target between the git command word and the verb is
+# a shell word that _git_redir_word cannot match, or is not closed, and a
+# push or commit word follows (#1772 / #1805 B2). The matcher cannot see
+# past that target, so the caller fails closed.
+# #1772 N1: a quote or a substitution that is not closed on its line goes on
+# to the next line. Then a push or commit word on a later line also counts.
+# #1772 N3: the scan is linear in the text length for words separated by
+# blanks. It is quadratic for a long run with no blank and for many targets
+# that hold a quoted blank. The dispatcher time limit then blocks (fail
+# closed). AgDR-0264 Decision 8 records this accepted residual.
+# - Lines after the last push or commit word cannot give a result. The scan
+#   stops before them.
+# - Each line is split into pieces at each space and tab. A word step works
+#   on one piece, not on the full rest of the line. A word that is still
+#   open at the end of its piece is read again from the rest of the line.
+# - Each walk records the points where it reads a word. A walk that comes to
+#   a recorded point stops, because the rest of that walk is the same as the
+#   earlier walk from that point.
+_git_redir_hides_verb() {
+  local text="$1" line tline rest m t0 flat re word_re op_re verb_re key
+  local idx=-1 last=-1 np pi wpi pos norm tsep us nov
+  local -a walked pieces endp
+  case "$text" in *'>'*|*'<'*) ;; *) return 1 ;; esac
+  verb_re='(^|[^[:alnum:]_.-])(push|commit)([^[:alnum:]_.-]|$)'
+  flat=$(printf '%s\n' "$text" | tr -d "'\"\\\\")
+  [[ "$flat" =~ $verb_re ]] || return 1
+  # Find the last line that holds a push or commit word.
+  while IFS= read -r line; do
+    idx=$((idx + 1))
+    if [[ "$line" =~ $verb_re ]]; then
+      last=$idx
+    fi
+  done <<EOF_REDIR_VERBS
+$flat
+EOF_REDIR_VERBS
+  re='(^|[^[:alnum:]_.-])'${_git_cmd_word}
+  word_re='^'"${_git_redir_word}"'$'
+  op_re='^'"${_git_redir_fd}${_git_redir_op}"
+  # Each space or tab becomes a unit separator, so each one ends a piece.
+  # Text that holds a unit separator is not split.
+  us=$'\037'
+  case "$text" in
+    *"$us"*) tsep="" ;;
+    *) tsep=$(printf '%s\n' "$text" | tr ' \t' '\037\037') ;;
+  esac
+  idx=-1
+  while IFS= read -r line <&3; do
+    tline=""
+    [ -z "$tsep" ] || IFS= read -r tline <&4 || tline=""
+    idx=$((idx + 1))
+    [ "$idx" -le "$last" ] || break
+    case "$line" in *'>'*|*'<'*) ;; *) continue ;; esac
+    if [ -n "$tsep" ]; then
+      # A final x keeps an empty last piece. Remove it after the read.
+      IFS="$us" read -r -a pieces <<EOF_REDIR_PIECES
+${tline}${us}x
+EOF_REDIR_PIECES
+      unset "pieces[$((${#pieces[@]} - 1))]"
+    else
+      pieces=("$line")
+    fi
+    np=${#pieces[@]}
+    # The end of each piece in the line. One character separates two pieces.
+    norm="$line"
+    # Loop with "for p in", because a bash 3.2 array lookup by index walks
+    # the array from its start.
+    endp=()
+    pos=-1
+    for rest in ${pieces[@]+"${pieces[@]}"}; do
+      pos=$((pos + 1 + ${#rest}))
+      endp[${#endp[@]}]=$pos
+    done
+    walked=()
+    nov=-1
+    pi=-1
+    for rest in ${pieces[@]+"${pieces[@]}"}; do
+      pi=$((pi + 1))
+      # Every git command word holds a g. A glob test is fast.
+      case "$rest" in *[Gg]*) ;; *) continue ;; esac
+      while [[ "$rest" =~ $re ]]; do
+        m="${BASH_REMATCH[0]}"
+        rest="${rest#*"$m"}"
+        wpi=$pi
+        _GIT_SCAN="$rest"
+        while :; do
+          _GIT_SCAN="${_GIT_SCAN#"${_GIT_SCAN%%[![:space:]]*}"}"
+          if [ -z "$_GIT_SCAN" ]; then
+            wpi=$((wpi + 1))
+            [ "$wpi" -lt "$np" ] || break
+            _GIT_SCAN="${pieces[wpi]}"
+            continue
+          fi
+          # #1772 R2-1: `&>` and its zsh forms are operators, not a
+          # separator. Let them through to the operator test below.
+          case "$_GIT_SCAN" in '&>'*) ;; [\;\&\|]*) break ;; esac
+          # The point in the line names the rest of this walk.
+          key=$((endp[wpi] - ${#_GIT_SCAN}))
+          [ -z "${walked[key]:-}" ] || break
+          walked[key]=1
+          if [[ "$_GIT_SCAN" =~ $op_re ]]; then
+            _GIT_SCAN="${_GIT_SCAN:${#BASH_REMATCH[0]}}"
+            _GIT_SCAN="${_GIT_SCAN#"${_GIT_SCAN%%[![:space:]]*}"}"
+            while [ -z "$_GIT_SCAN" ] && [ $((wpi + 1)) -lt "$np" ]; do
+              wpi=$((wpi + 1))
+              _GIT_SCAN="${pieces[wpi]}"
+              _GIT_SCAN="${_GIT_SCAN#"${_GIT_SCAN%%[![:space:]]*}"}"
+            done
+            case "$_GIT_SCAN" in ''|[\;\&\|]*) break ;; esac
+            if [[ "$_GIT_SCAN" =~ ^([0-9]+|-)([[:space:];&|]|$) ]]; then
+              _GIT_SCAN="${_GIT_SCAN:${#BASH_REMATCH[1]}}"
+              continue
+            fi
+            pos=$((endp[wpi] - ${#_GIT_SCAN}))
+            if _git_redir_take_word && [[ "$_GIT_TAKEN" =~ $word_re ]]; then
+              continue
+            fi
+            if [ "$_GIT_RAW_OPEN" = 1 ] && [ "$idx" -lt "$last" ]; then
+              return 0
+            fi
+            # A target starts after an operator or a blank. Thus when the
+            # rest of the line from one target has no push or commit word,
+            # the rest from a later target has none too.
+            if [ "$nov" -lt 0 ] || [ "$pos" -lt "$nov" ]; then
+              t0=$(printf '%s\n' "${norm:pos}" | tr -d "'\"\\\\")
+              if [[ "$t0" =~ $verb_re ]]; then
+                return 0
+              fi
+              nov=$pos
+            fi
+            break
+          fi
+          _git_redir_take_word || break
+        done
+      done
+    done
+  done 3<<EOF_REDIR_LINES 4<<EOF_REDIR_SPLIT
+$text
+EOF_REDIR_LINES
+$tsep
+EOF_REDIR_SPLIT
+  return 1
+}
+
+# Read one raw word for _git_redir_hides_verb from piece $wpi (#1772 N3).
+# $_GIT_SCAN holds the rest of that piece. A word that is still open at the
+# end of the piece, or that ends in an escape, is read again from the rest
+# of $norm. On success, $wpi and $_GIT_SCAN name the point after the word.
+_git_redir_take_word() {
+  local at rc=0 lo hi mid
+  at=$((endp[wpi] - ${#_GIT_SCAN}))
+  _git_take_raw_word || rc=$?
+  [ $((wpi + 1)) -lt "$np" ] || return "$rc"
+  case "$rc:$_GIT_RAW_OPEN" in
+    0:2|1:1) ;;
+    *) return "$rc" ;;
+  esac
+  _GIT_SCAN="${norm:at}"
+  _git_take_raw_word || return 1
+  at=$((${#norm} - ${#_GIT_SCAN}))
+  # Find the first piece that ends at or after this point (binary search).
+  lo=$wpi
+  hi=$((np - 1))
+  while [ "$lo" -lt "$hi" ]; do
+    mid=$(((lo + hi) / 2))
+    if [ "${endp[mid]}" -lt "$at" ]; then
+      lo=$((mid + 1))
+    else
+      hi=$mid
+    fi
+  done
+  wpi=$lo
+  _GIT_SCAN="${pieces[wpi]}"
+  _GIT_SCAN="${_GIT_SCAN:$((${#_GIT_SCAN} - (endp[wpi] - at)))}"
+  return 0
+}
+
+# Git's own dashed programs have no literal git verb to parse. Route them
+# to the protected gates (#1825). Three forms count, and only at a command
+# position (after any assignment, wrapper or redirection):
+#   F1 a command word whose last path part is the dashed push or commit name,
+#      with quotes or escapes allowed inside the name and any letter case;
+#   F2 a last path part that starts with the dashed prefix and then holds a
+#      quote, a backslash, a glob character, a brace or an expansion;
+#   F3 a path from an exec-path expansion whose last part starts with an
+#      expansion, a glob character or a brace.
+# Inside a nested shell the body is command text, so a word boundary is
+# enough there. The same name in an argument or in data text does not count.
+# A name built only from variables, with no literal dashed prefix, stays open
+# (AgDR-0253 R3). No command text is ever executed.
+_git_text_has_dashed_protected() {
+  local text="$1" lead_re strict loose
+  # A dashed prefix needs a hyphen and a letter t; cheap guard before a fork.
+  case "$text" in *-*) ;; *) return 1 ;; esac
+  local sub='\$\([^()]*\)|`[^`]*`'
+  local plain='[^[:space:];&|<>()`]'
+  local dirp="((${sub}|${plain})*/)?"
+  local gq
+  gq="$(_git_quoted_literal 'git-')"
+  local names
+  names="$(_git_quoted_literal push)|$(_git_quoted_literal commit)"
+  local delim='([[:space:];&|<>)`]|$)'
+  # A quote counts only when more word text follows it. A closing quote does not.
+  local special='(\\|\$|`|[*?[{]|["'"'"'][[:alnum:]_"'"'"'\\$])'
+  local f1="${dirp}${gq}(${names})${delim}"
+  local f2="${dirp}${gq}[[:alnum:]_.-]*${special}"
+  local xp='(exec-path|EXEC_PATH)'
+  local f3="(${sub}|${plain})*(\\\$\\([^()]*${xp}[^()]*\\)|\`[^\`]*${xp}[^\`]*\`|${xp})(${sub}|${plain})*/[\"']*${special}"
+  local asg='[A-Za-z_][A-Za-z0-9_]*=([^[:space:];&|()`"'"'"']|\$\([^()]*\)|"([^"\\]|\\.)*"|'"'"'[^'"'"']*'"'"'|`[^`]*`)*[[:space:]]+'
+  local kw='(exec|command|builtin|time|nohup|nice|sudo|xargs|env|timeout|then|do|else|if|while|until)[[:space:]]+((-[^[:space:];&|()]+([[:space:]]+[^-[:space:];&|()][^[:space:];&|()]*)?|[0-9]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|()]*)[[:space:]]+)*'
+  local wrap="(${asg}|${kw}|${_git_redir}[[:space:]]+)*"
+  strict='(^|[;&|(){}!`]|\$\(|[[:space:]]-(exec|execdir|ok|okdir)[[:space:]])[[:space:]]*'"${wrap}"
+  loose='(^|[^[:alnum:]_.-])'
+  lead_re="$strict"
+  _git_text_has_nested_shell "$text" && lead_re="$loose"
+  printf '%s\n' "$text" | LC_ALL=C grep -qiE "${lead_re}(${f1}|${f2})|${lead_re}${f3}"
+}
+
 # #1816 G2/G3: an expansion hides the command word or the verb, and the rest
 # of the simple command can still be a push or a commit.
+# #1805 B2: so can a redirection target that the matcher cannot consume.
 git_uncertain_protected_shape() {
   local text="$1"
+  if _git_redir_hides_verb "$text"; then
+    return 0
+  fi
+  _git_text_has_dashed_protected "$text" && return 0
   local push_re commit_re exp_tok
   push_re="$(_git_quoted_literal push)"
   commit_re="$(_git_quoted_literal commit)"
@@ -178,7 +417,9 @@ EOF_LITERAL_MATCHES
   # Unknown shell words can occupy the command or verb position.
   local word_part='[[:alnum:]_./"'"'"'-]*'
   exp_tok='('"${word_part}"'(\$[A-Za-z_][A-Za-z0-9_]*|\$[{][^}]*[}]|\$\([^)]*\)|`[^`]*`|\$'"'"'[^'"'"']*'"'"'|[{][^}]*[}])'"${word_part}"')'
-  local uncertain_opts='([[:space:]]+((-[Cc]|--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source))[[:space:]]+'"${_git_opt_val}"'|--[A-Za-z-]+='"${_git_opt_val}"'|--(no-pager|paginate|bare|no-replace-objects|literal-pathspecs|glob-pathspecs|noglob-pathspecs|icase-pathspecs|no-optional-locks|no-lazy-fetch)|-[pP]))*[[:space:]]+'
+  # #1837: a redirection before the verb uses the shared unit, as in
+  # _git_sub_opts, spaced or glued to the command word.
+  local uncertain_opts='(([[:space:]]+((-[Cc]|--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source))[[:space:]]+'"${_git_opt_val}"'|--[A-Za-z-]+='"${_git_opt_val}"'|--(no-pager|paginate|bare|no-replace-objects|literal-pathspecs|glob-pathspecs|noglob-pathspecs|icase-pathspecs|no-optional-locks|no-lazy-fetch)|-[pP]|'"${_git_redir}"')|'"${_git_redir}"'))*[[:space:]]+'
   local exp_cmd="(^|[;|&(){}!][[:space:]]*|[[:space:]]*(exec|command|env|time|if|while)[[:space:]]+([^;|&]*[[:space:]]+)?)([A-Za-z_][A-Za-z0-9_]*=[^[:space:];|&]*[[:space:]]+)*${exp_tok}"
   if printf '%s\n' "$text" | LC_ALL=C grep -qE "${exp_cmd}${uncertain_opts}(${push_re}|${commit_re})([^[:alnum:]_.-]|$)"; then
     return 0
@@ -193,13 +434,17 @@ EOF_LITERAL_MATCHES
 }
 
 # JSON-string pattern for raw_payload_command_matches.
-# Stays inside a JSON string. Covers the same global-option forms.
+# Stays inside a JSON string. Covers the same global-option and redirect forms.
 git_subcommand_payload_pattern() {
   local sub="$1" lit
   # #1748: a JSON-escaped double-quoted value (-C \"a b\") or a single-quoted
   # value (-C 'a b') is one option word. Single quotes need no JSON escape.
   # #1816: command word may be quoted / another case; verb may be letter-quoted.
+  # #1772: redirections before the verb match the shared grammar.
   # A complex $sub (alias no-jq alternation) stays raw.
+  # #1805 B2: one full JSON-escaped shell word, as in _git_redir_word.
+  # #1772 N2: the same operator units as _git_redir.
+  local jredir="${_git_redir_fd}${_git_redir_op}"'[[:space:]]*(\\"([^"\\]|\\[^"])*\\"|'"'"'[^'"'"']*'"'"'|\$\([^()"]*\)|`[^`"]*`|\\.|[^"'"'"'\\[:space:];&|<>()`])+'
   local _git_payload_val='(\\"([^"\\]|\\[^"])*\\"|'"'"'[^'"'"']*'"'"'|\\.|[^"'"'"'\\[:space:]])+'
   if [[ "$sub" =~ ^[a-z0-9-]+$ ]]; then
     lit=$(_git_quoted_literal "$sub")
@@ -207,7 +452,25 @@ git_subcommand_payload_pattern() {
     lit=$sub
   fi
   # shellcheck disable=SC2090
-  printf '%s' ${_git_cmd_word}'([[:space:]]+((-[Cc]|--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source))[[:space:]]+'"${_git_payload_val}"'|--?[A-Za-z][A-Za-z-]*(='"${_git_payload_val}"')?))*[[:space:]]+'${lit}'([^[:alnum:]_.-]|$)'
+  printf '%s' ${_git_cmd_word}'(([[:space:]]+((-[Cc]|--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source))[[:space:]]+'"${_git_payload_val}"'|--?[A-Za-z][A-Za-z-]*(='"${_git_payload_val}"')?|'"${jredir}"')|'"${jredir}"'))*[[:space:]]+'${lit}'([^[:alnum:]_.-]|$)'
+}
+
+# JSON-string pattern for the no-jq path (#1825): a dashed push or commit
+# name, or a dashed prefix followed by a quote, a backslash, a glob
+# character, a brace or an expansion. The no-jq path cannot see the command
+# position or a word start, so it blocks on the name alone (fail closed).
+git_dashed_payload_pattern() {
+  printf '%s' '([Gg][Ii][Tt]-([Pp][Uu][Ss][Hh]|[Cc][Oo][Mm][Mm][Ii][Tt])([^[:alnum:]_.-]|$)|[Gg][Ii][Tt]-[[:alnum:]_.-]*(\\\\|\\"|\$|`|[*?[{]))'
+}
+
+# JSON-string pattern for the no-jq path (#1805 B2): a git command word,
+# then a redirection whose target starts with a quote or an expansion, then
+# a push or commit word. The no-jq path cannot consume that target, so it
+# blocks (fail closed).
+git_redir_uncertain_payload_pattern() {
+  # #1772 N2: a zsh operator can end in `&`, `|` or `!` before the target.
+  # shellcheck disable=SC2090
+  printf '%s' ${_git_cmd_word}'([^"\\]|\\.)*[<>][&|!]*[[:space:]]*(\\"|'"'"'|\$|`)([^"\\]|\\.)*(push|commit)([^[:alnum:]_.-]|$)'
 }
 
 # 2 when the token takes the next token as its value.
@@ -257,6 +520,135 @@ _git_take_value() {
       ;;
   esac
   [ -n "$_GIT_TAKEN" ]
+}
+
+# Read one shell word from $_GIT_SCAN into $_GIT_TAKEN without decoding it
+# (#1805 B2). Quoted parts, ${...}, $(...) (nested) and backquotes belong to
+# the word. Returns 1 when the word is empty or not closed. Sets
+# $_GIT_RAW_OPEN to 1 when a quote or a substitution is open at the end of
+# the text (#1772 N1), to 2 when the word ends in a backslash that escapes
+# the character after the text, and to 0 in all other cases.
+_git_take_raw_word() {
+  local s="$_GIT_SCAN" r c nc stack="" top run used=0 step re re_sq re_dq re_top
+  _GIT_RAW_OPEN=0
+  # #1772 N3: skip a run of plain characters in one step. A loop over each
+  # character of a long line is slow in bash, and so is a ${r%%[...]*}
+  # pattern on a long line in a UTF-8 locale. A regex match is fast.
+  re_sq="^[^']*"
+  re_dq='^[^\\"`$]*'
+  re_top='^[^\\'"'"'"`$()}'$'\t'' ;&|<>]*'
+  r="$s"
+  while [ -n "$r" ]; do
+    top="${stack: -1}"
+    case "$top" in
+      "'") re=$re_sq ;;
+      '"'|'`') re=$re_dq ;;
+      *) re=$re_top ;;
+    esac
+    # A failed match (for example on bytes that are not valid in the
+    # locale) leaves an empty run. Then the loop reads one character.
+    run=""
+    if [[ "$r" =~ $re ]]; then
+      run="${BASH_REMATCH[0]}"
+    fi
+    if [ -n "$run" ]; then
+      used=$((used + ${#run}))
+      r="${r:${#run}}"
+      [ -n "$r" ] || break
+    fi
+    c="${r:0:1}"
+    nc="${r:1:1}"
+    step=1
+    case "$top" in
+      "'")
+        [ "$c" != "'" ] || stack="${stack%?}"
+        ;;
+      '"'|'`')
+        case "$c" in
+          \\) step=2 ;;
+          "$top") stack="${stack%?}" ;;
+          '`') stack+='`' ;;
+          '$') case "$nc" in '('|'{') stack+="$nc"; step=2 ;; esac ;;
+        esac
+        ;;
+      *)
+        case "$c" in
+          \\) step=2 ;;
+          "'"|'"'|'`') stack+="$c" ;;
+          '$') case "$nc" in '('|'{') stack+="$nc"; step=2 ;; esac ;;
+          '(')
+            [ -n "$stack" ] || return 1
+            stack+='('
+            ;;
+          ')')
+            if [ "$top" = '(' ]; then
+              stack="${stack%?}"
+            elif [ -z "$stack" ]; then
+              break
+            else
+              return 1
+            fi
+            ;;
+          '}') [ "$top" != '{' ] || stack="${stack%?}" ;;
+          ' '|$'\t'|';'|'&'|'|'|'<'|'>') [ -n "$stack" ] || break ;;
+        esac
+        ;;
+    esac
+    used=$((used + step))
+    r="${r:step}"
+  done
+  if [ -n "$stack" ]; then
+    # A quote or a substitution is still open at the end of the text.
+    _GIT_RAW_OPEN=1
+    return 1
+  fi
+  if [ "$used" -gt "${#s}" ]; then
+    # A backslash at the end escapes the character after the text.
+    used=${#s}
+    _GIT_RAW_OPEN=2
+  fi
+  [ "$used" -gt 0 ] || return 1
+  _GIT_TAKEN="${s:0:used}"
+  _GIT_SCAN="${s:used}"
+  return 0
+}
+
+# Consume one redirection from $_GIT_SCAN (#1772).
+# Returns 1 when the next token is not a redirection.
+# Returns 2 when the target is not one closed shell word (#1805 B2). The
+# caller then fails closed.
+_git_take_redir() {
+  # #1772 N2: the zsh forms and a named descriptor use the shared units.
+  local re='^'"${_git_redir_fd}${_git_redir_op}"
+  [[ "$_GIT_SCAN" =~ $re ]] || return 1
+  _GIT_SCAN="${_GIT_SCAN:${#BASH_REMATCH[0]}}"
+  # #1772 R2-2: an operator that ends in `!`, followed by a blank, has two
+  # readings. Zsh reads the operator and then the next word as the target.
+  # Bash reads `>` (or `>>`, `&>`, `>&`) with the target `!`, and the next
+  # word is an argument. The two readings can give different options or a
+  # different verb. Fail closed.
+  case "${BASH_REMATCH[0]}" in
+    *'!')
+      case "$_GIT_SCAN" in
+        [[:space:]]*) return 2 ;;
+      esac
+      ;;
+  esac
+  _GIT_SCAN="${_GIT_SCAN#"${_GIT_SCAN%%[![:space:]]*}"}"
+  # A bare operator with no target is still a redirection token.
+  [ -n "$_GIT_SCAN" ] || return 0
+  case "$_GIT_SCAN" in
+    [\;\&\|]|[\;\&\|]*) return 0 ;;
+  esac
+  # Digit-only target for >&1 / <&0 / >&- forms.
+  # The target must end at a word boundary. A digit that runs into more text
+  # is one file name, so the raw-word reader takes the whole word.
+  if [[ "$_GIT_SCAN" =~ ^([0-9]+|-)([[:space:];&|]|$) ]]; then
+    _GIT_SCAN="${_GIT_SCAN:${#BASH_REMATCH[1]}}"
+    return 0
+  fi
+  _git_take_raw_word || return 2
+  return 0
 }
 
 # Consume one global option from $_GIT_SCAN.
@@ -326,13 +718,14 @@ _git_strip_cmd_word() {
   return 1
 }
 
-# Walk global options in $_GIT_SCAN until <sub>.
+# Walk global options and redirections in $_GIT_SCAN until <sub>.
 # On success, $_GIT_SCAN is the text after that subcommand.
+# #1772: skip redirections the same way the shell does.
 # #1816 G5: decode a quoted or partly quoted verb with _git_take_value.
 # Keep the trailing-boundary case so a match like `git push` (with a closing
 # backtick) still finds the verb.
 _git_scan_globals() {
-  local sub="$1" saved word
+  local sub="$1" saved word rrc
   _GIT_RAW_C_CHAIN=()
   _GIT_RAW_DASH_C=""
   _GIT_RAW_GIT_DIR=""
@@ -346,6 +739,14 @@ _git_scan_globals() {
         return 0
         ;;
     esac
+    # Glued or spaced redirection before the verb (#1772).
+    rrc=0
+    _git_take_redir || rrc=$?
+    if [ "$rrc" -eq 0 ]; then
+      continue
+    fi
+    # #1805 B2: an unclosed target hides what follows. Fail closed.
+    [ "$rrc" -eq 1 ] || return 1
     saved="$_GIT_SCAN"
     if _git_take_value; then
       word="$_GIT_TAKEN"
@@ -390,6 +791,109 @@ git_push_args() {
   if _git_scan_globals push; then
     printf '%s' "$_GIT_SCAN"
   fi
+}
+
+# Print the words after `git [global options] push`, one on each line
+# (#1831). $1 starts at the git command word and goes to the end of its line.
+# Skip each redirection as the shell does. Stop at the `;`, `&`, `|` or `)`
+# that ends the command. A word keeps its quotes.
+# Return 1 when $1 holds no push verb. Return 2 when the push arguments
+# cannot be read: a redirection target is not one closed word, an operator
+# has two readings, or a word is not closed on its line and the invocation
+# holds a redirection. Also return 2 when the arguments hold a unit
+# separator byte (0x1F), because the walk uses that byte to split the line
+# into pieces. The caller then fails closed.
+# A word that is not closed on its line in an invocation with no redirection
+# ends the walk. Then print the rest split at blanks, as before #1831.
+# Linear for words separated by blanks: each word step reads one piece, as
+# in _git_redir_hides_verb.
+git_push_ref_words() {
+  local inv="$1" norm saw=0 us tsep np wpi pos rest op op_re
+  local -a pieces endp
+  _git_strip_cmd_word "$inv" || return 1
+  _git_scan_globals push || return 2
+  norm="$_GIT_SCAN"
+  # The text before the arguments. A suffix pattern is slow on a long line.
+  case "${inv:0:$((${#inv} - ${#norm}))}" in *'<'*|*'>'*) saw=1 ;; esac
+  op_re='^'"${_git_redir_fd}${_git_redir_op}"
+  us=$'\037'
+  # #1831 B1: the walk cannot split text that already holds the separator
+  # byte. A real push does not hold it. Fail closed.
+  case "$norm" in *"$us"*) return 2 ;; esac
+  tsep=$(printf '%s\n' "$norm" | tr ' \t' '\037\037')
+  IFS="$us" read -r -a pieces <<EOF_PUSH_PIECES
+${tsep}${us}x
+EOF_PUSH_PIECES
+  unset "pieces[$((${#pieces[@]} - 1))]"
+  np=${#pieces[@]}
+  endp=()
+  pos=-1
+  for rest in ${pieces[@]+"${pieces[@]}"}; do
+    pos=$((pos + 1 + ${#rest}))
+    endp[${#endp[@]}]=$pos
+  done
+  [ "$np" -gt 0 ] || return 0
+  wpi=0
+  _GIT_SCAN="${pieces[0]}"
+  while :; do
+    if [ -z "$_GIT_SCAN" ]; then
+      wpi=$((wpi + 1))
+      [ "$wpi" -lt "$np" ] || break
+      _GIT_SCAN="${pieces[wpi]}"
+      continue
+    fi
+    case "$_GIT_SCAN" in '&>'*) ;; [\;\&\|\)]*) break ;; esac
+    case "$_GIT_SCAN" in
+      *[\\\'\"\`\$\(\)\<\>\;\&\|]*) ;;
+      *)
+        # A plain word fills the rest of the piece.
+        printf '%s\n' "$_GIT_SCAN"
+        _GIT_SCAN=""
+        continue
+        ;;
+    esac
+    op=""
+    case "$_GIT_SCAN" in
+      [0-9\{\<\>\&]*) [[ "$_GIT_SCAN" =~ $op_re ]] && op="${BASH_REMATCH[0]}" ;;
+    esac
+    if [ -n "$op" ]; then
+      _GIT_SCAN="${_GIT_SCAN:${#op}}"
+      saw=1
+      # #1772 R2-2: a `!` operator and then a blank has two readings.
+      case "$op" in *'!') [ -n "$_GIT_SCAN" ] || return 2 ;; esac
+      while [ -z "$_GIT_SCAN" ] && [ $((wpi + 1)) -lt "$np" ]; do
+        wpi=$((wpi + 1))
+        _GIT_SCAN="${pieces[wpi]}"
+      done
+      case "$_GIT_SCAN" in ''|[\;\&\|]*) break ;; esac
+      if [[ "$_GIT_SCAN" =~ ^([0-9]+|-)([;&|]|$) ]]; then
+        _GIT_SCAN="${_GIT_SCAN:${#BASH_REMATCH[1]}}"
+        continue
+      fi
+      _git_redir_take_word || return 2
+      continue
+    fi
+    rest="$_GIT_SCAN"
+    if _git_redir_take_word; then
+      printf '%s\n' "$_GIT_TAKEN"
+      continue
+    fi
+    [ "$saw" -eq 0 ] || return 2
+    # No redirection: split the rest at blanks, up to a separator. A failed
+    # read can leave the rest of the line in $_GIT_SCAN. Start again from
+    # the current piece.
+    _GIT_SCAN="$rest"
+    while :; do
+      rest="${_GIT_SCAN%%[;&|]*}"
+      [ -z "$rest" ] || printf '%s\n' "$rest"
+      [ "$rest" = "$_GIT_SCAN" ] || break
+      wpi=$((wpi + 1))
+      [ "$wpi" -lt "$np" ] || break
+      _GIT_SCAN="${pieces[wpi]}"
+    done
+    break
+  done
+  return 0
 }
 
 # Resolve a literal path. Do not evaluate shell substitutions.
@@ -518,9 +1022,30 @@ EOF
   _GIT_CHAIN_CHANGED="$changed"
 }
 
+# #1833 (AgDR-0270): the text for the structure parse (alias check, cd
+# chain, -C). It strips a quoted heredoc body only when the whole command is
+# one allow-listed data sink (`quoted` mode, AgDR-0262). Any other shape, or
+# a stripper that cannot load or fails, gives the raw command. The gate
+# bodies still read the raw command for their own checks.
+_git_structure_text() {
+  local text="$1" out
+  case "$text" in *'<<'*) ;; *) printf '%s' "$text"; return 0 ;; esac
+  if ! declare -F strip_heredoc_bodies >/dev/null 2>&1; then
+    # shellcheck source=/dev/null
+    . "$(dirname "${BASH_SOURCE[0]}")/_lib-strip-heredoc.sh" 2>/dev/null || true
+  fi
+  if declare -F strip_heredoc_bodies >/dev/null 2>&1 \
+    && out=$(strip_heredoc_bodies "$text" quoted 2>/dev/null); then
+    printf '%s' "$out"
+  else
+    printf '%s' "$text"
+  fi
+}
+
 # Resolve cd, then each -C, then repository paths for the selected invocation.
 git_prepare_invocation() {
   local cmd="$1" sub="$2" cwd="${3:-$PWD}" dir raw base
+  cmd=$(_git_structure_text "$cmd")
   GIT_REPLAY_ARGS=()
   GIT_DASH_C=""
   _git_load_invocation "$cmd" "$sub" || return 1
@@ -586,12 +1111,18 @@ git_visit_invocations() {
   shift 3
   local cmd cwd sub prefix rc count=0 arg index
   cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
+  cmd=$(_git_structure_text "$cmd")
   cwd=$(printf '%s' "$input" | jq -r '.cwd // .tool_input.cwd // empty' 2>/dev/null)
   if [ "$mode" = block ]; then
     git_alias_check "$@" || return 2
     # #1816 G2/G3: an expansion hides the command word or verb.
     if git_uncertain_protected_shape "$cmd"; then
-      echo "BLOCKED: a shell expansion hides the git command word or verb. Use a literal git push or git commit." >&2
+      if _git_text_has_dashed_protected "$cmd"; then
+        # #1825: name the program class, not an expansion or a redirection.
+        echo "BLOCKED: this command runs git's own dashed push or commit program, or a program name that can become one. Use the normal git command word with a literal push or commit. If this is prose, write it to a file and pass -F or --body-file." >&2
+      else
+        echo "BLOCKED: a shell expansion or redirection hides the git command word or verb. Use a literal git push or git commit." >&2
+      fi
       return 2
     fi
   fi

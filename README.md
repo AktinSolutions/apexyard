@@ -33,7 +33,7 @@ Claude Code is the default driver. The rules, hooks, and templates are plain
 Markdown and shell, so you can use another coding tool through an adapter.
 There is no service to run and no hosted lock-in.
 
-The workflow has been used with TypeScript and AWS Lambda backends, Next.js
+The workflow has a history of use with TypeScript and AWS Lambda backends, Next.js
 apps, Chrome extensions, and native Swift macOS apps.
 
 ## What makes it different
@@ -44,41 +44,77 @@ apps, Chrome extensions, and native Swift macOS apps.
 | Technical decisions | Lost in chat | Agent Decision Records preserve them. |
 | Quality gates | Manual memory | Shell hooks block unsafe actions. |
 | Merge approval | Informal “LGTM” | Rex and a named human approve the exact commit. |
-| Database migrations | High-risk edits | A migration ticket and rollback plan are required. |
+| Database migrations | High-risk edits | Migrations require a migration ticket and rollback plan. |
 | Architecture | Scattered notes | C4 templates and the `/c4` skill create a shared model. |
 | Portfolio view | Several GitHub tabs | `/inbox`, `/status`, and `/tasks` read one registry. |
 | Upstream updates | Easy to forget | `/update` reports drift and guides the sync. |
 | Roles | Repeated context | Role files activate from clear triggers. |
 | Onboarding | Manual setup | `/setup` collects the required configuration. |
 
-## What's inside
+## What is inside
 
 ApexYard is a set of plain-text files. Claude Code reads them from the repo
-root. No runtime or service is required.
+root. It requires no runtime or service.
 
 - **20 roles** across 6 departments (engineering, product, design, security, data, architecture) that activate on triggers
-- **60 shell hooks** that mechanically enforce the SDLC — ticket-first edits, a two-marker merge gate, migration gates, secrets scanning, and more
-- **69 slash-command skills** — from `/setup`, `/handover`, and `/scaffold` to `/decide`, `/code-review`, `/migration`, and `/launch-check`
-- **23 sub-agents** — Rex (code review), Hakim (security), Tariq (design review), plus the department personas
+- **60 shell hooks** that mechanically enforce the SDLC: ticket-first edits, a two-marker merge gate, migration gates, secrets scanning, and more
+- **69 slash-command skills**: from `/setup`, `/handover`, and `/scaffold` to `/decide`, `/code-review`, `/migration`, and `/launch-check`
+- **23 sub-agents**: Rex (code review), Hakim (security), Tariq (design review), plus the department personas
 - **22 rule files**, workflow docs, and document templates (PRD, tech design, ADR, AgDR, C4 diagrams)
 
 **See [`docs/whats-inside.md`](docs/whats-inside.md) for the full directory and component list.**
 
-> **Marketing site:** the site that was previously bundled here has moved to its own repo ([me2resh/apexyard-site](https://github.com/me2resh/apexyard-site)) and is deployed independently at [apexyard.ai](https://apexyard.ai).
+> **Marketing site:** the site that was previously bundled here has moved to its own repo ([me2resh/apexyard-site](https://github.com/me2resh/apexyard-site)) and has independent deployment at [apexyard.ai](https://apexyard.ai).
 >
 > **Built for Claude Code first.** opencode, pi, and Codex use the same rules through small adapters. Cursor loads `.claude/` natively in the IDE. See [Using another AI coding tool?](#using-another-ai-coding-tool).
 >
 > **For AI coding agents:** `AGENTS.md` is the universal entry document for tools that do not load `CLAUDE.md`. See [`docs/harnesses/pi.md`](docs/harnesses/pi.md).
 
-## Quick Start — fork and go
+## Quick Start: one command
 
-ApexYard governs a **portfolio of repos** as one organisation. Fork and clone
-the repository. Use that fork as your ops repo. Register each project you want
-to manage. The fork is the ops repo, so no nested installation is needed.
+ApexYard governs a **portfolio of repos** as one organisation. One command
+creates your ops repo. The repo can be private. Register each project you want
+to manage. `apexyard init` needs `git`, `jq` and the GitHub CLI `gh`.
+
+> **Not live yet.** The install URL, the Homebrew tap and the npm package are
+> not live yet. Until they are live, use the fork and clone steps below.
+
+```bash
+curl -fsSL https://apexyard.ai/install | sh   # installs the CLI only; no sudo
+apexyard init --org your-org --name ops --private
+```
+
+You can also install the CLI with `brew install me2resh/tap/apexyard`. Each
+release has a checksum. The installer stops when the checksum does not match.
+
+Or run `npx create-apexyard --org your-org --name ops --private`. It installs
+the CLI when the CLI is absent, then runs `apexyard init` with these options.
+Do not run `apexyard init` again after it, because the target directory is no
+longer empty.
+
+`apexyard init` creates a new repo from the framework. It is not a fork. It
+adds the framework as the remote `upstream` and writes
+`.claude/framework-version`. Then open the folder in your agent tool and run
+`/setup`. To update later, run `apexyard update`.
+
+**Install count.** When the CLI has an install endpoint, `apexyard init` sends
+one anonymous event. Today the CLI has no endpoint. The CLI prints the event
+and sends nothing. The event holds four fields: a random install id, the CLI version,
+your operating system, and the agent tool you chose. It never holds a repo,
+organisation, user name, path or code. To turn it off, set
+`APEXYARD_TELEMETRY=0`. The CLI prints a notice on first run.
+
+### Alternative: fork and go
+
+You can also fork the repository. GitHub does not allow a private fork of a
+public repo, so use `apexyard init` when you need a private ops repo. The fork
+is the ops repo, so it needs no nested installation.
 
 > **Using opencode, pi, or Codex?** Steps 1–3 use plain `git` and `gh`. Install
 > your tool's adapter before steps 4–6. Each step also gives a manual file
 > option. The enforced rules are the same in both paths.
+
+The fork steps follow. Skip them if you used `apexyard init`, and go to step 4.
 
 ### 1. Star + Fork on GitHub
 
@@ -109,7 +145,7 @@ git remote add upstream https://github.com/me2resh/apexyard.git
 Later, run **`/update`** to bring upstream changes into your fork. The skill
 previews the diff, uses a sync branch, and guides any version migrations.
 
-### 4. Configure the framework — run `/setup`
+### 4. Configure the framework: run `/setup`
 
 Run **`/setup`** in Claude Code. The skill asks about your company, team,
 technology, and quality bar. It shows the proposed defaults before it writes
@@ -127,7 +163,7 @@ No `/setup` on your tool? Copy the example and fill it in by hand:
 `cp onboarding.example.yaml onboarding.yaml`. The gates read the file, not the
 skill.
 
-### 5. Register your projects — run `/handover`
+### 5. Register your projects: run `/handover`
 
 Projects join the portfolio through a skill. For each repo you want to manage:
 
@@ -139,7 +175,7 @@ Projects join the portfolio through a skill. For each repo you want to manage:
 the project docs, and **registers the repo in `apexyard.projects.yaml`**. It
 creates the registry on first use. `/setup` can register your first project.
 
-The registry it maintains looks like this — you rarely touch it by hand:
+The registry it maintains looks like this (you rarely touch it by hand):
 
 ```yaml
 version: 1
@@ -168,7 +204,7 @@ Hooks run on `git` and `gh` commands. Portfolio skills read the registry. Run
 
 Full setup guide with directory layout, daily workflow, and FAQ: [`docs/multi-project.md`](docs/multi-project.md).
 
-Keeping a fork current — upgrade in place, when to re-fork instead, and how to preserve your portfolio data either way: [`docs/upgrading.md`](docs/upgrading.md).
+Keeping a fork current: upgrade in place, when to re-fork instead, and how to preserve your portfolio data either way: [`docs/upgrading.md`](docs/upgrading.md).
 
 ### Optional: status band above the prompt
 
@@ -185,37 +221,36 @@ The band is on only for you, on this machine. After `/update`, run `/reload-plug
 
 ## Using another AI coding tool?
 
-**ApexYard was built for Claude Code.** Its slash commands are native Claude
+**ApexYard is native to Claude Code.** Its slash commands are native Claude
 Code skills. The enforcement layer is plain Bash, so other tools can use the
 same rules through an adapter.
 
 As of **2026-07-09**, opencode, pi, and Codex have passed real enforcement
-checks. Each tool needs one setting so its commands reach the rules. Cursor
-IDE native exec was observed later (2026-09-16) when third-party configs are
-on. You can always use the
+checks. Each tool needs one setting so its commands reach the rules. Later observations (2026-09-16) recorded Cursor
+IDE native exec when third-party configs are on. You can always use the
 manual configuration files from Quick Start when a skill is unavailable.
 
 | Tool | Enforces your rules? | Setup | Good to know |
 |------|----------------------|-------|--------------|
-| **Claude Code** | ✅ **Yes — natively.** Built in; the rules fire on every command. | Nothing to install — `/setup` and you're done. | On Windows, use Git Bash or WSL (the rules are bash). |
-| **opencode** | ✅ **Yes — proven.** A real agent's `git add -A` was blocked by the same rule. | `bash bin/install-opencode-adapter.sh` | Run opencode with `--auto` so the agent's command reaches the rule. |
-| **pi** | ✅ **Yes — proven.** Same, in a real pi session. | `bash bin/install-pi-adapter.sh` | Run pi with `-a` (auto-approve). pi is deliberately bare-bones — ApexYard is the governance it leaves to you. |
-| **Codex** | ✅ **Yes — proven.** Same, in a real Codex session. | `bash bin/sync-codex-adapter.sh` | Codex has to trust the rules once — `/hooks`, a one-off flag, or a user-level install. Details: [`docs/codex-adapter.md`](docs/codex-adapter.md). |
-| **Cursor** | ✅ **Yes — native in the IDE.** Cursor loads `.claude/` when third-party configs are on. A real Write call was refused by the ticket-first rule (2026-09-16). | Enable third-party configs. Then `bash bin/install-cursor-adapter.sh` for the session-pin overlay. | IDE only. The command-line `cursor-agent` ignores hooks. A leftover full adapter can lock the session. |
+| **Claude Code** | ✅ **Yes: natively.** Built in; the rules fire on every command. | Nothing to install: `/setup` completes setup. | On Windows, use Git Bash or WSL (the rules are bash). |
+| **opencode** | ✅ **Yes: proven.** The same rule blocked a real agent's `git add -A`. | `bash bin/install-opencode-adapter.sh` | Run opencode with `--auto` so the agent's command reaches the rule. |
+| **pi** | ✅ **Yes: proven.** Same, in a real pi session. | `bash bin/install-pi-adapter.sh` | Run pi with `-a` (auto-approve). pi is deliberately bare-bones: ApexYard is the governance it leaves to you. |
+| **Codex** | ✅ **Yes: proven.** Same, in a real Codex session. | `bash bin/sync-codex-adapter.sh` | Codex has to trust the rules once: `/hooks`, a one-off flag, or a user-level install. Details: [`docs/codex-adapter.md`](docs/codex-adapter.md). |
+| **Cursor** | ✅ **Yes: native in the IDE.** Cursor loads `.claude/` when third-party configs are on. The ticket-first rule refused a real Write call (2026-09-16). | Enable third-party configs. Then `bash bin/install-cursor-adapter.sh` for the session-pin overlay. | IDE only. The command-line `cursor-agent` ignores hooks. A leftover full adapter can lock the session. |
 
-*Under the hood:* your rules stay one set of portable bash scripts, and every tool reads the **same** ones — never a separate copy that can drift out of sync. A daily, credentialed [Conformance CI](docs/conformance-ci.md) job re-verifies opencode, pi, and Codex. Cursor has no headless path in that matrix. Full per-tool setup, limits, and how to add a new tool → **[`docs/harnesses/README.md`](docs/harnesses/README.md)**.
+*Inside:* your rules stay one set of portable bash scripts, and every tool reads the **same** ones. Tools never read a separate copy that can drift out of sync. A daily [Conformance CI](docs/conformance-ci.md) job re-verifies opencode on its free model. Pi and Codex run on manual dispatch and before each release. Cursor has no headless path in that matrix. Full per-tool setup, limits, and how to add a new tool → **[`docs/harnesses/README.md`](docs/harnesses/README.md)**.
 
 ## Roles, workflows & templates
 
-ApexYard ships **20 roles** across 6 departments that activate on triggers, a full **SDLC** (Planning → Design → Build → Review → QA → Deploy → Monitor) with a dedicated migration sub-workflow, and reusable **document templates** (PRD, technical design, ADR, AgDR, migration AgDR, C4 diagrams).
+ApexYard ships **20 roles** across 6 departments that activate on triggers. It also ships a full **SDLC** (Planning → Design → Build → Review → QA → Deploy → Monitor) with a dedicated migration sub-workflow. It includes reusable **document templates** (PRD, technical design, ADR, AgDR, migration AgDR, C4 diagrams).
 
 The full role roster, workflow detail, and template catalogue live in **[`docs/whats-inside.md`](docs/whats-inside.md)**. The canonical entry point Claude Code reads is [`CLAUDE.md`](CLAUDE.md).
 
-## Show you're governed by ApexYard
+## Show that ApexYard governs your project
 
-Running your repo under ApexYard? Add a badge to its README. Every adopter repo that carries one is a backlink and a bit of social proof — and `/handover` will offer to drop it into the repos it onboards.
+Running your repo under ApexYard? Add a badge to its README. Every adopter repo that carries one is a backlink and a bit of social proof. And `/handover` will offer to drop it into the repos it onboards.
 
-**Governed by** — for a repo managed under an ApexYard ops fork:
+**Governed by**: for a repo managed under an ApexYard ops fork:
 
 ```markdown
 [![Governed by ApexYard](https://img.shields.io/badge/governed_by-ApexYard-2F6DF6?style=flat-square)](https://github.com/me2resh/apexyard)
@@ -223,7 +258,7 @@ Running your repo under ApexYard? Add a badge to its README. Every adopter repo 
 
 [![Governed by ApexYard](https://img.shields.io/badge/governed_by-ApexYard-2F6DF6?style=flat-square)](https://github.com/me2resh/apexyard)
 
-**Built with** — for a project built out through the ApexYard workflow:
+**Built with**: for a project built out through the ApexYard workflow:
 
 ```markdown
 [![Built with ApexYard](https://img.shields.io/badge/built_with-ApexYard-2F6DF6?style=flat-square)](https://github.com/me2resh/apexyard)
@@ -233,12 +268,12 @@ Running your repo under ApexYard? Add a badge to its README. Every adopter repo 
 
 ## Customization
 
-ApexYard is designed to be customized. Every role, workflow, and template can be modified to fit your team:
+ApexYard supports customization by design. You can modify every role, workflow, and template to fit your team:
 
 1. **Add roles**: Create new `.md` files in `roles/your-department/`
 2. **Modify workflows**: Edit files in `workflows/`
 3. **Add templates**: Drop new templates in `templates/`
-4. **Override anything**: The stack is just markdown files -- edit freely
+4. **Override anything**: The stack is only markdown files -- edit freely
 
 ## Contributing
 
@@ -274,6 +309,7 @@ Thank you to everyone who opened issues, including bug reports, feature requests
 <p>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3Aa-abdellatif98" title="a-abdellatif98"><img src="https://github.com/a-abdellatif98.png?size=100" width="64" height="64" alt="a-abdellatif98"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3Aa-elnemr" title="a-elnemr"><img src="https://github.com/a-elnemr.png?size=100" width="64" height="64" alt="a-elnemr"></a>
+<a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3Aabbaseya" title="abbaseya"><img src="https://github.com/abbaseya.png?size=100" width="64" height="64" alt="abbaseya"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3AAbdelrahman-Shahda" title="Abdelrahman-Shahda"><img src="https://github.com/Abdelrahman-Shahda.png?size=100" width="64" height="64" alt="Abdelrahman-Shahda"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3AAbdElrahmaN31" title="AbdElrahmaN31"><img src="https://github.com/AbdElrahmaN31.png?size=100" width="64" height="64" alt="AbdElrahmaN31"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3Aaelnemr" title="aelnemr"><img src="https://github.com/aelnemr.png?size=100" width="64" height="64" alt="aelnemr"></a>
@@ -303,6 +339,7 @@ Thank you to everyone who opened issues, including bug reports, feature requests
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3AKarimEbrahemAbdelaziz" title="KarimEbrahemAbdelaziz"><img src="https://github.com/KarimEbrahemAbdelaziz.png?size=100" width="64" height="64" alt="KarimEbrahemAbdelaziz"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3Akhaledmedra" title="khaledmedra"><img src="https://github.com/khaledmedra.png?size=100" width="64" height="64" alt="khaledmedra"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3Amabdelaziz77" title="mabdelaziz77"><img src="https://github.com/mabdelaziz77.png?size=100" width="64" height="64" alt="mabdelaziz77"></a>
+<a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3Amahmoudsobhy74" title="mahmoudsobhy74"><img src="https://github.com/mahmoudsobhy74.png?size=100" width="64" height="64" alt="mahmoudsobhy74"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3AManito2z" title="Manito2z"><img src="https://github.com/Manito2z.png?size=100" width="64" height="64" alt="Manito2z"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3AMedNewton" title="MedNewton"><img src="https://github.com/MedNewton.png?size=100" width="64" height="64" alt="MedNewton"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3AMeDoTarek73" title="MeDoTarek73"><img src="https://github.com/MeDoTarek73.png?size=100" width="64" height="64" alt="MeDoTarek73"></a>
@@ -324,12 +361,16 @@ Thank you to everyone who opened issues, including bug reports, feature requests
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3Apsmend" title="psmend"><img src="https://github.com/psmend.png?size=100" width="64" height="64" alt="psmend"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3Arafik-wahid-cubeish" title="rafik-wahid-cubeish"><img src="https://github.com/rafik-wahid-cubeish.png?size=100" width="64" height="64" alt="rafik-wahid-cubeish"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3ARef34t" title="Ref34t"><img src="https://github.com/Ref34t.png?size=100" width="64" height="64" alt="Ref34t"></a>
+<a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3Asamahali" title="samahali"><img src="https://github.com/samahali.png?size=100" width="64" height="64" alt="samahali"></a>
+<a href="https://github.com/SecFathy" title="SecFathy"><img src="https://github.com/SecFathy.png?size=100" width="64" height="64" alt="SecFathy"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3Asts1078" title="sts1078"><img src="https://github.com/sts1078.png?size=100" width="64" height="64" alt="sts1078"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3Asudanese" title="sudanese"><img src="https://github.com/sudanese.png?size=100" width="64" height="64" alt="sudanese"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3Atifa64" title="tifa64"><img src="https://github.com/tifa64.png?size=100" width="64" height="64" alt="tifa64"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3Avjcv26" title="vjcv26"><img src="https://github.com/vjcv26.png?size=100" width="64" height="64" alt="vjcv26"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3Ayehiagamalx" title="yehiagamalx"><img src="https://github.com/yehiagamalx.png?size=100" width="64" height="64" alt="yehiagamalx"></a>
+<a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3AYOoOUNiieeSS" title="YOoOUNiieeSS"><img src="https://github.com/YOoOUNiieeSS.png?size=100" width="64" height="64" alt="YOoOUNiieeSS"></a>
 <a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3Azeyadsleem" title="zeyadsleem"><img src="https://github.com/zeyadsleem.png?size=100" width="64" height="64" alt="zeyadsleem"></a>
+<a href="https://github.com/me2resh/apexyard/issues?q=is%3Aissue%20author%3AZiadHosny" title="ZiadHosny"><img src="https://github.com/ZiadHosny.png?size=100" width="64" height="64" alt="ZiadHosny"></a>
 </p>
 
 When updating these credits, include new issue authors as well as pull-request contributors.
